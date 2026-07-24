@@ -44,7 +44,7 @@ export interface ClaudeProcOpts {
   // deny-on-miss path in hook-handler.ts always runs.
   permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
   // Optional `--model` override; absent means claude's configured default.
-  model?: 'sonnet' | 'opus' | 'haiku';
+  model?: 'sonnet' | 'opus' | 'haiku' | 'fable';
   onMessage: (msg: unknown) => void;
   onError: (msg: string) => void;
   onExit: (code: number | null) => void;

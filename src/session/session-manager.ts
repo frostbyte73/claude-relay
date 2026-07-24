@@ -4,7 +4,7 @@ import { EventLog } from './event-log.js';
 import type { WebSocket } from 'ws';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 
-export type SessionModel = 'sonnet' | 'opus' | 'haiku';
+export type SessionModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 // Replay window sized to survive iOS backgrounding the PWA.

@@ -22,7 +22,7 @@ import { mountPushSection } from '../push/index.js';
 import { emptyState } from '../shell/placeholder.js';
 import { renderHotkeys } from './hotkeys.js';
 
-const MODEL_LABELS = { default: 'Daemon default', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
+const MODEL_LABELS = { default: 'Daemon default', fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
 const APPROVAL_MODES = [
   { key: 'ask', label: 'Ask', desc: 'Tool calls outside the allowlist require explicit approval.' },
   { key: 'accept-edits', label: 'Accept edits', desc: 'Edit/Write/MultiEdit/NotebookEdit auto-approve; Bash and side-effect tools still require approval.' },

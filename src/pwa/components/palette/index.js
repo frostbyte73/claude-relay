@@ -35,12 +35,13 @@ import { escapeHtml } from '../../util.js';
 
 const RECENT_LIMIT = 5;
 const PREFS_KEY = 'outpost:palette:v1';
-// Session spawn accepts a per-launch model family ('opus'|'sonnet'|'haiku';
+// Session spawn accepts a per-launch model family ('fable'|'opus'|'sonnet'|'haiku';
 // null defers to the daemon default) — the chip's pick rides the session hint
 // into the spawn WS query. Ids match state/settings.js's VALID_DEFAULT_MODELS
 // so the "Model defaults" setting seeds the chip's initial position 1:1.
 const MODEL_CHOICES = [
   { id: null, label: 'Default' },
+  { id: 'fable', label: 'Fable' },
   { id: 'opus', label: 'Opus' },
   { id: 'sonnet', label: 'Sonnet' },
   { id: 'haiku', label: 'Haiku' },
