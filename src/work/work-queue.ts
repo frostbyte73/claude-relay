@@ -39,6 +39,29 @@ export function migrateJobRecord(raw: any): { job: JobRecord; changed: boolean }
     changed = true;
   }
 
+  // Pre-spec-flow open-pr steps were materialized with initialState 'implementing';
+  // the spec→plan→implement rounds were added later, moving the initial state to
+  // 'speccing'. A step still sitting in 'implementing'/'planning' with no session, no
+  // PR, and no spec/plan artifacts was never actually dispatched — those states are
+  // only reachable via a transition that also sets a sessionId, so this shape exists
+  // only on legacy records. decide() cold-starts an open-pr step solely from 'speccing',
+  // so such a step strands forever (e.g. the untouched siblings of a parallel group
+  // whose first member dispatched under the old parallel-first-only bug). Reset them to
+  // the current initial state so they cold-start through the normal flow.
+  if (Array.isArray(job.steps)) {
+    job.steps = job.steps.map((s: any) => {
+      if (
+        s?.type === 'open-pr'
+        && (s.state === 'implementing' || s.state === 'planning')
+        && !s.sessionId && !s.prUrl && !s.spec && !s.implPlan && !s.cancelled
+      ) {
+        changed = true;
+        return { ...s, state: 'speccing' };
+      }
+      return s;
+    });
+  }
+
   if (Array.isArray(job.events)) {
     const migratedEvents = job.events.map((ev: any) => {
       const renamedKind = EVENT_KIND_RENAMES[ev?.kind];
