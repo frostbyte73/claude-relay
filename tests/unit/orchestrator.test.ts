@@ -219,6 +219,50 @@ function addOpenPrStep(engine: WorkEngine, jobId: string): OpenPrStep {
   return engine.addStepManually(jobId, proposed) as OpenPrStep;
 }
 
+describe('Orchestrator — parallel group dispatch', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  function addParallelStep(engine: WorkEngine, jobId: string, title: string, group: string): Step {
+    return engine.addStepManually(jobId, {
+      type: 'action', action: 'read.investigate', title,
+      description: 'd', goal: 'g', workspace: { kind: 'none' }, parallelGroup: group,
+    } as ProposedStep)!;
+  }
+
+  it('dispatches every ready member of a parallel group in a single tick', async () => {
+    const { engine, queue, spawned } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const a = addParallelStep(engine, job.id, 'a', 'g1');
+    const b = addParallelStep(engine, job.id, 'b', 'g1');
+    const c = addParallelStep(engine, job.id, 'c', 'g1');
+    queue.mutate(job.id, (j) => ({ ...j, state: 'executing' }));
+
+    await engine.tick(job.id);
+    await flush();
+
+    const steps = queue.get(job.id)!.steps;
+    expect(steps.find((s) => s.id === a.id)!.sessionId).toBeDefined();
+    expect(steps.find((s) => s.id === b.id)!.sessionId).toBeDefined();
+    expect(steps.find((s) => s.id === c.id)!.sessionId).toBeDefined();
+    expect(spawned).toHaveLength(3);
+  });
+
+  it('does not dispatch a later group until the parallel group ahead of it settles', async () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    addParallelStep(engine, job.id, 'a', 'g1');
+    addParallelStep(engine, job.id, 'b', 'g1');
+    const later = addParallelStep(engine, job.id, 'later', 'g2');
+    queue.mutate(job.id, (j) => ({ ...j, state: 'executing' }));
+
+    await engine.tick(job.id);
+    await flush();
+
+    const steps = queue.get(job.id)!.steps;
+    expect(steps.find((s) => s.id === later.id)!.sessionId).toBeUndefined();
+  });
+});
+
 describe('Orchestrator — a failed step halts the plan', () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
 

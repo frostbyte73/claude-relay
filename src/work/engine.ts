@@ -83,14 +83,19 @@ export function activeGroup(j: JobRecord): Step[] {
   return [];
 }
 
-export function decide(j: JobRecord, ctx: HandlerCtx): Action | null {
-  if (j.state === 'planning' || j.state === 'plan_pending_review') return null;
-  if (j.state === 'done' || j.state === 'abandoned' || j.state === 'failed') return null;
+// Returns every action ready to dispatch right now — one per unblocked member of
+// the active group. Parallel-group members all launch in the same tick; a solo
+// group yields at most one. (Members already dispatched return null from their
+// handler's decide(), so re-running is idempotent.)
+export function decide(j: JobRecord, ctx: HandlerCtx): Action[] {
+  if (j.state === 'planning' || j.state === 'plan_pending_review') return [];
+  if (j.state === 'done' || j.state === 'abandoned' || j.state === 'failed') return [];
+  const actions: Action[] = [];
   for (const s of activeGroup(j)) {
     const a = handlerFor(s).decide(s, j, ctx);
-    if (a) return a;
+    if (a) actions.push(a);
   }
-  return null;
+  return actions;
 }
 
 export interface WorkEngineOpts {
@@ -360,9 +365,8 @@ export class WorkEngine {
     }
     if (markedDone || markedFailed) return;
 
-    const action = decide(this.opts.queue.get(jobId) ?? j, this.ctx);
-    if (!action) return;
-    await this.execute(action);
+    const actions = decide(this.opts.queue.get(jobId) ?? j, this.ctx);
+    for (const action of actions) await this.execute(action);
   }
 
   private async execute(a: Action): Promise<void> {
