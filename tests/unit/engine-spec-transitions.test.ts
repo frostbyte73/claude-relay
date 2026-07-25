@@ -13,9 +13,13 @@ function makeEngine() {
   const dir = mkdtempSync(join(tmpdir(), 'engine-spec-'));
   const queue = new JobQueue(dir);
   const resumed: Array<{ sessionId: string; content: string }> = [];
+  // Controls whether the shared session is reported mid-turn at resume time — the signal
+  // the engine uses to detect a resume queued behind an in-flight (soon-to-be-stale) turn.
+  const working = new Set<string>();
   const sessionManager = {
     spawnDetached() { /* not exercised by these transitions */ },
     send() { /* not exercised by these transitions */ },
+    isWorking(sessionId: string) { return working.has(sessionId); },
     sendOrResume(sessionId: string, _cwd: string, msg: { message: { content: string } }) {
       resumed.push({ sessionId, content: msg.message.content });
     },
@@ -32,7 +36,7 @@ function makeEngine() {
     newId: (() => { let n = 0; return () => `id-${++n}`; })(),
     now: () => 1,
   });
-  return { engine, queue, resumed };
+  return { engine, queue, resumed, working };
 }
 
 function addOpenPrStep(engine: WorkEngine, jobId: string): OpenPrStep {
@@ -189,6 +193,60 @@ describe('WorkEngine spec/plan round transitions', () => {
     engine.onSessionTurnEnded('sess-1');          // still planning, NOT implementing
     await flush();
     expect(resumed).toHaveLength(0);
+  });
+});
+
+describe('WorkEngine — stale turn-end Stop from a superseded round', () => {
+  let engine: WorkEngine;
+  let queue: JobQueue;
+  let working: Set<string>;
+  let jobId: string;
+  let stepId: string;
+
+  beforeEach(() => {
+    ({ engine, queue, working } = makeEngine());
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    jobId = job.id;
+    stepId = addOpenPrStep(engine, jobId).id;
+    queue.mutate(jobId, (j) => ({
+      ...j,
+      steps: j.steps.map((s) => s.id === stepId ? { ...s, state: 'spec_pending_review', sessionId: 'sess-1' } as OpenPrStep : s),
+    }));
+  });
+
+  function step(): OpenPrStep {
+    return queue.get(jobId)!.steps.find((s) => s.id === stepId) as OpenPrStep;
+  }
+
+  it('a resume dispatched while the session is still mid-turn owes exactly one stale Stop', async () => {
+    working.add('sess-1');                        // spec turn's Stop hasn't landed yet
+    engine.approveSpec(jobId, stepId);            // → planning, resumes /code.plan behind the spec turn
+    await flush();
+    expect(engine.consumeStaleTurnStop('sess-1')).toBe(true);
+    expect(engine.consumeStaleTurnStop('sess-1')).toBe(false);
+  });
+
+  it('the stale spec Stop does not fail the step, and the plan round still completes', async () => {
+    working.add('sess-1');
+    engine.approveSpec(jobId, stepId);
+    await flush();
+    // Mirror the daemon Stop handler's gate: a stale Stop is consumed and skips failStep.
+    const stale = engine.consumeStaleTurnStop('sess-1');
+    if (!stale) engine.failStepIfUnresolved('sess-1', 'x');
+    expect(stale).toBe(true);
+    expect(step().failure).toBeUndefined();       // step survived the trailing spec Stop
+    engine.onImplPlanReady(jobId, stepId, '# plan');
+    expect(step().state).toBe('implementing');
+  });
+
+  it('when the spec Stop already landed before approval, no stale Stop is owed and a genuine premature Stop still fails', async () => {
+    // working NOT set: the spec turn ended before the user approved.
+    engine.approveSpec(jobId, stepId);
+    await flush();
+    expect(engine.consumeStaleTurnStop('sess-1')).toBe(false);
+    // A real planning-round turn that ends without submit_impl_plan must still fail the step.
+    expect(engine.failStepIfUnresolved('sess-1', 'no submit')).toBe(true);
+    expect(step().failure?.reason).toBe('no submit');
   });
 });
 

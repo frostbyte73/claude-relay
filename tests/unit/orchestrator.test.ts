@@ -19,6 +19,7 @@ function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
       const entry = spawned.find((s) => s.sessionId === sessionId);
       if (entry) entry.kick = msg.message.content;
     },
+    isWorking() { return false; },
     sendOrResume(sessionId: string, _cwd: string, _msg: unknown, env: Record<string, string>) {
       resumed.push({ sessionId, env });
     },

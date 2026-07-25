@@ -11,7 +11,7 @@ export function makeEngine(dir = mkdtempSync(join(tmpdir(), 'squash-'))) {
   const resumed: Array<{ sessionId: string; env: Record<string, string> }> = [];
   const archived: Array<{ stepId: string }> = [];
   const sessionManager = {
-    spawnDetached() {}, send() {},
+    spawnDetached() {}, send() {}, isWorking() { return false; },
     sendOrResume(sessionId: string, _cwd: string, _msg: unknown, env: Record<string, string>) { resumed.push({ sessionId, env }); },
     close() {}, archive() {},
   } as never;
@@ -188,7 +188,7 @@ describe('engine.worktreeRecordForSession', () => {
       archive: async () => {},
     } as never;
     const engine = new WorkEngine({
-      queue, sessionManager: { spawnDetached() {}, send() {}, sendOrResume() {}, close() {}, archive() {} } as never,
+      queue, sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close() {}, archive() {} } as never,
       worktreeManager, linearWriter: { setState: async () => undefined } as never, actionsStore: {} as never,
       jobsDir: join(dir, 'jobs'), newId: (() => { let n = 0; return () => `id-${++n}`; })(), now: () => 1,
     });
@@ -209,7 +209,7 @@ export function makeEngineWith(parentCwd: string, wtPath: string, baseBranch: st
   const dir = mkdtempSync(join(tmpdir(), 'squash-eng-'));
   const queue = new JobQueue(dir);
   const archived: Array<{ stepId: string }> = [];
-  const sessionManager = { spawnDetached() {}, send() {}, sendOrResume() {}, close() {}, archive() {} } as never;
+  const sessionManager = { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close() {}, archive() {} } as never;
   const worktreeManager = {
     provision: async () => ({ path: wtPath }),
     get: () => ({ projectCwd: parentCwd, worktreePath: wtPath, branch: 'feat/x', baseBranch }),

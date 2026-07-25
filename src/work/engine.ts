@@ -120,6 +120,12 @@ export class WorkEngine {
   private readonly ctx: HandlerCtx;
   private readonly roleBySession = new Map<string, SessionRole>();
   private readonly actionBySession = new Map<string, string>();
+  // Per (long-lived, cross-round) step session: count of Stop hooks owed by turns that
+  // were already superseded by a queued resume. When a round is dispatched onto a session
+  // that's still mid-turn (e.g. a fast spec approval resumes /code.plan before the spec
+  // turn's Stop has landed), the trailing Stop belongs to that old round — not the new one.
+  // consumeStaleTurnStop() lets the Stop handler drop it instead of failing the live step.
+  private readonly owedStaleStops = new Map<string, number>();
 
   actionForSession(sessionId: string): string | undefined {
     return this.actionBySession.get(sessionId);
@@ -165,6 +171,18 @@ export class WorkEngine {
   bindAction(sessionId: string, actionName: string): void {
     if (!this.opts.actionsStore) return;
     this.actionBySession.set(sessionId, actionName);
+  }
+
+  // A Stop hook fired for `sessionId`. Returns true iff this Stop is owed to a round that
+  // was already superseded by a queued resume (see spawnStepSession) — the caller must
+  // then ignore it (skip failStepIfUnresolved / onSessionTurnEnded), because the step is
+  // actively running its next round and the real turn-end Stop is still to come.
+  consumeStaleTurnStop(sessionId: string): boolean {
+    const n = this.owedStaleStops.get(sessionId) ?? 0;
+    if (n <= 0) return false;
+    if (n === 1) this.owedStaleStops.delete(sessionId);
+    else this.owedStaleStops.set(sessionId, n - 1);
+    return true;
   }
 
   // Called from the Stop hook when a spawned action-step session ends its turn.
@@ -481,6 +499,7 @@ export class WorkEngine {
       catch (e) { console.error(`[work] close session ${sid.slice(0,8)}: ${(e as Error).message}`); }
       this.roleBySession.delete(sid);
       this.actionBySession.delete(sid);
+      this.owedStaleStops.delete(sid);
     }
   }
 
@@ -1685,6 +1704,13 @@ export class WorkEngine {
     // conversation so the agent keeps full context (why the code looks as it does,
     // sibling comments for "same thing here", etc.).
     if (s.type === 'open-pr' && s.sessionId) {
+      // If the shared session is still mid-turn, its previous round's Stop hook hasn't
+      // landed yet. That trailing Stop belongs to the round we're superseding here, not
+      // to the one we're about to dispatch — record it so the Stop handler drops it
+      // rather than failing this (live) step for "ended without submitting output".
+      if (this.opts.sessionManager.isWorking(s.sessionId)) {
+        this.owedStaleStops.set(s.sessionId, (this.owedStaleStops.get(s.sessionId) ?? 0) + 1);
+      }
       this.roleBySession.set(s.sessionId, { role: 'step', jobId, stepId });
       this.bindAction(s.sessionId, actionName);
       this.mutate(jobId, (j) => this.appendEvent(j, {

@@ -481,18 +481,26 @@ async function main() {
       rebroadcastJobLiveness(sessionId);
       const { shouldNotify, turnDurationMs } = stopTracker.consume(sessionId);
       console.log(`[hook] stop session=${sessionId.slice(0,8)} durationMs=${turnDurationMs ?? 'n/a'} push=${shouldNotify}`);
-      // If this session is bound to an unresolved action step, the assistant
-      // ended its turn without calling submit_step_output. Fail the step so
-      // the orchestrator doesn't hang.
-      if (engine.failStepIfUnresolved(
-        sessionId,
-        'Session ended without submitting output via mcp__outpost__submit_step_output',
-      )) {
-        console.log(`[work] stop session=${sessionId.slice(0,8)} → step failed (no MCP submission)`);
+      // A resume queued behind an in-flight turn (e.g. a fast spec approval dispatching
+      // /code.plan before the spec turn's Stop landed) leaves a trailing Stop that belongs
+      // to the superseded round. Attributing it to the current round would spuriously fail
+      // a step that's actively running — drop it here and wait for the real turn-end Stop.
+      if (engine.consumeStaleTurnStop(sessionId)) {
+        console.log(`[work] stop session=${sessionId.slice(0,8)} → stale (superseded round), ignored`);
+      } else {
+        // If this session is bound to an unresolved action step, the assistant
+        // ended its turn without calling submit_step_output. Fail the step so
+        // the orchestrator doesn't hang.
+        if (engine.failStepIfUnresolved(
+          sessionId,
+          'Session ended without submitting output via mcp__outpost__submit_step_output',
+        )) {
+          console.log(`[work] stop session=${sessionId.slice(0,8)} → step failed (no MCP submission)`);
+        }
+        // Plan→implement hand-off: if code.plan just ended its turn, dispatch the implement
+        // round now that the shared session is idle (see WorkEngine.onSessionTurnEnded).
+        engine.onSessionTurnEnded(sessionId);
       }
-      // Plan→implement hand-off: if code.plan just ended its turn, dispatch the implement
-      // round now that the shared session is idle (see WorkEngine.onSessionTurnEnded).
-      engine.onSessionTurnEnded(sessionId);
       if (!shouldNotify) return;
       const title = findSessionTitle(sessionId);
       void pushSender.send({

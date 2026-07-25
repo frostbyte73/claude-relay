@@ -13,6 +13,7 @@ function makeEngine(dir = mkdtempSync(join(tmpdir(), 'resolve-'))) {
   const sessionManager = {
     spawnDetached() {},
     send() {},
+    isWorking() { return false; },
     sendOrResume(sessionId: string, _cwd: string, _msg: unknown, env: Record<string, string>) {
       resumed.push({ sessionId, env });
     },
