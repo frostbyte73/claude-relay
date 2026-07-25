@@ -570,6 +570,37 @@ describe('Orchestrator applyOpenPrPatch — merge advances the plan', () => {
     expect(s2After.sessionId).toBeDefined();
   });
 
+  it('clears a stale interrupt failure when the watcher advances a live (unmerged) PR, lifting the job halt', async () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const prStep = addOpenPrStep(engine, job.id);
+    // Shape of the CS-1552 regression: a daemon bounce marked the implementing step
+    // failed and halted the job; the user then opened the PR from the worktree edits,
+    // so the step recovered to comment_pending_response with a live PR — but the stale
+    // failure lingered, keeping the job permanently `failed` (stranding parallel
+    // siblings and the comment-triage round).
+    queue.mutate(job.id, (j) => ({
+      ...j,
+      state: 'failed',
+      steps: j.steps.map((s) => (s.id === prStep.id
+        ? ({
+            ...s, state: 'comment_pending_response', prUrl: 'http://x', prState: 'open',
+            failure: { reason: 'implement session interrupted by daemon restart', at: 1 },
+          } as Step)
+        : s)),
+    }));
+
+    // A routine watcher poll (CI update, no merge) flows through the choke point.
+    engine.applyOpenPrPatch(job.id, prStep.id, { ciState: 'success' });
+
+    const reloaded = queue.get(job.id)!.steps.find((s) => s.id === prStep.id)! as OpenPrStep;
+    expect(reloaded.failure).toBeUndefined();
+
+    // With the stale failure gone, the next tick lifts the halt.
+    await engine.tick(job.id);
+    expect(queue.get(job.id)!.state).toBe('executing');
+  });
+
   it('does not re-emit step_merged for a patch on an already-merged step', async () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });

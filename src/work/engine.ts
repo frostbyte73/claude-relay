@@ -1449,11 +1449,21 @@ export class WorkEngine {
     const before = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     this.mutateOpenPrStep(jobId, stepId, (s) => {
       const next = { ...s, ...patch, updatedAt: this.ctx.now() };
-      // A merged step succeeded, so drop any stale failure — e.g. the spurious
-      // "interrupted by daemon restart" reconcileInterruptedSteps sets on a step
-      // that was sitting in `implementing` awaiting review when the daemon bounced.
-      // Left in place it permanently halts the job via decideJobTransitions.
-      if (next.state === 'merged') next.failure = undefined;
+      // A merged step, or one with a live open PR, is proof the implement round
+      // succeeded: the edits merged or produced a real, reviewable diff. Drop any stale
+      // step failure, namely the spurious "interrupted by daemon restart"
+      // reconcileInterruptedSteps stamps on a step caught mid-`implementing` by a daemon
+      // bounce. Once the user opens the PR from those worktree edits the step advances to
+      // pr_open / comment_pending_response, but the failure survives — and left in place
+      // it permanently halts the whole job (decideJobTransitions), which also strands the
+      // parallel-group siblings and the comment-triage round, even though the work landed.
+      // Clearing only on `merged` missed that pre-merge recovery window; clearing on
+      // `merged` too still covers squash-to-base, which merges with no PR. (The other
+      // step-level failures — spec/plan interrupt, provision failure — happen before any
+      // PR exists, so a live PR never masks a real one.)
+      if (next.failure && (next.state === 'merged' || (next.prUrl && next.prState !== 'closed'))) {
+        next.failure = undefined;
+      }
       return next;
     });
     const after = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
