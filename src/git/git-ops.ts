@@ -419,7 +419,7 @@ export async function gitFinalizeSquashToBranch(opts: FinalizeSquashToBranchOpts
     return { ok: false, stdout: '', stderr: `worktree has uncommitted changes:\n${dirty.stdout}`, exitCode: 1 };
   }
   // reset --soft rewinds HEAD to base leaving every diff staged; one commit collapses it.
-  const reset = await runGit(opts.worktreePath, ['reset', '--soft', '--', opts.baseBranch]);
+  const reset = await runGit(opts.worktreePath, ['reset', '--soft', opts.baseBranch, '--']);
   if (!reset.ok) return reset;
   const commit = await runGit(opts.worktreePath, ['commit', '-m', opts.message]);
   if (!commit.ok) return commit;
