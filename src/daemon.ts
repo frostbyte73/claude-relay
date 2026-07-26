@@ -1486,12 +1486,12 @@ async function main() {
     }
     const sessionId = m[1]!;
     // Query: cwd (first attach only), spawn=worktree|shared, base=<branch>,
-    // model=sonnet|opus|haiku (first attach only; absent = claude default),
+    // model=sonnet|opus|haiku|fable (first attach only; absent = claude default),
     // since=<seq> for replay-on-reconnect. SessionManager validates and may emit replay_gap.
     let cwd: string | undefined;
     let spawnMode: 'shared' | 'worktree' | undefined;
     let baseBranch: string | undefined;
-    let model: 'sonnet' | 'opus' | 'haiku' | undefined;
+    let model: 'sonnet' | 'opus' | 'haiku' | 'fable' | undefined;
     let since: number | undefined;
     const queryIdx = url.indexOf('?');
     if (queryIdx >= 0) {
@@ -1503,7 +1503,7 @@ async function main() {
       const rawBase = params.get('base');
       if (rawBase) baseBranch = rawBase;
       const rawModel = params.get('model');
-      if (rawModel === 'sonnet' || rawModel === 'opus' || rawModel === 'haiku') model = rawModel;
+      if (rawModel === 'sonnet' || rawModel === 'opus' || rawModel === 'haiku' || rawModel === 'fable') model = rawModel;
       const rawSince = params.get('since');
       if (rawSince !== null) {
         const n = Number(rawSince);

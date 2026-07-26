@@ -4,7 +4,7 @@ import { EventLog } from './event-log.js';
 import type { WebSocket } from 'ws';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 
-export type SessionModel = 'sonnet' | 'opus' | 'haiku';
+export type SessionModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
 
 // Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
 // so the PWA can tell a graceful shutdown from a crash. 'idle' = reaped for

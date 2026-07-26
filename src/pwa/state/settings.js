@@ -7,7 +7,7 @@ export const VALID_MODES = ['light', 'dark'];
 // the daemon passes no --model flag). Named options let a session-spawn path
 // that reads this later (⌘K palette, D5) pin a family without duplicating
 // the exact model-id string this file has no authority over.
-export const VALID_DEFAULT_MODELS = ['default', 'opus', 'sonnet', 'haiku'];
+export const VALID_DEFAULT_MODELS = ['default', 'fable', 'opus', 'sonnet', 'haiku'];
 
 function loadTheme() {
   const v = localStorage.getItem('cr:theme');
