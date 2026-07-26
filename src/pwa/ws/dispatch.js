@@ -316,6 +316,20 @@ const sessionHandlers = {
       if (isCurrent) deps.renderSession();
       return;
     }
+    if (msg.expected) {
+      // Daemon-initiated graceful shutdown (idle reap / step teardown), not a crash.
+      // The SIGTERM makes claude exit 143, which would otherwise read as a crash even
+      // though the session's work already landed. An idle-reaped session resumes on the
+      // next message; a teardown/archive is gone for good.
+      S.appendTranscript({
+        role: 'archived',
+        text: msg.reason === 'idle'
+          ? 'Session reaped after 15 min idle — send a message to resume.'
+          : 'Session archived.',
+      });
+      if (isCurrent) deps.renderSession();
+      return;
+    }
     S.appendTranscript({
       role: 'error',
       text: `Session subprocess exited (code ${msg.code}).`,

@@ -6,6 +6,12 @@ import type { WorktreeManager } from '../git/worktree-manager.js';
 
 export type SessionModel = 'sonnet' | 'opus' | 'haiku';
 
+// Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
+// so the PWA can tell a graceful shutdown from a crash. 'idle' = reaped for
+// inactivity (resumable on the next message); 'archived' = worktree/step gone.
+// Absent on the exit event means the subprocess died on its own → a real crash.
+export type SessionCloseReason = 'idle' | 'archived';
+
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 // Replay window sized to survive iOS backgrounding the PWA.
 const DEFAULT_EVENT_LOG_MAX_AGE_MS = 10 * 60 * 1000;
@@ -17,6 +23,9 @@ interface ActiveSession {
   clients: Set<WebSocket>;
   eventLog: EventLog;
   idleTimer?: NodeJS.Timeout;
+  // Set by close() right before the SIGTERM so onExit can flag the exit as
+  // daemon-initiated (vs a crash). Cleared implicitly — a fresh spawn makes a new session.
+  closeReason?: SessionCloseReason;
   lastActivity: number;
   // Forwarded via session_state so the PWA can anchor file paths before the next /api/sessions refresh.
   spawnCwd: string;
@@ -240,9 +249,10 @@ export class SessionManager {
     return s.clients.size > 0 ? 'foreground' : 'background';
   }
 
-  async close(sessionId: string): Promise<void> {
+  async close(sessionId: string, reason: SessionCloseReason = 'archived'): Promise<void> {
     const s = this.active.get(sessionId);
     if (!s) return;
+    s.closeReason = reason;
     if (s.idleTimer) clearTimeout(s.idleTimer);
     await s.proc.kill();
     for (const ws of s.clients) ws.close();
@@ -327,8 +337,11 @@ export class SessionManager {
         }
       },
       onExit: (code) => {
+        const expected = s.closeReason;
         for (const ws of s.clients) {
-          ws.send(JSON.stringify({ type: 'daemon_proc_exit', code }));
+          ws.send(JSON.stringify(expected
+            ? { type: 'daemon_proc_exit', code, expected: true, reason: expected }
+            : { type: 'daemon_proc_exit', code }));
         }
         this.active.delete(s.id);
         this.working.delete(s.id);
@@ -378,7 +391,7 @@ export class SessionManager {
         this.startIdleTimer(s);
         return;
       }
-      void this.close(s.id);
+      void this.close(s.id, 'idle');
     }, IDLE_TIMEOUT_MS);
   }
 
