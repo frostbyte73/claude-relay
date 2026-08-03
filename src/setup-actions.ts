@@ -50,8 +50,14 @@ function installActions(srcDir: string, dstDir: string, skillsDir: string): stri
         }
       }
     }
-    pruneStaleActions(srcDir, dstDir, skillsDir);
   }
+  // NOTE: we intentionally do NOT prune here. ~/.outpost/actions is the authoritative,
+  // user-editable store (the registry reads it), so it holds user-authored actions that
+  // don't exist in the bundled repo — e.g. `write/run-github-workflow`. pruneStaleActions
+  // would delete exactly those (any dst action in a repo-defined category the repo lacks),
+  // nuking a just-created action on the next ensureActionsInstalled call. Stale *bundled*
+  // actions dropped from the repo are handled by the registry's tolerant load + explicit
+  // cleanup instead. pruneStaleActions is kept as a manual utility (see its tests).
   return symlinkActionsToSkills(dstDir, skillsDir);
 }
 

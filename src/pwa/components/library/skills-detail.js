@@ -3,7 +3,7 @@
 // runs two-column grid). Registered as the 'skills' surface's renderDetail
 // in shell/surfaces.js.
 
-import { actions, editFor } from '../../state/actions.js';
+import { actions, editFor, findEditBySession } from '../../state/actions.js';
 import { actionsApi } from '../../net/actions.js';
 import { library } from '../../state/library.js';
 import { nav } from '../../state/nav.js';
@@ -16,6 +16,8 @@ import { skillByName, permissionGroupNames, allowlistRuleCount, stripFrontmatter
 import { emptyState } from '../shell/placeholder.js';
 import { openPalette } from '../palette/index.js';
 import { startScheduleDraft } from '../schedules/draft.js';
+import { renderComposeForm } from './compose.js';
+import { mountInlineSession } from '../work/inline-session.js';
 
 export function renderDetail(mount, deps) {
   const { selection } = deps ?? {};
@@ -30,44 +32,111 @@ export function renderDetail(mount, deps) {
   view.className = 'lib-detail';
   mount.appendChild(view);
 
+  // The inline meta.build-action feed is mounted once per builder session and
+  // survives repaints — tearing it down on every actions_changed would churn the
+  // WS and reset scroll. `feedCtl` tracks the live mount so we only re-attach
+  // when the session actually changes.
+  let feedCtl = { sid: null, unmount: null };
+  const leaveWip = () => {
+    if (feedCtl.unmount) { try { feedCtl.unmount(); } catch { /* ignore */ } }
+    feedCtl = { sid: null, unmount: null };
+    view.__wipSid = null;
+  };
+
+  // WIP view for a new-action builder session: header + live feed + proposal
+  // card. Idempotent — the shell (and feed) are built once per session; only the
+  // proposal card + header refresh on repaint so the feed DOM stays put.
+  const paintWip = (edit) => {
+    const sid = edit.sessionId;
+    if (view.__wipSid !== sid) {
+      leaveWip();
+      view.__wipSid = sid;
+      view.innerHTML = wipShellHtml(edit);
+      const feedEl = view.querySelector('.lib-edit-feed-mount');
+      // Reuse the shared inline-session preview (thinking strip + transcript tail +
+      // inline approval/ask cards + "Open ↗") — same component the job step cards use.
+      // No job/step context: an action-edit session is never terminal-by-step.
+      const ctl = feedEl ? mountInlineSession(feedEl, sid, { jobId: null, step: null }) : null;
+      feedCtl = { sid, unmount: ctl ? () => ctl.unmount() : null };
+    }
+    const nameEl = view.querySelector('.lib-detail-name');
+    if (nameEl) nameEl.textContent = edit.actionName ?? 'draft';
+    const pill = view.querySelector('.lib-wip-pill');
+    if (pill) pill.textContent = edit.proposal ? 'review' : 'drafting';
+    const slot = view.querySelector('.lib-wip-card-slot');
+    if (slot) { slot.innerHTML = editCardHtml(edit, actions.get()); wireEditCard(view, edit); }
+  };
+
+  // Compose forms render once so in-progress typing survives repaints. Keyed by
+  // sentinel so switching modes within a mount (rare) still re-renders.
+  const mountComposeOnce = (key, opts) => {
+    leaveWip();
+    if (view.__composeMounted === key) return;
+    view.__composeMounted = key;
+    renderComposeForm(view, opts);
+  };
+
   const paint = () => {
     const state = actions.get();
-    const item = skillByName(state, selection);
-    const edit = editFor(state, selection);
-    if (!item && edit) {
-      // Proposal for an action that doesn't exist on disk yet (new-action flow)
-      // — the review card is the whole detail.
-      view.innerHTML = `
-        <header class="lib-detail-hdr">
-          <div class="lib-detail-title">
-            <span class="lib-detail-name">${escapeHtml(selection)}</span>
-            <span class="o-pill lib-cat-pill lib-cat-meta">pending</span>
-          </div>
-        </header>
-        ${editCardHtml(edit, state)}
-      `;
-      wireEditCard(view, edit);
+
+    // Compose activities (`new:` and `edit:<name>`).
+    if (selection === 'new:') { mountComposeOnce('new', { mode: 'new' }); return; }
+    if (typeof selection === 'string' && selection.startsWith('edit:')) {
+      const name = selection.slice(5);
+      mountComposeOnce(`edit:${name}`, { mode: 'edit', name });
       return;
     }
+    view.__composeMounted = null;
+
+    // New-action WIP (`new:<sessionId>`) — resolve the in-flight builder session.
+    if (typeof selection === 'string' && selection.startsWith('new:')) {
+      const edit = findEditBySession(state, selection.slice(4));
+      if (edit) { paintWip(edit); return; }
+      // Stale sentinel (session gone / just approved) — fall back to the compose form.
+      mountComposeOnce('new', { mode: 'new' });
+      return;
+    }
+
+    // Any in-flight edit for this name shows the WIP view (feed + proposal card) —
+    // whether the action is already installed (revise) or not yet on disk (a new
+    // action the skill has already named). Only when there's NO edit do we fall
+    // back to the installed detail, or "not found".
+    const item = skillByName(state, selection);
+    const edit = editFor(state, selection);
+    if (edit) { paintWip(edit); return; }
+    leaveWip();
     if (!item) {
       view.innerHTML = `<div class="lib-empty-note">Skill not found: ${escapeHtml(selection)}</div>`;
       return;
     }
-    view.innerHTML = skillHtml(item, library.get(), state, edit);
+    view.innerHTML = skillHtml(item, library.get(), state, null);
     wire(view, item);
-    if (edit) wireEditCard(view, edit);
     wireDenials(view, item, state);
   };
 
   paint();
   library.loadPermissionGroups();
-  library.loadJournal(selection);
+  if (selection && !selection.startsWith('new:')) library.loadJournal(selection);
   if (!actions.get().loaded && !actions.get().loading) actions.load();
 
   const unsubActions = actions.subscribe(paint);
   const unsubLibrary = library.subscribe(paint);
-  mount.__libUnsub = () => { unsubActions(); unsubLibrary(); };
+  mount.__libUnsub = () => { unsubActions(); unsubLibrary(); leaveWip(); };
   return mount.__libUnsub;
+}
+
+function wipShellHtml(edit) {
+  const name = edit.actionName ?? 'draft';
+  return `
+    <header class="lib-detail-hdr">
+      <div class="lib-detail-title">
+        <span class="lib-detail-name">${escapeHtml(name)}</span>
+        <span class="o-pill lib-cat-pill lib-cat-meta lib-wip-pill">${edit.proposal ? 'review' : 'drafting'}</span>
+      </div>
+    </header>
+    <div class="lib-edit-feed-mount"></div>
+    <div class="lib-wip-card-slot"></div>
+  `;
 }
 
 function skillHtml(item, libState, state, edit) {
@@ -149,8 +218,12 @@ function wireEditCard(view, edit) {
   });
   card.querySelector('[data-edit-action="approve"]')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
-    try { await actionsApi.approveProposal(edit.sessionId); }
-    catch (err) { fail(err); e.target.disabled = false; }
+    try {
+      const res = await actionsApi.approveProposal(edit.sessionId);
+      // Move the selection off the `new:<sessionId>` sentinel onto the freshly
+      // installed action so the detail shows the real thing, not "Skill not found".
+      if (res?.actionName) nav.select('skills', res.actionName);
+    } catch (err) { fail(err); e.target.disabled = false; }
   });
   card.querySelector('[data-edit-action="feedback"]')?.addEventListener('click', async (e) => {
     const text = card.querySelector('.lib-edit-feedback')?.value.trim();
@@ -163,7 +236,13 @@ function wireEditCard(view, edit) {
   card.querySelector('[data-edit-action="cancel"]')?.addEventListener('click', async (e) => {
     if (!confirm('Cancel this edit and discard the draft?')) return;
     e.target.disabled = true;
-    try { await actionsApi.cancelEdit(edit.sessionId); }
+    try {
+      await actionsApi.cancelEdit(edit.sessionId);
+      // Return to the action's full detail if it's installed (an edit of an
+      // existing action); a cancelled brand-new action has nowhere to land.
+      const installed = edit.actionName && skillByName(actions.get(), edit.actionName);
+      nav.select('skills', installed ? edit.actionName : null);
+    }
     catch (err) { fail(err); e.target.disabled = false; }
   });
 }
@@ -283,11 +362,13 @@ function wire(view, item) {
   });
 
   view.querySelector('[data-action="edit"]')?.addEventListener('click', async () => {
+    // Actions revise inline via the edit compose activity (stays on the Skills
+    // surface, shows the live feed). Skills stay a session flow — skill-creator
+    // is genuinely interactive.
+    if (item.kind === 'action') { nav.select('skills', `edit:${item.name}`); return; }
     const feedback = window.prompt(`What should change about ${item.name}? (optional)`) ?? '';
     try {
-      const res = item.kind === 'action'
-        ? await actionsApi.edit(item.name, feedback)
-        : await actionsApi.editSkill(item.name, feedback);
+      const res = await actionsApi.editSkill(item.name, feedback);
       if (res?.sessionId) nav.select('sessions', res.sessionId);
     } catch (e) {
       window.alert(`Edit failed: ${e.message}`);

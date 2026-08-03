@@ -7,9 +7,25 @@ import type {
   PermissionGroupMap, SideEffects,
 } from './types.js';
 
-const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
+export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
 const SIDE_EFFECTS: readonly SideEffects[] = ['none','gated-write','worktree-edit','external-write'];
 const RUNNERS: readonly ActionRunner[] = ['claude','builtin'];
+
+// Resolve a dotted action name (`<category>.<rest>`) to its on-disk directory
+// `<actionsDir>/<category>/<rest>`. Throws on an unknown category or a `rest`
+// that isn't a plain kebab slug — the latter doubles as a path-traversal guard
+// so a malformed name can't escape actionsDir.
+export function actionDirFor(actionsDir: string, name: string): { dir: string; category: string; rest: string } {
+  const dot = name.indexOf('.');
+  if (dot <= 0) throw new Error(`action name must be "<category>.<rest>": ${JSON.stringify(name)}`);
+  const category = name.slice(0, dot);
+  const rest = name.slice(dot + 1);
+  if (!ACTION_CATEGORIES.includes(category as ActionCategory))
+    throw new Error(`action category must be one of ${ACTION_CATEGORIES.join('|')}: ${JSON.stringify(category)}`);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(rest))
+    throw new Error(`action name segment must match ^[a-z0-9][a-z0-9-]*$: ${JSON.stringify(rest)}`);
+  return { dir: join(actionsDir, category, rest), category, rest };
+}
 
 export interface RegistryLoadError {
   path: string;

@@ -55,16 +55,15 @@ export function renderList(mount) {
   foot.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-new]');
     if (!btn) return;
-    const isAction = btn.dataset.new === 'action';
-    const feedback = window.prompt(isAction
-      ? 'What should the new action do? (meta.build-action drafts a proposal you review here)'
-      : 'What should the new skill do? (skill-creator builds it in a session)');
+    // New action opens the main-view compose activity (skills-detail renders it
+    // for the `new:` sentinel) and stays on the Skills surface. New skill remains
+    // a session flow — skill-creator is genuinely interactive.
+    if (btn.dataset.new === 'action') { nav.select('skills', 'new:'); return; }
+    const feedback = window.prompt('What should the new skill do? (skill-creator builds it in a session)');
     if (feedback == null) return;
     btn.disabled = true;
     try {
-      const res = isAction
-        ? await actionsApi.createNew(feedback)
-        : await actionsApi.createNewSkill(feedback);
+      const res = await actionsApi.createNewSkill(feedback);
       if (res?.sessionId) nav.select('sessions', res.sessionId);
     } catch (err) {
       window.alert(`Failed to start the builder session: ${err.message}`);
@@ -112,8 +111,10 @@ export function renderList(mount) {
     body.innerHTML = pending.map(pendingRowHtml).join('') + items.map(rowHtml).join('');
     for (const el of body.querySelectorAll('.lib-skill-row')) {
       el.addEventListener('click', () => {
-        if (el.dataset.name) nav.select('skills', el.dataset.name);
-        else if (el.dataset.sessionId) nav.select('sessions', el.dataset.sessionId);
+        // data-sel carries the `new:<sessionId>` WIP sentinel; data-name is an
+        // installed action. Both resolve on the Skills surface — no jump to sessions.
+        if (el.dataset.sel) nav.select('skills', el.dataset.sel);
+        else if (el.dataset.name) nav.select('skills', el.dataset.name);
       });
     }
     refreshSelected();
@@ -150,15 +151,12 @@ function rowHtml(item) {
 }
 
 function pendingRowHtml(edit) {
-  const name = edit.actionName ?? '(new action — naming…)';
-  // Named pending edits open the skill detail (which renders the proposal
-  // card); unnamed ones jump to the builder session, the only place they
-  // exist yet.
-  const target = edit.actionName
-    ? `data-name="${escapeHtml(edit.actionName)}"`
-    : `data-session-id="${escapeHtml(edit.sessionId)}"`;
+  const name = edit.actionName ?? 'draft';
+  // Both named and unnamed new-action edits resolve to the WIP view on the Skills
+  // surface via the `new:<sessionId>` sentinel (see skills-detail.js) — the inline
+  // feed + proposal card live there, so there's no reason to jump into the session.
   return `
-    <div class="o-row lib-skill-row lib-skill-row-pending" ${target} role="button" tabindex="0">
+    <div class="o-row lib-skill-row lib-skill-row-pending" data-sel="new:${escapeHtml(edit.sessionId)}" role="button" tabindex="0">
       <span class="o-row-icon lib-cat-dot lib-cat-meta" aria-hidden="true">◌</span>
       <div class="o-row-title lib-skill-hdr">
         <span class="lib-skill-name">${escapeHtml(name)}</span>

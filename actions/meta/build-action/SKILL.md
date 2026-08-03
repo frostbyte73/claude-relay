@@ -43,6 +43,7 @@ Envelope shape:
 | `mode` | `"new"` (scaffold a new action) or `"edit"` (revise an existing one). |
 | `actionName` | The existing action's name (edit mode). `null` for new mode. |
 | `proposedName` | New mode only — the user's chosen name (kebab-case). Honor it unless it's invalid (then pick a corrected name and explain why). |
+| `proposedCategory` | New mode only — the user's chosen category (`read`/`write`/`code`/`meta`), if they picked one. Honor it; otherwise choose the closest fit yourself. |
 | `actionDir` | Absolute path to the action's directory (edit mode). |
 | `actionsDir` | Absolute path to the parent actions directory (new mode). |
 | `skillMdBefore` | Current `SKILL.md` text (edit mode). Empty for new mode. |
@@ -89,11 +90,18 @@ name: <category>.<rest>      # must match the directory derivation actions/<cate
 description: <one paragraph> # what the orchestrator reads — describe trigger conditions
 outpost:
   kind: action
-  category: <one of: read, write, code, analyze, human, script, meta>
+  category: <one of: read, write, code, meta>
   side_effects: <one of: none, gated-write, worktree-edit, external-write>
   runner: <claude or builtin>
 ---
 ```
+
+`category` MUST be exactly one of `read | write | code | meta` — these are the
+only categories the registry accepts, and they double as the on-disk directory
+(`actions/<category>/<rest>/`). Never invent a new category (e.g. `script`,
+`analyze`, `human`); the daemon rejects any action whose name isn't
+`<read|write|code|meta>.<kebab-slug>`. Pick the closest fit: a script/tool
+runner is `code`, an investigation is `read`, an external mutation is `write`.
 
 The `description` is the orchestrator's only signal for picking this action. Lead
 with the trigger ("Use when…"), then say what the action produces.
@@ -104,7 +112,9 @@ feedback. Preserve everything the user didn't ask to change.
 For **new** mode, scaffold a complete `SKILL.md` from scratch. If the envelope
 includes `proposedName`, use it verbatim (it's what the user typed in the PWA's
 new-action form). Otherwise pick a kebab-case name that matches the user's
-intent. Mirror the structure of a reference action.
+intent. If the envelope includes `proposedCategory`, use it as the category;
+otherwise choose the closest fit from `read | write | code | meta`. The final
+`name:` is always `<category>.<rest>`. Mirror the structure of a reference action.
 
 ## Step 4 — Draft allowlist additions
 

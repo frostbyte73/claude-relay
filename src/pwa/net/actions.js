@@ -13,7 +13,7 @@ async function request(path, init = {}) {
 
 export const actionsApi = {
   list()                  { return request('/api/actions'); },
-  createNew(feedback = '', name = '') { return request('/api/actions/new', { method: 'POST', body: JSON.stringify({ feedback, name }) }); },
+  createNew(feedback = '', name = '', category = '') { return request('/api/actions/new', { method: 'POST', body: JSON.stringify({ feedback, name, category }) }); },
   createNewSkill(feedback = '') { return request('/api/skills/new', { method: 'POST', body: JSON.stringify({ feedback }) }); },
   edit(name, feedback = '')     { return request(`/api/actions/${encodeURIComponent(name)}/edit`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
   editSkill(name, feedback = '') { return request(`/api/skills/${encodeURIComponent(name)}/edit`, { method: 'POST', body: JSON.stringify({ feedback }) }); },

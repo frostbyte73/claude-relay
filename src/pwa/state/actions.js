@@ -68,6 +68,12 @@ export function editFor(state, actionName) {
   return (state.edits ?? []).find((e) => e.actionName === actionName);
 }
 
+// Lookup an in-flight action-edit by its builder session id — the resolver for
+// the `new:<sessionId>` skills-surface selection used by the new-action WIP view.
+export function findEditBySession(state, sessionId) {
+  return (state.edits ?? []).find((e) => e.sessionId === sessionId) ?? null;
+}
+
 // Lookup an action by name in the catalog. Returns null if not loaded yet or not found.
 export function actionByName(state, name) {
   return (state.catalog ?? []).find((a) => a.name === name) ?? null;

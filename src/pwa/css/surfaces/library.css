@@ -199,6 +199,37 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
 .lib-edit-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .lib-edit-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
 
+/* ── New-action compose form ─────────────────────────────────────────── */
+.lib-compose-form { display: flex; flex-direction: column; gap: 14px; }
+.lib-compose-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lib-compose-label { font-size: 12px; font-weight: 600; color: var(--text-mute); }
+.lib-compose-hint { font-weight: 400; color: var(--text-dim); }
+.lib-compose-row { display: flex; gap: 14px; }
+.lib-compose-row .lib-compose-field { flex: 1; }
+@media (max-width: 560px) { .lib-compose-row { flex-direction: column; } }
+.lib-compose-desc,
+.lib-compose-name,
+.lib-compose-category {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 8px 10px;
+}
+.lib-compose-desc { resize: vertical; }
+.lib-compose-name { font-family: var(--font-mono); }
+.lib-compose-desc:focus,
+.lib-compose-name:focus,
+.lib-compose-category:focus { outline: none; border-color: var(--accent); }
+
+/* WIP view feed mount — the shared inline-session component (base.css) carries
+   its own chrome; this just spaces it from the proposal card below. */
+.lib-edit-feed-mount { margin-bottom: 16px; }
+
 /* ── Blocked-call (denial) suggestions ───────────────────────────────── */
 .lib-denials { padding: 14px 16px; margin-bottom: 16px; border-left: 3px solid var(--warn); }
 .lib-denials-note { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
