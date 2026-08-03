@@ -31,6 +31,13 @@ export function mountListDetailScreens(container, surfaceKey, entry, { wrapDetai
   let listUnmount = null;
   let detailUnmount = null;
   let lastSelection;
+  // List and detail share `container`'s single scroll box, so scrollTop is one
+  // value across both screens. Without this, scrolling the detail and tapping
+  // back leaves the list inheriting the detail's scroll offset. Stash the list
+  // position on drill-in, start the detail at the top, and restore the list on
+  // the way back.
+  let showingDetail = false;
+  let savedListScroll = 0;
 
   if (entry.renderList) {
     const ret = entry.renderList(listEl, {});
@@ -44,13 +51,19 @@ export function mountListDetailScreens(container, surfaceKey, entry, { wrapDetai
 
   function paint() {
     const sel = nav.get().selectionBySurface[surfaceKey] ?? null;
-    const showingDetail = sel != null;
-    listEl.classList.toggle('m-screen-hidden', showingDetail);
-    detailEl.classList.toggle('m-screen-hidden', !showingDetail);
+    const nextShowingDetail = sel != null;
+    listEl.classList.toggle('m-screen-hidden', nextShowingDetail);
+    detailEl.classList.toggle('m-screen-hidden', !nextShowingDetail);
+    if (nextShowingDetail !== showingDetail) {
+      if (nextShowingDetail) savedListScroll = container.scrollTop;
+      else container.scrollTop = savedListScroll;
+      showingDetail = nextShowingDetail;
+    }
     if (sel === lastSelection) return;
     lastSelection = sel;
     teardownDetail();
     if (!sel || !entry.renderDetail) return;
+    container.scrollTop = 0; // every newly-mounted detail starts at the top
     const wrapped = wrapDetail ? wrapDetail(detailEl, sel) : null;
     const mountTarget = wrapped ? wrapped.mount : detailEl;
     const wrapUnmount = wrapped?.unmount ?? null;
