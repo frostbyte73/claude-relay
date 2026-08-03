@@ -1,6 +1,6 @@
 ---
 name: write.linear-comment
-description: Post a comment to a Linear issue. External-write — playbooks should insert a human.gate before this step unless an upstream gate has already confirmed the body.
+description: Post a comment to a Linear issue. External-write — playbooks should insert a meta.wait before this step unless an upstream hold has already confirmed the body.
 outpost:
   kind: action
   category: write

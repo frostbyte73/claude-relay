@@ -14,9 +14,9 @@
   "read": {
     "alwaysAllow": ["Read", "Glob", "Grep", "LS", "NotebookRead"],
     "alwaysAllowBashPatterns": [
-      "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|env|which|type|echo|printf)(\\s|$)",
-      "^git (status|log|diff|show|blame|branch|remote -v|config --get|fetch)(\\s|$)",
-      "^rg(\\s|$)",
+      "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|env|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od|sed -n)(\\s|$)",
+      "^git (status|log|diff|show|blame|branch|remote -v|config --get|fetch|rev-parse|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list)(\\s|$)",
+      "^(rg|grep)(\\s|$)",
       "^find(\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [],
@@ -27,7 +27,7 @@
     "alwaysAllowBashPatterns": [
       "^curl -s ",
       "^curl -fsS http",
-      "^gh (pr view|pr list|run view|run list|api|repo view|issue view|issue list|search)(\\s|$)"
+      "^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|workflow view|workflow list|api|repo view|issue view|issue list|search|release view|release list|label list|cache list|browse)(\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [
       "^mcp__claude_ai_Linear__(get_|list_|search_)",
@@ -45,10 +45,17 @@
     "alwaysAllowBashPatterns": [
       "^mage(\\s|$)",
       "^npm (test|run|install|ci)(\\s|$)",
-      "^go (build|test|vet|run|mod)(\\s|$)",
+      "^(yarn|pnpm)(\\s|$)",
+      "^npx(\\s|$)",
+      "^(tsx|node|tsc|vitest|jest|playwright|eslint|prettier)(\\s|$)",
+      "^go (build|test|vet|run|mod|generate|fmt)(\\s|$)",
+      "^(golangci-lint|gofmt|goimports)(\\s|$)",
       "^pytest(\\s|$)",
-      "^cargo (build|test|check|clippy)(\\s|$)",
-      "^git (rebase|checkout --)(\\s|$)"
+      "^(ruff|black)(\\s|$)",
+      "^cargo (build|test|check|clippy|fmt)(\\s|$)",
+      "^make(\\s|$)",
+      "^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\\s|$)",
+      "^git (rebase|checkout|merge|stash|add|reset|restore|cherry-pick|revert|clean|switch|apply|mv|rm)(\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": [
@@ -60,7 +67,7 @@
   "push": {
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
-      "^gh (pr comment|pr merge|pr review|pr create|issue create|issue comment)(\\s|$)",
+      "^gh (pr comment|pr merge|pr review|pr create|pr edit|pr ready|pr close|issue create|issue comment|issue close|release create)(\\s|$)",
       "^git (push|commit|tag)(\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [

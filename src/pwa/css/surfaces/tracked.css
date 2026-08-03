@@ -219,6 +219,36 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   overflow-wrap: anywhere;
 }
 
+.tl-wait {
+  margin: 2px 0 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--warn-soft, var(--bg-elev-2));
+  border-left: 2px solid var(--warn);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+}
+.tl-wait-timer {
+  font-weight: 600;
+  color: var(--warn);
+}
+.tl-wait-reason {
+  margin-top: 4px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.tl-wait-preview {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text-dim);
+}
+
 .tl-dot {
   position: absolute;
   left: -11px;

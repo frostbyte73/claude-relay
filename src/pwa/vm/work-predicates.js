@@ -4,6 +4,9 @@
 
 export function stepNeedsYou(s) {
   return s.state === 'reply_pending_review' || s.state === 'spec_pending_review'
+    // An indefinite meta.wait hold only clears when the user resumes; a timed soak
+    // (resumeAt set) auto-resumes, so it's waiting on the clock, not on you.
+    || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null)
     || (s.type === 'open-pr' && s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success');
 }
 

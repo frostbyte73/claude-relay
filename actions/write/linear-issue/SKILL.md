@@ -1,6 +1,6 @@
 ---
 name: write.linear-issue
-description: File a new Linear issue against a named team. External-write — playbooks must pair with an upstream human.gate confirming team/title/body before invoking.
+description: File a new Linear issue against a named team. External-write — playbooks must pair with an upstream meta.wait confirming team/title/body before invoking.
 outpost:
   kind: action
   category: write

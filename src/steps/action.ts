@@ -21,6 +21,23 @@ export const actionHandler: StepHandler<ActionStep> = {
 
   decide(s, job, ctx) {
     if (s.cancelled || s.failure) return null;
+
+    // Builtin-runner actions are daemon-implemented — never spawn a Claude session.
+    // meta.wait is the only one today: a hold that parks the step until the user
+    // resumes or its soak timer (`resumeAt`) elapses.
+    const runner = ctx.actionRegistry?.getAction(s.action)?.frontmatter.outpost.runner;
+    if (runner === 'builtin') {
+      if (s.action !== 'meta.wait') return null;
+      if (s.state === 'running') {
+        const durationSec = typeof s.inputs?.duration_sec === 'number' ? s.inputs.duration_sec : undefined;
+        return { kind: 'enter-wait', jobId: job.id, stepId: s.id, durationSec };
+      }
+      if (s.state === 'waiting' && s.resumeAt != null && ctx.now() >= s.resumeAt) {
+        return { kind: 'resolve-wait', jobId: job.id, stepId: s.id, by: 'timer' };
+      }
+      return null;
+    }
+
     if (s.state !== 'running') return null;
     if (s.sessionId) return null;
     const envelope = actionHandler.buildEnvelope(s, job, ctx);

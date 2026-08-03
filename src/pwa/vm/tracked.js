@@ -82,6 +82,13 @@ export function focusAction(job) {
         cta: { label: 'Review replies', action: 'review-replies', stepId: step.id },
       };
     }
+    if (step.type === 'action' && step.state === 'waiting') {
+      return {
+        title: 'On hold',
+        description: step.inputs?.reason ? String(step.inputs.reason) : `${step.title} is holding until you resume.`,
+        cta: { label: 'Resume', action: 'resume-wait', stepId: step.id },
+      };
+    }
     return {
       title: 'Ready to merge',
       description: `${step.title} is approved and CI is green.`,

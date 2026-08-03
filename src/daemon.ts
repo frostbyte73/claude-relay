@@ -1611,6 +1611,7 @@ async function main() {
     prWatcher.start();
     engine.reconcileInterruptedEdits();
     engine.reconcileInterruptedSteps();
+    engine.reconcileWaits();
     void engine.tick();
     const n = jobQueue.list().length;
     console.log(`[work] orchestrator started (queue: ${n} ticket${n === 1 ? '' : 's'})`);

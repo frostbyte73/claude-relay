@@ -1,7 +1,7 @@
 // Outpost's two primitives, on-disk and in-memory. See CLAUDE.md for the
 // conceptual overview; this file is the canonical TS shape.
 
-export type ActionCategory = 'read' | 'write' | 'code' | 'human' | 'meta';
+export type ActionCategory = 'read' | 'write' | 'code' | 'meta';
 export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-write';
 export type ActionRunner = 'claude' | 'builtin';
 

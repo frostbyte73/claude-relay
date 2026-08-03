@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.wait input",
+  "type": "object",
+  "required": ["reason"],
+  "properties": {
+    "reason": {
+      "type": "string",
+      "description": "Why the job is paused and what the user should check before resuming. Shown in the PWA."
+    },
+    "duration_sec": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional soak period. If set, the wait auto-resumes after this many seconds; omit for an indefinite manual hold."
+    },
+    "preview": {
+      "description": "Optional context rendered above the reason (e.g. a health verdict, a diff link, the drafted body of a pending write). Free-form."
+    }
+  },
+  "additionalProperties": false
+}

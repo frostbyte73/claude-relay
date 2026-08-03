@@ -181,7 +181,11 @@ export interface ActionStep extends StepBase {
   inputs?: Record<string, unknown>;
   output?: string;
   forwardOutput?: boolean;
-  state: 'running' | 'resolved' | 'failed';
+  // 'waiting' is a builtin-runner-only state: a meta.wait hold. The engine parks the
+  // step here (no session spawned) until the user resumes or `resumeAt` elapses.
+  state: 'running' | 'waiting' | 'resolved' | 'failed';
+  // Epoch ms when a timed meta.wait auto-resumes. Unset for an indefinite manual hold.
+  resumeAt?: number;
 }
 
 export type Step = OpenPrStep | ActionStep;

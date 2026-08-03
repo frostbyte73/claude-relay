@@ -7,7 +7,7 @@ import type {
   PermissionGroupMap, SideEffects,
 } from './types.js';
 
-const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','human','meta'];
+const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
 const SIDE_EFFECTS: readonly SideEffects[] = ['none','gated-write','worktree-edit','external-write'];
 const RUNNERS: readonly ActionRunner[] = ['claude','builtin'];
 

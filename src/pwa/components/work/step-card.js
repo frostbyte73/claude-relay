@@ -34,6 +34,8 @@ function stateTone(s) {
   if (!s.sessionId && s.state === initial) return 'mute';
   // done.
   if (s.state === 'resolved' || s.state === 'merged') return 'ok';
+  // meta.wait hold — a soft gate the user (or a soak timer) releases.
+  if (s.type === 'action' && s.state === 'waiting') return 'gate';
   if (s.type === 'open-pr') {
     // Gates: spec review, pending review, ready-to-merge.
     if (s.state === 'spec_pending_review') return 'gate';
@@ -104,6 +106,10 @@ function actionFor(s) {
     }
     return '';
   }
+  // meta.wait hold: let the user release it early (timed) or at all (indefinite).
+  if (s.type === 'action' && s.state === 'waiting') {
+    return `<button class="o-btn o-btn--primary" data-step-action="resume">Resume now</button>`;
+  }
   // Resolve is a manual fallback for action steps whose session subprocess
   // exited without POSTing output. It must never appear while the session is
   // still running (it's mid-investigation) nor before its slice has loaded —
@@ -159,6 +165,40 @@ function durationLabel(s) {
   return ` · ${Math.round(mins / 60)}h`;
 }
 
+function humanizeMs(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+// The hold block for a parked meta.wait step: the soak/manual timer, the reason it's
+// paused, and any preview the planner attached (verdict, diff link, drafted body).
+// The countdown is a per-render snapshot — it refreshes whenever the timeline repaints.
+function waitBlockHtml(s) {
+  if (s.type !== 'action' || s.state !== 'waiting') return '';
+  let timer;
+  if (typeof s.resumeAt === 'number') {
+    const ms = s.resumeAt - Date.now();
+    timer = ms > 0 ? `Auto-resumes in ~${humanizeMs(ms)}` : 'Auto-resuming…';
+  } else {
+    timer = 'Waiting for you to resume';
+  }
+  const reason = s.inputs?.reason ? escapeHtml(String(s.inputs.reason)) : '';
+  const preview = s.inputs?.preview != null
+    ? `<pre class="tl-wait-preview">${escapeHtml(typeof s.inputs.preview === 'string' ? s.inputs.preview : JSON.stringify(s.inputs.preview, null, 2))}</pre>`
+    : '';
+  return `
+    <div class="tl-wait">
+      <div class="tl-wait-timer">⏸ ${escapeHtml(timer)}</div>
+      ${reason ? `<div class="tl-wait-reason">${reason}</div>` : ''}
+      ${preview}
+    </div>`;
+}
+
 // Structured outbound links per step: whatever real data supports (no
 // fabricated "N log excerpts" counts — the mockup invents structure our data
 // model doesn't have; only render refs we can actually resolve).
@@ -207,6 +247,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         </div>
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
         ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
+        ${waitBlockHtml(s)}
         ${s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
         ${showPrBlock ? renderPrBlockHtml(job, s) : (metaFor(s) ? `<div class="tl-meta">${metaFor(s)}</div>` : '')}
         ${refsHtml(refs)}
@@ -233,6 +274,7 @@ export function wireTimelineStep(el, job, s) {
       e.stopPropagation();
       const kind = btn.getAttribute('data-step-action');
       if (kind === 'resolve') void work.resolveStep(job.id, s.id);
+      else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
       else if (kind === 'retry') void work.retryStep(job.id, s.id);
       else if (kind === 'merge') void work.approve(job.id, { gate: 'merge', stepId: s.id });
       else if (kind === 'accept-spec') void work.approve(job.id, { gate: 'spec', stepId: s.id });

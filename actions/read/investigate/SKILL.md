@@ -15,7 +15,7 @@ outpost:
 
 A general-purpose investigation step. Given a subject (a Linear ticket, an alert URL, an error description, a service name, a code claim), reach for the read-shaped tools that fit and produce a structured finding. Read-only — never edits, never posts.
 
-**When to use this as a step.** The orchestrator now investigates up front itself, so `read.investigate` is *not* the orchestrator's default first pass. Emit it as a plan step only when the investigation must run **during execution** — e.g. a health-verdict check between deploy rings feeding a downstream `human.gate` — or when a tracked, re-runnable investigation is the deliverable itself.
+**When to use this as a step.** The orchestrator now investigates up front itself, so `read.investigate` is *not* the orchestrator's default first pass. Emit it as a plan step only when the investigation must run **during execution** — e.g. a health-verdict check between deploy rings feeding a downstream `meta.wait` — or when a tracked, re-runnable investigation is the deliverable itself.
 
 ## Step 1 — read inputs
 

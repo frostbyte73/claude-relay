@@ -6,7 +6,7 @@ Background daemon that exposes Claude Code over HTTPS+WS on a Tailscale tailnet,
 
 Two primitives. Everything else is implementation detail.
 
-- **action** — atomic unit of work. One `SKILL.md` + `input.schema.json` + `output.schema.json` + `allowlist.json`, colocated under `actions/<category>/<name>/`. Categories: `read`, `write`, `code`, `human`, `meta`.
+- **action** — atomic unit of work. One `SKILL.md` + `input.schema.json` + `output.schema.json` + `allowlist.json`, colocated under `actions/<category>/<name>/`. Categories: `read`, `write`, `code`, `meta`.
 - **job** — a running unit of work. Owns the editable plan + history. Lifecycle: `planning → plan_pending_review → executing → done`. Steps in `executing` jobs are mutable via the plan editor (insert, skip, reorder).
 
 A **planner** is just an action whose job is to emit the plan — typically `meta.plan-job`, but a trigger can route to any planner-category action. The full action catalog is passed into the planner's envelope so it has visibility into every other action it can compose into a plan; no separate "playbook" primitive is needed.
@@ -17,10 +17,10 @@ A **planner** is just an action whose job is to emit the plan — typically `met
 
 Each action declares its allowlist by inheriting named groups defined in `config/permission-groups.json`:
 
-- **`core`** — implicit for every `runner: claude` action. Envelope-I/O baseline: `cat $OUTPOST_ENVELOPE`, `jq`, `curl POST` to the loopback hook server, `ToolSearch`.
-- **`read`** — local file reads + git-read-only (Read/Glob/Grep/LS, `ls`/`cat`/`rg`/`find`, `git status|log|diff|show|blame|branch|fetch`).
-- **`pull`** — network reads (WebFetch/WebSearch, MCP `get_/list_/search_` patterns for Linear/Datadog/GitHub/Notion/Slack/incident-io/Grafana, `curl -s`, `gh pr view`/`gh issue view`/`gh api`).
-- **`edit`** — local writes + test runners (Edit/Write/MultiEdit path-scoped to `/tmp/`, mage/npm/go/pytest/cargo, `git rebase`/`checkout --`). Edits inside the session's own worktree auto-allow via session scope — see `allows()` in `src/permissions/allowlist.ts`.
+- **`core`** — implicit for every `runner: claude` action. Envelope-I/O baseline: `cat $OUTPOST_ENVELOPE`, `cat`, `jq`, the `mcp__outpost__*` submit tools (how a session reports results back to the daemon), and `ToolSearch`.
+- **`read`** — local file reads + git-read-only (Read/Glob/Grep/LS, `ls`/`rg`/`grep`/`find`, `git status|log|diff|show|blame|branch|fetch|rev-parse|ls-files|grep|…`).
+- **`pull`** — network reads (WebFetch/WebSearch, MCP `get_/list_/search_` patterns for Linear/Datadog/GitHub/Notion/Slack/incident-io/Grafana, `curl -s`, `gh pr view`/`gh pr checks`/`gh issue view`/`gh api`).
+- **`edit`** — local writes + test runners (Edit/Write/MultiEdit path-scoped to `/tmp/`, mage/npm/yarn/pnpm/go/pytest/cargo, file ops `mkdir`/`mv`/`cp`/`rm`, local git `git rebase`/`checkout`/`merge`/`stash`/…). Edits inside the session's own worktree auto-allow via session scope — see `allows()` in `src/permissions/allowlist.ts`.
 - **`push`** — external writes (`gh pr comment/merge/review/create`, `git push/commit/tag`, MCP write patterns for Linear/GitHub/Slack/Notion).
 
 An action's frontmatter declares which groups it inherits:

@@ -128,6 +128,10 @@ export class WorkEngine {
   // turn's Stop has landed), the trailing Stop belongs to that old round — not the new one.
   // consumeStaleTurnStop() lets the Stop handler drop it instead of failing the live step.
   private readonly owedStaleStops = new Map<string, number>();
+  // Live soak timers for parked meta.wait steps, keyed `${jobId}:${stepId}`. Set when a
+  // step enters a timed wait, cleared on resume/resolve/abandon, and rebuilt at boot by
+  // reconcileWaits (setTimeout does not survive a daemon restart).
+  private readonly waitTimers = new Map<string, NodeJS.Timeout>();
 
   actionForSession(sessionId: string): string | undefined {
     return this.actionBySession.get(sessionId);
@@ -215,6 +219,7 @@ export class WorkEngine {
       jobsDir: opts.jobsDir,
       newId: opts.newId ?? (() => randomUUID()),
       now: opts.now ?? (() => Date.now()),
+      actionRegistry: opts.actionRegistry,
     };
   }
 
@@ -407,6 +412,12 @@ export class WorkEngine {
       case 'spawn-orchestrator':
         await this.spawnOrchestratorSession(a.jobId, a.mode, a.envelopePath, 'meta.orchestrate');
         break;
+      case 'enter-wait':
+        this.enterWait(a.jobId, a.stepId, a.durationSec);
+        break;
+      case 'resolve-wait':
+        this.resolveWaitStep(a.jobId, a.stepId, 'timer');
+        break;
       case 'request-merge-approval':
         // The UI inspects step state to surface the approve-merge gate. No-op here.
         break;
@@ -505,6 +516,9 @@ export class WorkEngine {
       if (s.sessionId) sessionIds.add(s.sessionId);
     }
     await this.closeSessions(sessionIds);
+    // Drop any armed meta.wait soak timers so an abandoned/deleted job doesn't keep a
+    // stale wake pending (the resolve would no-op anyway, but don't leak the timer).
+    for (const s of j.steps) this.clearWaitTimer(j.id, s.id);
     // Worktrees are keyed by stepId (see worktreePathForSession comment). Reap every
     // step's — readonly/detached steps own worktrees too, and skipping them was the
     // original orphan source; archiveStepWorktree no-ops when a step has none.
@@ -728,6 +742,95 @@ export class WorkEngine {
       }));
     }
     void this.tickOne(jobId);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // meta.wait — daemon-side hold between steps.
+  // ─────────────────────────────────────────────────────────
+
+  // A meta.wait step just became active. Park it in `waiting` (no session spawned).
+  // With duration_sec, stamp `resumeAt` and arm a soak timer that ticks the job when it
+  // elapses; without one, hold indefinitely until the user resumes.
+  private enterWait(jobId: string, stepId: string, durationSec?: number): void {
+    const now = this.ctx.now();
+    const resumeAt = durationSec != null && durationSec > 0 ? now + durationSec * 1000 : undefined;
+    let entered = false;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'action' || s.state !== 'running') return s;
+      entered = true;
+      return { ...s, state: 'waiting', resumeAt, updatedAt: now };
+    });
+    if (!entered) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'orchestrator', stepId,
+      body: resumeAt != null
+        ? `${this.stepLabel(jobId, stepId)} — waiting ${formatWait(durationSec!)} before continuing`
+        : `${this.stepLabel(jobId, stepId)} — waiting for you to resume`,
+    }));
+    if (resumeAt != null) this.scheduleWaitWake(jobId, stepId, resumeAt - now);
+  }
+
+  private scheduleWaitWake(jobId: string, stepId: string, delayMs: number): void {
+    const key = `${jobId}:${stepId}`;
+    const existing = this.waitTimers.get(key);
+    if (existing) clearTimeout(existing);
+    // setTimeout caps at ~24.8 days; longer soaks fire early, land back in `waiting`
+    // (decide() sees now < resumeAt), and reconcileWaits/next tick re-arms the remainder.
+    const clamped = Math.min(Math.max(0, delayMs), 2_147_483_647);
+    const t = setTimeout(() => { this.waitTimers.delete(key); void this.tick(jobId); }, clamped);
+    if (typeof t.unref === 'function') t.unref();
+    this.waitTimers.set(key, t);
+  }
+
+  private clearWaitTimer(jobId: string, stepId: string): void {
+    const key = `${jobId}:${stepId}`;
+    const t = this.waitTimers.get(key);
+    if (t) { clearTimeout(t); this.waitTimers.delete(key); }
+  }
+
+  // Resolve a parked meta.wait — the soak timer elapsed (`by: 'timer'`) or the user
+  // resumed (`by: 'user'`). Stores the schema-shaped output and ticks so the next step
+  // dispatches. No-op unless the step is still `waiting` (guards double-fire).
+  private resolveWaitStep(jobId: string, stepId: string, by: 'timer' | 'user', note?: string): void {
+    this.clearWaitTimer(jobId, stepId);
+    let resolved = false;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'action' || s.state !== 'waiting') return s;
+      resolved = true;
+      const output = JSON.stringify({ resumed_by: by, ...(note ? { note } : {}) });
+      // reviewed:true so owesStepReview skips it — a hold has no output worth an
+      // orchestrator reflection, and we don't want a Claude session spawned between
+      // the wait and the step it's gating. The gated step's own settle still reviews.
+      return { ...s, state: 'resolved', resumeAt: undefined, output, reviewed: true, updatedAt: this.ctx.now() };
+    });
+    if (!resolved) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_resolved', who: by === 'user' ? 'user' : 'orchestrator', stepId,
+      body: `${this.stepLabel(jobId, stepId)} — resumed by ${by}`,
+    }));
+    void this.tickOne(jobId);
+  }
+
+  // PWA "Resume" action on a parked meta.wait step.
+  resumeWait(jobId: string, stepId: string, note?: string): void {
+    this.resolveWaitStep(jobId, stepId, 'user', note?.trim() || undefined);
+  }
+
+  // Called once at daemon startup: soak timers don't survive a restart. Re-arm every
+  // parked meta.wait — resolve immediately if its deadline already passed, otherwise
+  // schedule a fresh wake for the remaining time. Indefinite holds (no resumeAt) just
+  // stay parked until the user resumes.
+  reconcileWaits(): void {
+    const now = this.ctx.now();
+    for (const j of this.opts.queue.list()) {
+      if (j.state !== 'executing' && j.state !== 'failed') continue;
+      for (const s of j.steps) {
+        if (s.type !== 'action' || s.cancelled || s.failure || s.state !== 'waiting') continue;
+        if (s.resumeAt == null) continue;
+        if (now >= s.resumeAt) this.resolveWaitStep(j.id, s.id, 'timer');
+        else this.scheduleWaitWake(j.id, s.id, s.resumeAt - now);
+      }
+    }
   }
 
   // code.spec finished a spec round. Store the spec and pause on the user gate —
@@ -1937,6 +2040,15 @@ export class WorkEngine {
       }
     }
   }
+}
+
+// Human-friendly soak duration for the wait event body ("1h", "90m", "45s").
+function formatWait(sec: number): string {
+  if (sec >= 3600 && sec % 3600 === 0) return `${sec / 3600}h`;
+  if (sec >= 3600) return `${Math.round((sec / 3600) * 10) / 10}h`;
+  if (sec >= 60 && sec % 60 === 0) return `${sec / 60}m`;
+  if (sec >= 60) return `${Math.round((sec / 60) * 10) / 10}m`;
+  return `${sec}s`;
 }
 
 function stepToProposed(s: Step): ProposedStep {

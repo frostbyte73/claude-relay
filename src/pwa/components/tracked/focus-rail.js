@@ -75,6 +75,10 @@ function runFocusCta(job, cta) {
     void work.retryStep(job.id, cta.stepId);
     return;
   }
+  if (cta.action === 'resume-wait' && cta.stepId) {
+    void work.approve(job.id, { gate: 'wait', stepId: cta.stepId });
+    return;
+  }
   // review-replies / review-diff / watch: land on the relevant timeline step.
   const stepEl = cta.stepId ? document.querySelector(`.tk-shell .tl-step[data-step-id="${CSS.escape(cta.stepId)}"]`) : null;
   if (stepEl) { stepEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }

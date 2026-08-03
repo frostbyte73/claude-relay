@@ -84,12 +84,16 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
     const body = await readBody(req);
-    let payload: { gate?: string; stepId?: string };
+    let payload: { gate?: string; stepId?: string; note?: string };
     try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
     try {
       switch (payload.gate) {
         case 'plan':
           engine.onPlanApproved(id);
+          break;
+        case 'wait':
+          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
+          engine.resumeWait(id, payload.stepId, payload.note);
           break;
         case 'replies':
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
@@ -107,7 +111,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           await engine.resolveConflicts(id, payload.stepId);
           break;
-        default: res.statusCode = 400; res.end('gate must be plan|replies|spec|merge|resolve-conflicts'); return;
+        default: res.statusCode = 400; res.end('gate must be plan|wait|replies|spec|merge|resolve-conflicts'); return;
       }
     } catch (e) {
       res.statusCode = 500; res.end(`error: ${(e as Error).message}`); return;

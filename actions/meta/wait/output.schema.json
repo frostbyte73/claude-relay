@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.wait output",
+  "type": "object",
+  "required": ["resumed_by"],
+  "properties": {
+    "resumed_by": {
+      "type": "string",
+      "enum": ["user", "timer"],
+      "description": "Whether the user resumed the job manually or the duration_sec timer elapsed."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional free-text note the user typed when resuming."
+    }
+  },
+  "additionalProperties": false
+}
