@@ -764,6 +764,50 @@ html[data-layout="mobile"] .tk-menu-item { padding: 11px 12px; }
   border-top: 0;
 }
 
+/* Spec / implementation-plan reference docs, folded above checks. */
+.pr-spec > .step-findings,
+.pr-implplan > .step-findings { margin-top: 4px; }
+
+/* ───── Merged PR — collapse the whole block to its two header rows ───────
+   A done PR reads as one quiet line (repo · title · Merged); the spec, plan,
+   checks and resolved comments fold behind a single disclosure, expandable to
+   revisit the trail. The outer .pr-block becomes a <details>, so its padding
+   moves onto the summary/body. */
+details.pr-block--merged { padding: 0; overflow: hidden; }
+.pr-block--merged > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--r-container);
+  transition: background var(--dur-1) var(--ease);
+}
+.pr-block--merged > summary::-webkit-details-marker { display: none; }
+.pr-block--merged > summary:hover { background: var(--bg-elev-2); }
+.pr-block--merged[open] > summary {
+  border-radius: var(--r-container) var(--r-container) 0 0;
+}
+.pr-summary-rows { flex: 1; min-width: 0; }
+/* Rows are tight inside the summary — drop the trailing stats margin. */
+.pr-summary-rows .pr-stats { margin-bottom: 0; }
+.pr-block-caret {
+  flex: none;
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.pr-block--merged > summary:hover .pr-block-caret { color: var(--text-mute); }
+.pr-block--merged[open] .pr-block-caret { transform: rotate(90deg); }
+.pr-block-body {
+  padding: 4px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+
 .thread :where(header), .thread-draft :where(header) {
   padding: 0; border: none; background: transparent;
 }

@@ -7,6 +7,7 @@ import { groupThreads, renderThreadCard, wireThreadCard } from './thread-card.js
 import { openDiffForStep } from '../../app-bridge.js';
 import { discardAll } from '../../state/git.js';
 import { work } from '../../state/work.js';
+import { renderMarkdown } from '../../markdown.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
@@ -88,14 +89,31 @@ function checkCountPhrase(checks) {
   return CHECK_COUNT_WORDS.filter(([st]) => by[st]).map(([st, word]) => `${by[st]} ${word}`).join(', ');
 }
 
-// A chevron-labelled disclosure summary shared by the checks and resolved-comments
-// lines: "▸ CHECKS · 4 passing, 1 failed". The chevron is a summary ::before.
+// A chevron-labelled disclosure summary shared by the checks, resolved-comments
+// and spec/plan lines: "▸ CHECKS · 4 passing, 1 failed". The count is optional —
+// spec/plan carry no breakdown, just the label. The chevron is a summary ::before.
 function disclosureSummary(label, count) {
   return `<summary>`
     + `<span class="o-microhead">${label}</span>`
-    + `<span class="pr-disclosure-sep" aria-hidden="true">·</span>`
-    + `<span class="pr-disclosure-count">${escapeHtml(count)}</span>`
+    + (count
+      ? `<span class="pr-disclosure-sep" aria-hidden="true">·</span>`
+        + `<span class="pr-disclosure-count">${escapeHtml(count)}</span>`
+      : '')
     + `</summary>`;
+}
+
+// Spec and implementation plan are the paper trail the PR grew out of — they
+// predate the checks/comments, so they fold in above them as collapsed
+// reference. Distinct classes (pr-spec / pr-implplan) so detail.js's per-details
+// open-state persistence keys them apart. Never auto-opened here: by the time a
+// branch/PR exists the spec gate has passed, so these are history, not a review.
+function docDisclosureHtml(label, cls, md) {
+  if (!md) return '';
+  return `
+    <details class="pr-disclosure ${cls}">
+      ${disclosureSummary(label)}
+      <div class="step-findings md-body">${md}</div>
+    </details>`;
 }
 
 // Per-workflow CI list, one collapsible section. Expanded while the PR is live
@@ -147,47 +165,79 @@ export function renderPrBlockHtml(job, s) {
   const prClosed = isMerged || s.prState === 'closed';
   const reviewReady = !isMerged && !!s.sessionId;
 
-  const badges = [mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
+  const spec = s.spec ? renderMarkdown(s.spec) : '';
+  const implPlan = s.implPlan ? renderMarkdown(s.implPlan) : '';
+  // Once merged, "Merged" (in the stats row) says it all — the CI/approval pills
+  // are implied and just add noise to the collapsed line; the full check
+  // breakdown still lives in the expandable Checks disclosure.
+  const badges = isMerged ? [] : [mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
+
+  // The two always-visible rows — repo/title/badges + branch/merged. When merged
+  // these become the collapsed summary; otherwise they head the open block.
+  const header = `
+    <div class="pr-hdr">
+      ${s.prUrl
+        ? `<a class="pr-num" href="${escapeHtml(s.prUrl)}" target="_blank" rel="noopener">${escapeHtml(prRepo)}${prNum ? ` #${escapeHtml(prNum)}` : ''} ↗</a>`
+        : `<span class="pr-num">${escapeHtml(repoName)}</span>`}
+      <span class="prb-title">${escapeHtml(s.title)}</span>
+      ${badges.length ? `<div class="pr-badges">${badges.join('')}</div>` : ''}
+    </div>
+    <div class="pr-stats">
+      ${s.workspace?.branch ? `<span class="prb-branch">${escapeHtml(s.workspace.branch)}</span>` : ''}
+      ${isMerged ? '<span class="pr-merged">Merged</span>' : ''}
+    </div>`;
+
+  // Everything under the header, in chronological order: CTAs and open threads
+  // (live/actionable, so kept up top) → spec → plan → checks → resolved comments.
+  const body = `
+    ${conflictCtaHtml(s)}
+    ${reviewReady ? `
+      <div class="pr-review-cta">
+        <span class="pr-review-cta-label">${s.state === 'implementing' ? 'Uncommitted changes on this branch' : 'Review the branch diff'}</span>
+        <div class="pr-review-cta-actions">
+          <button type="button" class="o-btn o-btn--default pr-discard-btn" data-pr-action="discard">Discard</button>
+          <button type="button" class="o-btn o-btn--primary" data-diff-action="review">Review changes →</button>
+        </div>
+      </div>
+    ` : ''}
+
+    ${openThreads.length === 0 ? '' : `
+      <div class="threads">
+        ${openThreads.map((chain) => renderThreadCard(chain, draftFor(chain), s)).join('')}
+      </div>
+    `}
+    ${docDisclosureHtml('Spec', 'pr-spec', spec)}
+    ${docDisclosureHtml('Implementation plan', 'pr-implplan', implPlan)}
+    ${renderChecksHtml(s, prClosed)}
+    ${resolvedThreads.length ? `
+      <details class="pr-disclosure pr-threads-resolved">
+        ${disclosureSummary('Comments', `${resolvedThreads.length} resolved`)}
+        <div class="threads">
+          ${resolvedThreads.map((chain) => renderThreadCard(chain, undefined, s)).join('')}
+        </div>
+      </details>
+    ` : ''}`;
+
+  // Once merged, the whole block folds to its two header rows — a done PR reads
+  // as one quiet line, expandable to revisit the trail. Collapsed by default:
+  // the outer <details> renders without `open`, and detail.js's open-state
+  // persistence has no prior entry on the first paint after the merge.
+  if (isMerged) {
+    return `
+      <details class="pr-block pr-block--merged" data-step-id="${escapeHtml(s.id)}">
+        <summary class="pr-block-summary">
+          <div class="pr-summary-rows">${header}</div>
+          <span class="pr-block-caret" aria-hidden="true">▸</span>
+        </summary>
+        <div class="pr-block-body">${body}</div>
+      </details>
+    `;
+  }
 
   return `
     <div class="pr-block" data-step-id="${escapeHtml(s.id)}">
-      <div class="pr-hdr">
-        ${s.prUrl
-          ? `<a class="pr-num" href="${escapeHtml(s.prUrl)}" target="_blank" rel="noopener">${escapeHtml(prRepo)}${prNum ? ` #${escapeHtml(prNum)}` : ''} ↗</a>`
-          : `<span class="pr-num">${escapeHtml(repoName)}</span>`}
-        <span class="prb-title">${escapeHtml(s.title)}</span>
-        ${badges.length ? `<div class="pr-badges">${badges.join('')}</div>` : ''}
-      </div>
-      <div class="pr-stats">
-        ${s.workspace?.branch ? `<span class="prb-branch">${escapeHtml(s.workspace.branch)}</span>` : ''}
-        ${isMerged ? '<span class="pr-merged">Merged</span>' : ''}
-      </div>
-
-      ${conflictCtaHtml(s)}
-      ${reviewReady ? `
-        <div class="pr-review-cta">
-          <span class="pr-review-cta-label">${s.state === 'implementing' ? 'Uncommitted changes on this branch' : 'Review the branch diff'}</span>
-          <div class="pr-review-cta-actions">
-            <button type="button" class="o-btn o-btn--default pr-discard-btn" data-pr-action="discard">Discard</button>
-            <button type="button" class="o-btn o-btn--primary" data-diff-action="review">Review changes →</button>
-          </div>
-        </div>
-      ` : ''}
-
-      ${openThreads.length === 0 ? '' : `
-        <div class="threads">
-          ${openThreads.map((chain) => renderThreadCard(chain, draftFor(chain), s)).join('')}
-        </div>
-      `}
-      ${renderChecksHtml(s, prClosed)}
-      ${resolvedThreads.length ? `
-        <details class="pr-disclosure pr-threads-resolved">
-          ${disclosureSummary('Comments', `${resolvedThreads.length} resolved`)}
-          <div class="threads">
-            ${resolvedThreads.map((chain) => renderThreadCard(chain, undefined, s)).join('')}
-          </div>
-        </details>
-      ` : ''}
+      ${header}
+      ${body}
     </div>
   `;
 }

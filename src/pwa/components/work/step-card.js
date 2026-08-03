@@ -252,8 +252,8 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${showPrBlock ? renderPrBlockHtml(job, s) : (metaFor(s) ? `<div class="tl-meta">${metaFor(s)}</div>` : '')}
         ${refsHtml(refs)}
         ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
-        ${spec ? `<details class="plan-findings tl-findings"${s.state === 'spec_pending_review' ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Spec</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${spec}</div></details>` : ''}
-        ${implPlan ? `<details class="plan-findings tl-findings"><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Implementation plan</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${implPlan}</div></details>` : ''}
+        ${spec && !showPrBlock ? `<details class="plan-findings tl-findings"${s.state === 'spec_pending_review' ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Spec</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${spec}</div></details>` : ''}
+        ${implPlan && !showPrBlock ? `<details class="plan-findings tl-findings"><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Implementation plan</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${implPlan}</div></details>` : ''}
         ${action ? `<div class="step-actions">${action}</div>` : ''}
       </div>
       ${opts.editTools ?? ''}
