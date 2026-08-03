@@ -27,6 +27,7 @@ import { usage } from '../../state/usage.js';
 import { actions } from '../../state/actions.js';
 import { keymap } from '../../state/keymap.js';
 import { settings } from '../../state/settings.js';
+import { sessions } from '../../state/sessions.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { sendUserMessage, sessionWsReadyState } from '../session-view/session-ws.js';
 import { openAddProjectSheet } from '../cwd-picker.js';
@@ -869,7 +870,14 @@ async function launchSession() {
     });
     nav.select('sessions', id);
     closePalette();
-    if (prompt) waitForWsAndSend(id, prompt);
+    if (prompt) {
+      // Mirror the composer's send(): a brand-new session skips openSession's
+      // disk fetch and the live WS user-frame handler ignores plain user text,
+      // so without this optimistic append the initial prompt is sent to Claude
+      // but never shows in the feed.
+      sessions.for(id).appendTranscript({ role: 'user', text: prompt, __pending: true });
+      waitForWsAndSend(id, prompt);
+    }
   } finally {
     submitting = false;
   }
