@@ -30,7 +30,7 @@ export function lookupContextWindow(modelId) {
 
 // `claude-opus-4-7[1m]` → "Opus 4.7 (1M)". statusLine's display_name doesn't
 // fire in --print mode, so we derive from the model id.
-function prettyModelName(id) {
+export function prettyModelName(id) {
   if (typeof id !== 'string' || !id) return null;
   const m = id.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(?:-\d+)?(\[1m\])?$/i);
   if (!m) return id;

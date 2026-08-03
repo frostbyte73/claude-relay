@@ -1185,6 +1185,7 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 
 .step-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .step-actions .o-btn { flex: 1; min-width: 0; justify-content: center; }
+.step-actions .thread-composer { flex-basis: 100%; margin-top: 0; }
 
 /* Reconciliation diff */
 .plan-card.is-reconciling { border-color: var(--accent); }
