@@ -378,6 +378,19 @@ export class PrWatcher {
       if (pending.length && s.state !== 'comment_pending_response' && s.state !== 'reply_pending_review') {
         patch.state = 'comment_pending_response';
         this.opts.engine.dropOrphanIterations(jobId, s.id, 'replies');
+      } else if (
+        !pending.length
+        && (s.state === 'comment_pending_response' || s.state === 'reply_pending_review')
+        && drafted.size === 0
+        && editBusy.size === 0
+        && !(s.iterations ?? []).some((it) => it.kind === 'replies' && it.status === 'in_progress' && !it.postedAt)
+      ) {
+        // Every comment answered, no drafts awaiting review, no edit/triage round in
+        // flight — the step is settled. Nothing else returns a step from the comment
+        // states to pr_open, so without this it stays reply_pending_review forever and
+        // reads as perpetually needing the user (stepNeedsYou treats that state as
+        // needs-you). Hand it back so the reviewState/ciState gates decide what's next.
+        patch.state = 'pr_open';
       }
     }
     // A conflicting PR can't merge and reads CI as pending, so it is
