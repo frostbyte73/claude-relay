@@ -324,7 +324,7 @@ function renderModeChip(dom, slice) {
 // wouldn't do anything.
 function renderModelChip(dom, sessionId) {
   if (!dom.modelChip) return;
-  const sl = usage.get().statuslineBySession.get(sessionId);
+  const sl = sessions.getSlice(sessionId)?.statusline ?? null;
   const label = sl?.model?.display_name || sl?.model?.id || null;
   if (!label) { dom.modelChip.hidden = true; return; }
   dom.modelChip.hidden = false;

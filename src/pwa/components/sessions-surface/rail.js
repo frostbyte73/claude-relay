@@ -8,7 +8,7 @@ import { subagents } from '../../state/subagents.js';
 import { usage } from '../../state/usage.js';
 import { nav } from '../../state/nav.js';
 import { escapeHtml } from '../../util.js';
-import { prettyModelName } from '../session-view/meter.js';
+import { contextUsage } from '../../utils/context-usage.js';
 import { sortedTodoEntries, todoProvenanceText } from '../todos-core.js';
 import { subagentCardHtml } from '../agents-sheet/cards.js';
 import { openAgentsForSession } from '../../app-bridge.js';
@@ -44,22 +44,17 @@ function shortCwd(cwd) {
 
 function infoCardHtml(sessionId, mcpServers) {
   const slice = sessions.getSlice(sessionId);
-  const sl = usage.get().statuslineBySession.get(sessionId);
+  const sl = slice?.statusline ?? null;
+  const cu = contextUsage(sl, slice?.lastUsage ?? null, {
+    fallbackTotal: usage.get().contextWindow || undefined,
+    retagTo1M: usage.get().projectContextWindow === 1_000_000,
+  });
   // Statusline is authoritative, but doesn't fire in --print mode / before the
-  // first hook. Fall back to the model seeded from message_start (same source
-  // the meter strip uses) so the row isn't stuck on "—".
-  let modelLabel = sl?.model?.display_name || sl?.model?.id || null;
-  if (!modelLabel) {
-    const raw = usage.get().lastUsageBySession.get(sessionId)?.model ?? null;
-    const retagged = (usage.get().projectContextWindow === 1_000_000
-      && typeof raw === 'string' && !raw.endsWith('[1m]'))
-      ? `${raw}[1m]`
-      : raw;
-    modelLabel = prettyModelName(retagged);
-  }
-  const cw = sl?.contextWindow;
-  const size = fmtSize(cw?.context_window_size);
-  const used = fmtSize((cw?.total_input_tokens ?? 0) + (cw?.total_output_tokens ?? 0));
+  // first hook. Fall back to the model/tokens seeded from message_start (same
+  // source the meter strip uses) so the row isn't stuck on "—".
+  let modelLabel = sl?.model?.display_name || sl?.model?.id || cu.modelDisplay || null;
+  const size = fmtSize(sl?.contextWindow?.context_window_size ?? (cu.known ? cu.total : null));
+  const used = fmtSize(cu.known ? cu.used : null);
   const tokensLabel = (size && used) ? `${used} / ${size}` : null;
   const cwd = slice?.cwd ?? slice?.spawnCwd ?? null;
   const mode = slice?.approvalMode ?? 'ask';

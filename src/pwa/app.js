@@ -97,7 +97,7 @@ import {
   submitRejectWithNote,
   cancelRejectWithNote,
 } from './components/approvals-mobile.js';
-import { lookupContextWindow } from './components/session-view/meter.js';
+import { lookupContextWindow } from './utils/context-usage.js';
 import { EDIT_TOOLS, isHighDetailTool } from './components/tool-use-tile.js';
 import { mountShell, unmountShell } from './components/shell/index.js';
 import { mountMobileShell, unmountMobileShell, repaintMobileShell } from './components/mobile-shell/index.js';
@@ -356,8 +356,6 @@ async function openSession(id, opts) {
   settings.setAcceptEdits(false);
   settings.setModePopoverOpen(false);
   approvals.set((s) => ({ ...s, pendingAsks: new Map() }));
-  usage.setLastUsage(usage.get().lastUsageBySession.get(id) ?? null);
-  usage.setStatusline(usage.get().statuslineBySession.get(id) ?? null);
   usage.setMeterBreakdownOpen(false);
   state.paletteOpen = false;
   state.paletteFilter = '';
@@ -648,15 +646,13 @@ function recordUsage(u, model, sid) {
     outputTokens: u.output_tokens ?? 0,
     cacheCreate: u.cache_creation_input_tokens ?? 0,
     cacheRead: u.cache_read_input_tokens ?? 0,
-    model: realModel ?? usage.get().lastUsage?.model ?? null,
+    model: realModel ?? (sid ? sessions.getSlice(sid)?.lastUsage?.model : null) ?? null,
   };
-  usage.setLastUsage(lu);
   // Attribute to the delivering socket's own session id — desktop's multi-live
   // sessions each have their own per-session WS, and `currentSessionId` is the
-  // mobile-only singleton pointer (null on desktop), so keying on it left
-  // lastUsageBySession empty and the rail's message_start model fallback dead.
-  const curId = sid ?? sessions.get().currentSessionId;
-  if (curId) usage.setLastUsageFor(curId, lu);
+  // mobile-only singleton pointer (null on desktop). Per-session lastUsage
+  // lives on the slice, keyed on sid.
+  if (sid) sessions.for(sid).setLastUsage(lu);
   if (realModel) {
     // Project override wins — API responses strip the [1m] suffix so we can't tell a 1M
     // Opus from a 200k one without ~/.claude.json's projectContextWindow.

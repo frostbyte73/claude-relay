@@ -3,10 +3,6 @@ import { createStore } from './create-store.js';
 const store = createStore({
   daemonInfo: null,
   slashCommands: [],
-  statusline: null,
-  statuslineBySession: new Map(),
-  lastUsage: null,
-  lastUsageBySession: new Map(),
   accountUsage: null,
   contextWindow: 200_000,
   projectContextWindow: null,
@@ -23,26 +19,6 @@ export const usage = {
   },
   setSlashCommands(cmds) {
     store.set((s) => ({ ...s, slashCommands: cmds }));
-  },
-  setStatusline(line) {
-    store.set((s) => ({ ...s, statusline: line }));
-  },
-  setStatuslineFor(sessionId, line) {
-    store.set((s) => {
-      const next = new Map(s.statuslineBySession);
-      next.set(sessionId, line);
-      return { ...s, statuslineBySession: next };
-    });
-  },
-  setLastUsage(u) {
-    store.set((s) => ({ ...s, lastUsage: u }));
-  },
-  setLastUsageFor(sessionId, u) {
-    store.set((s) => {
-      const next = new Map(s.lastUsageBySession);
-      next.set(sessionId, u);
-      return { ...s, lastUsageBySession: next };
-    });
   },
   setAccountUsage(u) {
     store.set((s) => ({ ...s, accountUsage: u }));

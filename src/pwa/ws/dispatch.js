@@ -348,14 +348,11 @@ const sessionHandlers = {
       effort: msg.effort ?? null,
       exceeds200k: !!msg.exceeds200k,
     };
-    usage.setStatusline(sl);
     // Attribute to the socket's own session id, not the mobile-singleton
     // `currentSessionId` pointer — desktop's multi-live sessions each have
     // their own per-session WS and need their own statusline entry (the
-    // Sessions right rail's info card reads statuslineBySession per session).
-    // setStatuslineFor's store mutation is what actually drives the meter —
-    // session-view/index.js's own usage.subscribe() repaints from it.
-    if (sid) usage.setStatuslineFor(sid, sl);
+    // Sessions right rail's info card reads the slice's statusline per session).
+    if (sid) sessions.for(sid).setStatusline(sl);
   },
 
   approval_mode(msg, sid, isCurrent) {

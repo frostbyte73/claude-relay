@@ -59,6 +59,8 @@ function emptySlice(id, meta = {}) {
     thinkingOutputTokens: 0,
     thinkingOutputChars: 0,
     pendingDefaultPush: false,
+    statusline:         null,
+    lastUsage:          null,
   };
 }
 
@@ -465,6 +467,14 @@ function makeSliceApi(id) {
         thinkingOutputChars: chars ?? sl.thinkingOutputChars,
       })));
     },
+    setStatusline(sl) {
+      store.set((s) =>
+        withSlice(s, id, (slice) => (slice.statusline === sl ? slice : { ...slice, statusline: sl })));
+    },
+    setLastUsage(u) {
+      store.set((s) =>
+        withSlice(s, id, (slice) => (slice.lastUsage === u ? slice : { ...slice, lastUsage: u })));
+    },
     mapTranscript(fn) {
       const sl = store.get().sessionsById.get(id);
       if (!sl) return;
@@ -559,5 +569,5 @@ const NULL_SLICE_API = {
   clearExpectInterrupt() {}, expectArchive() {}, clearExpectArchive() {},
   incrReplayGap() {}, setApprovalMode() {},
   startThinking() {}, stopThinking() {}, updateThinking() {},
-  setPendingDefaultPush() {}, mapTranscript() {},
+  setPendingDefaultPush() {}, setStatusline() {}, setLastUsage() {}, mapTranscript() {},
 };
