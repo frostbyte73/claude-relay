@@ -86,7 +86,20 @@ function withSlice(s, id, mut) {
 }
 
 function ensureSliceInState(s, id, meta = {}) {
-  if (s.sessionsById.has(id)) return s;
+  const existing = s.sessionsById.get(id);
+  if (existing) {
+    // Backfill identity metadata that resolved after the slice was first minted.
+    // An optimistic transcript append (⌘K launch with a prompt) or an inbound WS
+    // frame can create a cwd-less slice before the spawn hint / projects list is
+    // consulted; fill the holes so the rail's CWD row isn't stuck on "—". Only
+    // fill nulls — never clobber a cwd the slice already knows.
+    const cwd = existing.cwd ?? meta.cwd ?? null;
+    const spawnCwd = existing.spawnCwd ?? meta.spawnCwd ?? meta.cwd ?? null;
+    if (cwd === existing.cwd && spawnCwd === existing.spawnCwd) return s;
+    const map = new Map(s.sessionsById);
+    map.set(id, { ...existing, cwd, spawnCwd });
+    return { ...s, sessionsById: map };
+  }
   const map = new Map(s.sessionsById);
   map.set(id, emptySlice(id, meta));
   return { ...s, sessionsById: map };

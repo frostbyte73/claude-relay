@@ -139,7 +139,7 @@ const sessionHandlers = {
       }
     }
     if (!processed) return; // thinking-only delivery
-    deps.recordUsage(msg.message?.usage, msg.message?.model);
+    deps.recordUsage(msg.message?.usage, msg.message?.model, sid);
     // only terminal stop_reasons stop the thinking strip; tool_use means more turns coming
     const reason = msg.message?.stop_reason;
     if (reason && reason !== 'tool_use') {

@@ -201,8 +201,11 @@ function seedRunStates(projects) {
       const serverRunning = s.runState === 'foreground' || s.runState === 'background';
       const slice = sessions.getSlice(s.id);
       if (serverRunning) {
-        if (!slice) sessions.ensureSlice(s.id, { cwd: p.cwd, spawnCwd: s.worktreePath ?? p.cwd });
-        else if (slice.runState === 'inactive') sessions.setRunState(s.id, 'background');
+        // ensureSlice both creates-if-absent and backfills cwd/spawnCwd onto an
+        // existing cwd-less slice (e.g. a session minted by an inbound WS frame
+        // before /api/sessions resolved its project root).
+        sessions.ensureSlice(s.id, { cwd: p.cwd, spawnCwd: s.worktreePath ?? p.cwd });
+        if (slice?.runState === 'inactive') sessions.setRunState(s.id, 'background');
       } else if (s.runState === 'idle' && slice?.runState === 'background') {
         sessions.setRunState(s.id, 'inactive');
       }
@@ -636,7 +639,7 @@ function stopThinking(sid) {
   }
 }
 
-function recordUsage(u, model) {
+function recordUsage(u, model, sid) {
   if (!u) return;
   // Synthetic assistant messages (rate-limit notices) carry model "<synthetic>" — don't
   // let that overwrite the real model id.
@@ -649,7 +652,11 @@ function recordUsage(u, model) {
     model: realModel ?? usage.get().lastUsage?.model ?? null,
   };
   usage.setLastUsage(lu);
-  const curId = sessions.get().currentSessionId;
+  // Attribute to the delivering socket's own session id — desktop's multi-live
+  // sessions each have their own per-session WS, and `currentSessionId` is the
+  // mobile-only singleton pointer (null on desktop), so keying on it left
+  // lastUsageBySession empty and the rail's message_start model fallback dead.
+  const curId = sid ?? sessions.get().currentSessionId;
   if (curId) usage.setLastUsageFor(curId, lu);
   if (realModel) {
     // Project override wins — API responses strip the [1m] suffix so we can't tell a 1M
