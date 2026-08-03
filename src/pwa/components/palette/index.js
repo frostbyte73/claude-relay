@@ -27,7 +27,6 @@ import { usage } from '../../state/usage.js';
 import { actions } from '../../state/actions.js';
 import { keymap } from '../../state/keymap.js';
 import { settings } from '../../state/settings.js';
-import { sessions } from '../../state/sessions.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { sendUserMessage, sessionWsReadyState } from '../session-view/session-ws.js';
 import { openAddProjectSheet } from '../cwd-picker.js';
