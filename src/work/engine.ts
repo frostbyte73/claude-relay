@@ -1125,11 +1125,27 @@ export class WorkEngine {
     const j = this.opts.queue.get(jobId);
     const s = j?.steps.find((x) => x.id === stepId);
     if (!s || s.type !== 'open-pr' || !s.prUrl || s.prState === 'merged') return;
+    // Merge only — NOT `--delete-branch`. gh's branch deletion also removes the
+    // *local* branch, which fails ("cannot delete branch … used by worktree")
+    // because this step's branch is still checked out in its worktree. That made
+    // gh exit non-zero even though the PR merged on GitHub, so this catch swallowed
+    // it and the step never advanced past the merge gate — the PWA showed no change
+    // until the pr-watcher reconciled the merge minutes later. Branch cleanup is
+    // best-effort and decoupled: the local branch is reaped by the worktree teardown
+    // (applyOpenPrPatch → archiveMergedStep → tearDown's `branch -D`), and the remote
+    // branch is deleted below without gating the state transition.
     try {
-      execFileSync('gh', ['pr', 'merge', s.prUrl, '--squash', '--delete-branch'], { cwd: s.workspace.repoCwd, stdio: 'pipe' });
-      this.applyOpenPrPatch(jobId, stepId, { state: 'merged', prState: 'merged' }, 'user');
+      execFileSync('gh', ['pr', 'merge', s.prUrl, '--squash'], { cwd: s.workspace.repoCwd, stdio: 'pipe' });
     } catch (e) {
       console.error(`[orchestrator] merge failed ${jobId}/${stepId}:`, (e as Error).message);
+      return;
+    }
+    this.applyOpenPrPatch(jobId, stepId, { state: 'merged', prState: 'merged' }, 'user');
+    try {
+      execFileSync('git', ['-C', s.workspace.repoCwd, 'push', 'origin', '--delete', '--', s.workspace.branch], { stdio: 'pipe' });
+    } catch (e) {
+      // Remote branch may already be gone (GitHub "auto-delete head branches") — best-effort.
+      console.error(`[orchestrator] remote branch delete failed ${jobId}/${stepId}:`, (e as Error).message);
     }
   }
 
