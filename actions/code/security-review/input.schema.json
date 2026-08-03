@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.security-review input",
+  "type": "object",
+  "required": ["workspace"],
+  "properties": {
+    "workspace": {
+      "type": "object",
+      "required": ["repoCwd", "branch"],
+      "properties": {
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "goal": { "type": "string" },
+        "approach": { "type": "string" },
+        "risks": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": false
+}
