@@ -48,7 +48,7 @@
       "^(yarn|pnpm)(\\s|$)",
       "^npx(\\s|$)",
       "^(tsx|node|tsc|vitest|jest|playwright|eslint|prettier)(\\s|$)",
-      "^go (build|test|vet|run|mod|generate|fmt)(\\s|$)",
+      "^go(\\s|$)",
       "^(golangci-lint|gofmt|goimports)(\\s|$)",
       "^pytest(\\s|$)",
       "^(ruff|black)(\\s|$)",
