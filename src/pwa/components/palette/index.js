@@ -21,12 +21,13 @@
 // comes up, without forking session-view's mount path.
 
 import { sessions } from '../../state/sessions.js';
-import { nav, setSessionHint } from '../../state/nav.js';
+import { nav } from '../../state/nav.js';
 import { work } from '../../state/work.js';
 import { usage } from '../../state/usage.js';
 import { actions } from '../../state/actions.js';
 import { keymap } from '../../state/keymap.js';
 import { settings } from '../../state/settings.js';
+import { startSession } from '../../session-launch.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { sendUserMessage, sessionWsReadyState } from '../session-view/session-ws.js';
 import { openAddProjectSheet } from '../cwd-picker.js';
@@ -843,7 +844,7 @@ function deriveTitle(prompt, cwd) {
 
 // ── Launch modes ──────────────────────────────────────────────────────
 
-// ⌘↵ — the real session-spawn path: setSessionHint + nav.select('sessions', id)
+// ⌘↵ — the real session-spawn path: startSession + nav.select('sessions', id)
 // is exactly what shell/list-sessions.js's "New session" row already does: the
 // sessions surface's renderDetail reads the hint on mount and calls
 // mountSessionView, which opens the WS with the spawn hints. No fork, no
@@ -855,22 +856,16 @@ async function launchSession() {
     const ta = modalEl?.querySelector('#p-prompt');
     const prompt = (ta?.value ?? promptText ?? '').trim();
     const cwd = selectedCwd.cwd;
-    const id = crypto.randomUUID();
-    const spawnMode = worktreeMode === 'worktree' ? 'worktree' : undefined;
-    const spawnBaseBranch = spawnMode ? (baseBranch || defaultBranch || 'main') : undefined;
-    // Carry the client's default approval mode so the daemon applies it at spawn.
-    // 'ask' is the daemon's own default, so only send a non-ask override.
-    const defaultMode = settings.get().defaultApprovalMode;
-    const approvalMode = defaultMode !== 'ask' ? defaultMode : undefined;
-    setSessionHint(id, {
-      id,
+    const spawnBaseBranch = worktreeMode === 'worktree' ? (baseBranch || defaultBranch || 'main') : undefined;
+    const defaultApprovalMode = settings.get().defaultApprovalMode;
+    const { id } = startSession({
       cwd,
       spawnCwd: cwd,
-      title: deriveTitle(prompt, cwd),
-      spawnMode,
+      spawnMode: worktreeMode === 'worktree' ? 'worktree' : undefined,
       baseBranch: spawnBaseBranch,
       model: MODEL_CHOICES[modelIndex].id ?? undefined,
-      approvalMode,
+      approvalMode: defaultApprovalMode !== 'ask' ? defaultApprovalMode : undefined,
+      title: deriveTitle(prompt, cwd),
     });
     nav.select('sessions', id);
     closePalette();

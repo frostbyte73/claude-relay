@@ -114,4 +114,42 @@ describe('sessions store', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
+
+  describe('upsertSlice reconciler', () => {
+    it('creates a slice from the partial when absent', () => {
+      sessions.upsertSlice('s1', { cwd: '/p', worktreeBranch: 'feat' });
+      const sl = sessions.getSlice('s1');
+      expect(sl?.cwd).toBe('/p');
+      expect(sl?.worktreeBranch).toBe('feat');
+    });
+
+    it('fills a null identity field on an existing slice', () => {
+      sessions.ensureSlice('s1');                 // minted cwd-less (e.g. by a WS frame)
+      expect(sessions.getSlice('s1')?.cwd).toBeNull();
+      sessions.upsertSlice('s1', { cwd: '/p', spawnCwd: '/wt' });
+      expect(sessions.getSlice('s1')?.cwd).toBe('/p');
+      expect(sessions.getSlice('s1')?.spawnCwd).toBe('/wt');
+    });
+
+    it('never overwrites a known identity field with null or a stale value', () => {
+      sessions.upsertSlice('s1', { cwd: '/real' });
+      sessions.upsertSlice('s1', { cwd: null });   // a later hint with no cwd
+      sessions.upsertSlice('s1', { cwd: '/stale' });
+      expect(sessions.getSlice('s1')?.cwd).toBe('/real');
+    });
+
+    it('returns the same state reference when nothing changes (no needless notify)', () => {
+      sessions.upsertSlice('s1', { cwd: '/p' });
+      const before = sessions.get().sessionsById;
+      sessions.upsertSlice('s1', { cwd: '/p' });
+      expect(sessions.get().sessionsById).toBe(before);
+    });
+
+    it('backfills cwd onto a slice minted cwd-less by an inbound frame', () => {
+      sessions.ensureSlice('daemon-sess');                       // WS frame minted it first
+      expect(sessions.getSlice('daemon-sess')?.cwd).toBeNull();
+      sessions.upsertSlice('daemon-sess', { cwd: '/repo', spawnCwd: '/repo' });   // seedRunStates
+      expect(sessions.getSlice('daemon-sess')?.cwd).toBe('/repo');
+    });
+  });
 });

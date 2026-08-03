@@ -18,11 +18,12 @@ import { approvals } from '../../state/approvals.js';
 import { subagents } from '../../state/subagents.js';
 import { keymap } from '../../state/keymap.js';
 import { formatCombo } from '../../utils/hotkey.js';
-import { nav, setSessionHint } from '../../state/nav.js';
+import { nav } from '../../state/nav.js';
 import { sessionGroups, deriveSkillLabel, deriveLastTurnPreview, fmtElapsedDuration } from '../../vm/sessions.js';
 import { escapeHtml } from '../../util.js';
 import { relPast } from '../../utils/formatting.js';
 import { openPalette } from '../palette/index.js';
+import { startSession } from '../../session-launch.js';
 
 const TABS = [
   { key: 'active', label: 'Active' },
@@ -182,7 +183,7 @@ export function renderList(mount) {
         const id = card.dataset.sessionId;
         const item = itemsById.get(id);
         if (!item) return;
-        setSessionHint(id, {
+        startSession({
           id,
           cwd: item.cwd,
           spawnCwd: item.worktreePath ?? item.cwd,

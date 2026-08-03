@@ -438,7 +438,7 @@ function agentEntryHtml(entry, isLast, ctx, sessionId) {
     toolName: entry.toolName,
     toolInput: entry.toolInput,
     toolUseId: entry.toolUseId || entry.approvalId,
-  }, { ctx });
+  }, { ctx, expandedTools: sessions.getSlice(sessionId)?.expandedTools });
   if (entry.decision === 'deny') {
     const tag = entry.timedOut ? 'Timed out' : 'Rejected';
     return `<div class="agent-entry-rejected">${tileHtml}<span class="agent-entry-reject-tag">${tag}</span></div>`;
@@ -540,7 +540,10 @@ function wireAgentsSheetHandlers(sheet) {
       const id = el.dataset.toolId;
       if (!id) return;
       const open = el.classList.toggle('tool_use-expanded');
-      sessions.forCurrent().markToolExpanded(id, open);
+      // The sheet is a singleton scoped to whichever session `setFocused`
+      // pointed at (desktop's Sessions rail opens it too) — not the
+      // mobile-only currentSessionId pointer forCurrent() resolves.
+      sessions.for(subagents.get().focusedSessionId).markToolExpanded(id, open);
     });
   }
 }

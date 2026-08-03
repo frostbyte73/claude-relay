@@ -20,6 +20,7 @@ import {
 import { dispatchSession, dispatchBroadcast, installDispatchDeps } from './ws/dispatch.js';
 import { isDesktop, onLayoutChange } from './layout/index.js';
 import { nav, setSessionHint, peekSessionHint } from './state/nav.js';
+import { startSession } from './session-launch.js';
 import { installAppBridge } from './app-bridge.js';
 import {
   sessions,
@@ -201,10 +202,7 @@ function seedRunStates(projects) {
       const serverRunning = s.runState === 'foreground' || s.runState === 'background';
       const slice = sessions.getSlice(s.id);
       if (serverRunning) {
-        // ensureSlice both creates-if-absent and backfills cwd/spawnCwd onto an
-        // existing cwd-less slice (e.g. a session minted by an inbound WS frame
-        // before /api/sessions resolved its project root).
-        sessions.ensureSlice(s.id, { cwd: p.cwd, spawnCwd: s.worktreePath ?? p.cwd });
+        sessions.upsertSlice(s.id, { cwd: p.cwd, spawnCwd: s.worktreePath ?? p.cwd });
         if (slice?.runState === 'inactive') sessions.setRunState(s.id, 'background');
       } else if (s.runState === 'idle' && slice?.runState === 'background') {
         sessions.setRunState(s.id, 'inactive');
@@ -337,6 +335,7 @@ async function openSession(id, opts) {
       }
     }
   }
+  startSession({ id, cwd, spawnCwd, fromTicketId: opts?.fromTicketId });
   // No approvalMode override: enterSession preserves the slice's existing mode
   // (a fresh slice defaults to 'ask'). Passing a literal 'ask' here reset the
   // mode every time the user tapped back into a session on mobile — the mobile
@@ -859,7 +858,7 @@ sessions.subscribe(() => {
 // backed by sessions.get().projects (a session just created, or one whose
 // project list hasn't loaded) travels via the nav session-hint side channel.
 async function openSessionInWorkspaceTab(id, fromTicketId) {
-  const { nav, setSessionHint } = await import('./state/nav.js');
+  const { nav } = await import('./state/nav.js');
   let cwd = null, spawnCwd = null, title = null, worktreePath = null, worktreeBranch = null;
   for (const p of sessions.get().projects) {
     const match = p.sessions?.find((s) => s.id === id);
@@ -872,7 +871,7 @@ async function openSessionInWorkspaceTab(id, fromTicketId) {
       break;
     }
   }
-  setSessionHint(id, { id, cwd, spawnCwd, title, worktreePath, worktreeBranch, fromTicketId });
+  startSession({ id, cwd, spawnCwd, title, worktreePath, worktreeBranch, fromTicketId });
   nav.select('sessions', id);
 }
 

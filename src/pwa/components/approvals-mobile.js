@@ -52,7 +52,9 @@ export function approvalCardHtml(a) {
   const detail = f.detail ? `<div class="tool-detail">${escapeHtml(f.detail)}</div>` : '';
   const expandable = a.toolInput !== undefined && a.toolInput !== null;
   const expandId = `approval-${a.approvalId}`;
-  const expanded = expandable && sessions.currentSlice().expandedTools.has(expandId);
+  // Read expand state from the approval's own session (agents-sheet is a
+  // desktop-reachable singleton too), not the mobile-only currentSlice().
+  const expanded = expandable && (slice?.expandedTools.has(expandId) ?? false);
   const cls = `msg tool_use approval-card${expandable ? ' tool_use-expandable' : ''}${expanded ? ' tool_use-expanded' : ''}`;
   const idAttr = expandable ? ` data-tool-id="${escapeHtml(expandId)}"` : '';
   const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';

@@ -2,6 +2,8 @@ import { createStore } from './create-store.js';
 import { stableStringify } from '../components/tool-use-tile.js';
 import { register, push } from './preferences.js';
 
+const IDENTITY_FIELDS = ['cwd', 'spawnCwd', 'fromTicketId', 'title', 'worktreePath', 'worktreeBranch'];
+
 function loadExpandedProjects() {
   try { return JSON.parse(localStorage.getItem('op:expandedProjects') ?? '{}'); }
   catch { return {}; }
@@ -35,6 +37,9 @@ function emptySlice(id, meta = {}) {
     cwd:                meta.cwd ?? null,
     spawnCwd:           meta.spawnCwd ?? meta.cwd ?? null,
     fromTicketId:       meta.fromTicketId ?? null,
+    title:              meta.title ?? null,
+    worktreePath:       meta.worktreePath ?? null,
+    worktreeBranch:     meta.worktreeBranch ?? null,
     approvalMode:       meta.approvalMode ?? 'ask',
     runState:           'background',
     mountedCount:       0,
@@ -85,24 +90,30 @@ function withSlice(s, id, mut) {
   return { ...s, sessionsById: map };
 }
 
-function ensureSliceInState(s, id, meta = {}) {
+function upsertSliceInState(s, id, partial = {}) {
   const existing = s.sessionsById.get(id);
-  if (existing) {
-    // Backfill identity metadata that resolved after the slice was first minted.
-    // An optimistic transcript append (⌘K launch with a prompt) or an inbound WS
-    // frame can create a cwd-less slice before the spawn hint / projects list is
-    // consulted; fill the holes so the rail's CWD row isn't stuck on "—". Only
-    // fill nulls — never clobber a cwd the slice already knows.
-    const cwd = existing.cwd ?? meta.cwd ?? null;
-    const spawnCwd = existing.spawnCwd ?? meta.spawnCwd ?? meta.cwd ?? null;
-    if (cwd === existing.cwd && spawnCwd === existing.spawnCwd) return s;
+  if (!existing) {
     const map = new Map(s.sessionsById);
-    map.set(id, { ...existing, cwd, spawnCwd });
+    map.set(id, emptySlice(id, partial));
     return { ...s, sessionsById: map };
   }
+  // Fill only null identity holes — a later hint or projects-list row must never
+  // clobber a value the slice already resolved (e.g. a WS frame or optimistic
+  // append mints a cwd-less slice before the spawn cwd is known).
+  let changed = false;
+  const patch = {};
+  for (const f of IDENTITY_FIELDS) {
+    const next = existing[f] ?? partial[f] ?? null;
+    if (next !== existing[f]) { patch[f] = next; changed = true; }
+  }
+  if (!changed) return s;
   const map = new Map(s.sessionsById);
-  map.set(id, emptySlice(id, meta));
+  map.set(id, { ...existing, ...patch });
   return { ...s, sessionsById: map };
+}
+
+function ensureSliceInState(s, id, meta = {}) {
+  return upsertSliceInState(s, id, meta);
 }
 
 function trimTranscript(list, cap) {
@@ -160,6 +171,11 @@ export const sessions = {
   ensureSlice(id, meta = {}) {
     if (!id) return;
     store.set((s) => ensureSliceInState(s, id, meta));
+  },
+
+  upsertSlice(id, partial = {}) {
+    if (!id) return;
+    store.set((s) => upsertSliceInState(s, id, partial));
   },
 
   // Subscribe to changes for a specific session. The callback receives the

@@ -8,7 +8,8 @@
 
 import { sessions } from './state/sessions.js';
 import { settings } from './state/settings.js';
-import { nav, setSessionHint } from './state/nav.js';
+import { nav } from './state/nav.js';
+import { startSession } from './session-launch.js';
 import {
   sendOnSessionWs,
   getSessionWs,
@@ -114,7 +115,7 @@ function wire() {
   // mobile, switches the single-view shell to view: 'session' via openSession.
   // On desktop, an explicit `cwd` means this is a brand-new session the daemon
   // doesn't know about yet — mirrors palette/index.js's launchSession()
-  // (setSessionHint + nav.select) rather than openSessionInWorkspaceTab, which
+  // (startSession + nav.select) rather than openSessionInWorkspaceTab, which
   // only resolves cwd/worktree info by looking the id up in sessions.projects
   // and silently no-ops it for a session that isn't there yet. Without `cwd`,
   // this opens an already-known session, so the workspace-tab lookup applies.
@@ -123,7 +124,7 @@ function wire() {
     if (!opts?.id) throw new Error('__outpostOpenSession requires an id');
     if (isDesktop()) {
       if (opts.cwd) {
-        setSessionHint(opts.id, {
+        startSession({
           id: opts.id,
           cwd: opts.cwd,
           spawnCwd: opts.cwd,
