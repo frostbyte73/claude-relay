@@ -147,7 +147,10 @@ function defaultCommit(ctx, status) {
     autoFilled: message.length > 0,
     variant: 0,
     push: true,
-    openPr: ctx?.mode !== 'pr-comment-edit',
+    // Once a PR is open on this branch, a round appends — "open PR" would re-squash to
+    // base and diverge from the pushed head. Default it off so the action is a plain
+    // commit-on-top + fast-forward push.
+    openPr: ctx?.mode !== 'pr-comment-edit' && !(ctx?.step?.prUrl || status?.prUrl),
     mergeMode: 'squash-to-branch',
     newBranch: base === currentBranch || !currentBranch ? suggested : currentBranch,
   };
@@ -1434,7 +1437,7 @@ async function runCommitAction() {
     await doFinalize(sessionId, { kind: 'merge-to-base', message, push: commit.push });
     return;
   }
-  if (commit.openPr) {
+  if (commit.openPr && !s.prUrl) {
     const newBranch = commit.newBranch.trim();
     if (!newBranch) { setSourceFeedback('err', 'Branch name required.'); return; }
     await doFinalize(sessionId, { kind: 'squash-to-branch', message, newBranch });

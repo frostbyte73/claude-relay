@@ -244,7 +244,8 @@ export async function gitPush(cwd: string): Promise<GitCommandResult> {
   // A bare `git push` gives an opaque wall of stderr on a non-fast-forward reject
   // (common after a merge/conflict round advanced the remote branch), and a plain
   // `git pull --ff-only` can't reconcile a diverged branch — so spell out the fix
-  // rather than leaving the user staring at "Updates were rejected".
+  // rather than leaving the user staring at "Updates were rejected". We never force
+  // here: this pushes open PR branches, and a force-push rewrites published history.
   if (!res.ok && /(non-fast-forward|fetch first|\[rejected\])/i.test(res.stderr)) {
     return {
       ...res,
@@ -452,6 +453,38 @@ export async function gitFinalizeSquashToBranch(opts: FinalizeSquashToBranchOpts
       exitCode: typeof e.code === 'number' ? e.code : 1,
     };
   }
+}
+
+// True iff origin already has this branch — i.e. a PR is (or was) open on it, so a
+// finalize is *appending*, not opening. Uses ls-remote so it reflects origin's real
+// state, not a possibly-stale remote-tracking ref.
+export async function gitRemoteBranchExists(cwd: string, branch: string): Promise<boolean> {
+  if (!BRANCH_NAME_RE.test(branch)) return false;
+  const res = await runGit(cwd, ['ls-remote', '--heads', '--exit-code', 'origin', `refs/heads/${branch}`]);
+  return res.ok;
+}
+
+// Follow-up round on an already-open PR: the round's commits are already stacked on the
+// pushed PR head, so fast-forward push them as-is. We must NOT `reset --soft <base>` and
+// re-squash (gitFinalizeSquashToBranch does that to *open* a PR — replaying it here
+// rewinds past the pushed head, manufacturing a non-fast-forward divergence) and must
+// NEVER force — that rewrites the open PR's published history. If the push isn't a
+// fast-forward, fail loudly and let the caller reconcile.
+export async function gitFinalizeAppendToBranch(opts: { worktreePath: string; branch: string }): Promise<GitCommandResult> {
+  if (!BRANCH_NAME_RE.test(opts.branch)) {
+    return { ok: false, stdout: '', stderr: 'invalid branch name', exitCode: 1 };
+  }
+  const current = readCurrentBranch(opts.worktreePath);
+  if (current !== opts.branch) {
+    return { ok: false, stdout: '', stderr: `worktree is on ${current ?? 'a detached HEAD'}, not ${opts.branch}`, exitCode: 1 };
+  }
+  // Intent is "wrap up commits I already made" — the round's edits are expected to be
+  // committed on top of the PR head before finalize (the git view commits them first).
+  const dirty = await runGit(opts.worktreePath, ['status', '--porcelain']);
+  if (dirty.ok && dirty.stdout.trim().length > 0) {
+    return { ok: false, stdout: '', stderr: `worktree has uncommitted changes — commit them before finalizing:\n${dirty.stdout}`, exitCode: 1 };
+  }
+  return gitPush(opts.worktreePath);
 }
 
 async function detectDefaultBranch(cwd: string): Promise<string | null> {

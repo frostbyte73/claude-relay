@@ -6,8 +6,9 @@ import type { PrWatcher } from '../integrations/pr-watcher.js';
 import {
   resolveSessionGitCwd, gitStatus, gitLog, gitCommit, gitPush, gitPull, gitStage,
   gitDiscard, gitCreateBranch, gitOpenPr, gitFinalizeSquashMerge, gitFinalizeSquashToBranch,
-  gitSquashMergeToBase,
+  gitFinalizeAppendToBranch, gitRemoteBranchExists, gitSquashMergeToBase,
 } from '../git/git-ops.js';
+import type { GitCommandResult } from '../git/git-ops.js';
 import { handleDiffRoute } from '../git/diff-endpoint.js';
 import { readBody } from './util.js';
 
@@ -319,19 +320,26 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       if (typeof payload.newBranch !== 'string' || payload.newBranch.length === 0) {
         res.statusCode = 400; res.end('newBranch required for squash-to-branch'); return;
       }
-      const result = await gitFinalizeSquashToBranch({
-        worktreePath: rec.worktreePath,
-        baseBranch,
-        newBranch: payload.newBranch,
-        message,
-      });
-      if (result.ok && result.url) {
-        // Record the opened PR on the job's open-pr step. Finalize has the URL in
-        // hand; without this the tracked view shows no PR until pr-watcher polls
-        // (and only if the pushed branch happens to match workspace.branch).
+      // If origin already has this branch, a PR is open on it — finalize means append,
+      // not open. Re-squashing to base would rewind past the pushed head and fail the
+      // push (and forcing would rewrite the PR). Fast-forward the round's commits instead.
+      const exists = await gitRemoteBranchExists(rec.worktreePath, payload.newBranch);
+      const result: GitCommandResult & { url?: string } = exists
+        ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch })
+        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, newBranch: payload.newBranch, message });
+      if (result.ok) {
         const ref = engine.openPrStepForSession(sessionId);
-        if (ref) {
-          engine.applyOpenPrPatch(ref.jobId, ref.stepId, { prUrl: result.url, prState: 'open', state: 'pr_open', ciState: 'pending' });
+        const url = result.url;
+        if (ref && url) {
+          // Fresh open: record the PR now (finalize has the URL) so the tracked view
+          // doesn't wait on pr-watcher to poll.
+          engine.applyOpenPrPatch(ref.jobId, ref.stepId, { prUrl: url, prState: 'open', state: 'pr_open', ciState: 'pending' });
+          prWatcher.noteChanged(ref.jobId);
+        } else if (ref) {
+          // Append: the PR head moved, so mirror the /git/push success path — resolve
+          // addressed edit drafts and flip CI to pending for the new run.
+          engine.resolveCompletedEditDrafts(ref.jobId, ref.stepId);
+          engine.applyOpenPrPatch(ref.jobId, ref.stepId, { ciState: 'pending' });
           prWatcher.noteChanged(ref.jobId);
         }
       }
