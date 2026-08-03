@@ -1,0 +1,70 @@
+---
+name: code.review-ui
+description: Read the uncommitted/branch diff in a worktree and return structured UI/UX + design-system-conformance findings (severity, category, file, line, comment) for PWA-facing changes, checked against DESIGN.md, the .o-* primitives, and the desktop/mobile parity model. Read-only — recommends only, does not edit.
+outpost:
+  kind: action
+  category: code
+  side_effects: none
+  runner: claude
+  permissions: [read]
+  timeout_sec: 600
+  retries: 0
+---
+
+# code.review-ui
+
+Read-only UI/UX + design-system review of PWA-facing changes. Does not modify files.
+
+## Inputs
+
+| Field | Required | Meaning |
+|---|---|---|
+| `workspace.repoCwd` | yes | Parent repo path. |
+| `workspace.branch` | yes | Branch under review. |
+| `context` | no | Optional `{goal, approach, risks}` from the step that produced the diff. |
+
+## Ground the review in the design system first
+
+Run `git status` + `git diff` to see the changes. Then, *before flagging anything*, read (when present):
+
+- `src/pwa/DESIGN.md` — the design language, codename **Signal**: color is fully tokenized in `base.css` across 9 themes × {dark, light} (never a raw hex/`rgba()` in a component); `.o-*` is the canonical component namespace; the left-edge colored border is the load-bearing state-rail motif; `.o-microhead` is the eyebrow/micro-label; `.o-row` is the canonical list row; design dark-first, then verify light.
+- The **PWA section of the root `CLAUDE.md`** — surface/`vm` layout rules (one dir per surface under `components/`, a pure view-model per surface under `vm/`), the deps-injection / `app-bridge` patterns, and "keep modules small".
+- `src/pwa/css/primitives.css` and `src/pwa/css/base.css` (the actual `.o-*` set and token names) and `src/pwa/css/overlays.css` (shared sheet/modal/popover chrome).
+
+Understand a convention before reporting its absence, and don't flag a deliberate pattern as a bug. If `DESIGN.md` is absent (a non-PWA repo), fall back to CLAUDE.md + observed conventions and say so in the `summary`.
+
+## What to look for
+
+- **`design-system`** — uses the canonical `.o-*` primitives + `base.css` tokens rather than bespoke markup or one-off styles; no raw hex / `rgba()` in a component (Signal's hard rule); new overlays reuse `overlays.css` chrome; no revival of retired legacy looks (mono-uppercase buttons, `.ghost-btn`/`.step-action`/`.work-btn`, `.o-group-hdr` clones — point at `.o-microhead`); uppercase only in micro-labels / nano-tags.
+- **`parity`** — rendering derives from a pure `src/pwa/vm/<surface>.js` view-model, and `mobile-shell` mounts the *same* renderers/exports `shell/surfaces.js` uses — never a second copy. Flag divergent or duplicated desktop-vs-mobile render logic, and any DOM or store-read leaking into a `vm/` file (the view-model must stay pure).
+- **`layout`** — information hierarchy: header/eyebrow metadata stacked into inner rows, not crammed onto one line (a repeatedly-corrected house rule); 4px-grid spacing; correct state-rail / Signal emphasis (structure silent, signal loud).
+- **`a11y`** — `:focus-visible` states, keyboard navigability, `aria`/labels on interactive controls, and sufficient contrast in *both* light and dark themes.
+- **`states`** — responsive/overflow behavior (menus, truncation) and empty / loading / error states for any new list or surface.
+
+Be sparing with `severity: "error"` — reserve it for broken/unusable UI (unreadable contrast, a control that can't be reached, a surface that duplicates instead of sharing and will drift). Conformance nits and polish are `warn`; observations are `info`. When a checklist bucket has no findings, return fewer issues rather than filler.
+
+Each issue's `category` is one of `design-system` / `parity` / `layout` / `a11y` / `states`.
+
+This is a *static* review — it reads the diff and the relevant PWA source; it does not run the app, drive a browser, or take screenshots. Runtime / visual-regression review is a separate future action.
+
+## Output
+
+```jsonc
+{
+  "summary": "Two components changed; one hard-coded color bypassing tokens, one mobile path re-implementing the desktop row renderer.",
+  "issues": [
+    { "severity": "warn",  "category": "design-system", "file": "src/pwa/components/cockpit/index.js", "line": 88, "comment": "Raw #1e88e5 instead of an --accent token; violates the token-only rule." },
+    { "severity": "error", "category": "parity", "file": "src/pwa/components/mobile-shell/index.js", "line": 142, "comment": "Re-implements the cockpit row instead of mounting the shared renderer; the two will drift." }
+  ]
+}
+```
+
+The outpost MCP tools are deferred behind ToolSearch — load the schema first:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_step_output", max_results: 1 })
+```
+
+If the tool doesn't come back, halt. The daemon will mark the step failed when your turn ends. Do NOT try to submit the review as your final text message.
+
+Then call `mcp__outpost__submit_step_output` with `output` set to the JSON-stringified review object. Stop.
