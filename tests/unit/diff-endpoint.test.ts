@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorktreeManager } from '../../src/git/worktree-manager.js';
-import { handleDiffRoute, type SessionLookup } from '../../src/git/diff-endpoint.js';
+import { handleDiffRoute, type SessionLookup, type StepWorktreeLookup } from '../../src/git/diff-endpoint.js';
 
 const NO_SESSIONS: SessionLookup = { findSession: () => null };
 
@@ -94,6 +94,41 @@ describe('handleDiffRoute (worktree-backed sessions)', () => {
     await ctx.wm.create({ sessionId: 'dddd4444', projectCwd: ctx.repo, baseBranch: 'main' });
     const result = handleDiffRoute(ctx.wm, NO_SESSIONS, 'dddd4444', 'bogus');
     expect(result.status).toBe(400);
+  });
+
+  // Regression: open-pr steps key their worktree by stepId, and DELETE /api/sessions
+  // on the step's reused session leaves a session-keyed archived tombstone. A direct
+  // wm.get(sessionId) hits that tombstone and 404s ("session is archived") even though
+  // the step worktree is still live — so the diff for reply_pending_review /
+  // comment_pending_response steps was unreachable. The engine's session→stepId→record
+  // lookup is authoritative and must win over the shadowing tombstone.
+  it('resolves a step session to its live stepId-keyed worktree, ignoring a session tombstone', async () => {
+    const ctx = fresh();
+    const rec = await ctx.wm.create({ sessionId: 'step-9a53', projectCwd: ctx.repo, baseBranch: 'main' });
+    writeFileSync(join(rec.worktreePath, 'a.txt'), 'one\ntwo\nSTEP\n');
+    // Shadowing session-keyed tombstone (no on-disk worktree of its own).
+    await ctx.wm.archive('sess-41c7');
+    const stepLookup: StepWorktreeLookup = {
+      worktreeRecordForSession: (id) => (id === 'sess-41c7' ? ctx.wm.get('step-9a53') : undefined),
+    };
+
+    const result = handleDiffRoute(ctx.wm, NO_SESSIONS, 'sess-41c7', 'worktree', stepLookup);
+    expect(result.status).toBe(200);
+    if (result.status !== 200) return;
+    expect(result.body.headRef).toBe('WORKTREE');
+    expect(result.body.files[0]!.hunks[0]!.rows.some((r) => r.op === '+' && r.content === 'STEP')).toBe(true);
+  });
+
+  it('still 404s a step session whose own stepId-keyed worktree is archived (merged)', async () => {
+    const ctx = fresh();
+    await ctx.wm.create({ sessionId: 'step-1177', projectCwd: ctx.repo, baseBranch: 'main' });
+    await ctx.wm.archive('step-1177');
+    const stepLookup: StepWorktreeLookup = {
+      worktreeRecordForSession: (id) => (id === 'sess-a9d4' ? ctx.wm.get('step-1177') : undefined),
+    };
+
+    const result = handleDiffRoute(ctx.wm, NO_SESSIONS, 'sess-a9d4', 'worktree', stepLookup);
+    expect(result.status).toBe(404);
   });
 });
 

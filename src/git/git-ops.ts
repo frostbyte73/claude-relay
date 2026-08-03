@@ -2,12 +2,19 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorktreeManager } from './worktree-manager.js';
+import type { WorktreeManager, WorktreeRecord } from './worktree-manager.js';
 
 const execFileP = promisify(execFile);
 
 export interface SessionLookup {
   findSession(id: string): { cwd: string } | null;
+}
+
+// Minimal duck-typed shape satisfied by WorkEngine. Step sessions key their
+// worktree by stepId, so wm.get(sessionId) misses it — and a session-keyed
+// archived tombstone can shadow the live worktree. Resolves session→stepId→record.
+export interface StepWorktreeLookup {
+  worktreeRecordForSession(sessionId: string): WorktreeRecord | undefined;
 }
 
 const MAX_BUFFER = 8 * 1024 * 1024;
@@ -57,8 +64,11 @@ export function resolveSessionGitCwd(
   wm: WorktreeManager,
   sessionLookup: SessionLookup,
   sessionId: string,
+  stepLookup?: StepWorktreeLookup,
 ): GitResolution {
-  const rec = wm.get(sessionId);
+  // Step sessions resolve through the engine's session→stepId→record mapping so the
+  // live step worktree wins over a shadowing session-keyed archived tombstone.
+  const rec = stepLookup?.worktreeRecordForSession(sessionId) ?? wm.get(sessionId);
   if (rec?.archivedAt) {
     return { kind: 'error', status: 404, message: 'session is archived' };
   }

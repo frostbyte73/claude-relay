@@ -29,7 +29,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const mode = url.searchParams.get('mode') ?? 'branch';
     try {
-      const result = handleDiffRoute(worktreeManager, sessionStore, m[1]!, mode);
+      const result = handleDiffRoute(worktreeManager, sessionStore, m[1]!, mode, engine);
       res.statusCode = result.status;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(result.body));
@@ -43,7 +43,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('GET', '/api/sessions/:id/git/status', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/status$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -74,7 +74,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     const url = new URL(req.url ?? '/', 'http://x');
     const m = url.pathname.match(/^\/api\/sessions\/([\w-]+)\/git\/log$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -130,7 +130,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/commit', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/commit$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -160,7 +160,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/stage', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/stage$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -222,7 +222,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/create-branch', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/create-branch$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -248,7 +248,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/open-pr', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/open-pr$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -388,7 +388,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/push', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/push$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');
@@ -417,7 +417,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/pull', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/pull$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!);
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
     if (resolved.kind === 'error') {
       res.statusCode = resolved.status;
       res.setHeader('content-type', 'application/json');

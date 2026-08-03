@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorktreeManager, DiffMode } from './worktree-manager.js';
+import type { WorktreeManager, WorktreeRecord, DiffMode } from './worktree-manager.js';
 import { runGitDiff, runGitDiffInCwd } from './worktree-manager.js';
 import { parseUnifiedDiff, type DiffFile } from './diff-parser.js';
 
@@ -10,6 +10,14 @@ const MAX_FILES = 50;
 // Minimal duck-typed shape; SessionStore satisfies it but tests can pass a stub.
 export interface SessionLookup {
   findSession(id: string): { cwd: string } | null;
+}
+
+// Minimal duck-typed shape satisfied by WorkEngine. Step sessions key their
+// worktree by stepId, so a direct wm.get(sessionId) misses it — and a
+// session-keyed archived tombstone (left by DELETE /api/sessions on the step's
+// reused session) can shadow the live worktree. This resolves session→stepId→record.
+export interface StepWorktreeLookup {
+  worktreeRecordForSession(sessionId: string): WorktreeRecord | undefined;
 }
 
 export type DiffResponse =
@@ -30,6 +38,7 @@ export function handleDiffRoute(
   sessionLookup: SessionLookup,
   sessionId: string,
   mode: string,
+  stepLookup?: StepWorktreeLookup,
 ): DiffResponse {
   if (mode !== 'branch' && mode !== 'worktree') {
     return { status: 400, body: { error: 'invalid mode' } };
@@ -39,7 +48,9 @@ export function handleDiffRoute(
   // Path 1: outpost-managed worktree session. Keep the existing semantics —
   // branch mode diffs against the stored baseBranch on the parent repo's checkout,
   // worktree mode diffs uncommitted changes inside the worktree itself.
-  const rec = wm.get(sessionId);
+  // Resolve step sessions through the engine's session→stepId→record mapping first
+  // so the live step worktree wins over a shadowing session-keyed tombstone.
+  const rec = stepLookup?.worktreeRecordForSession(sessionId) ?? wm.get(sessionId);
   if (rec && rec.archivedAt) {
     return { status: 404, body: { error: 'session is archived' } };
   }
