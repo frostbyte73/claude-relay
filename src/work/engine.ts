@@ -242,6 +242,13 @@ export class WorkEngine {
           if (e.status !== 'running') continue;
           this.markEditDone(j.id, s.id, e.id, { status: 'failed', failure: 'interrupted by daemon restart' });
         }
+        // A triage round left in_progress (never posted) is orphaned — its session died
+        // with the previous process. dropOrphanIterations clears it so the `busy` guard
+        // in the open-pr handler's decide() stops blocking a fresh triage round; without
+        // this the thread hangs on "Claude is deciding…" forever with no way to retry.
+        if ((s.iterations ?? []).some((it) => it.kind === 'replies' && it.status === 'in_progress' && !it.postedAt)) {
+          this.dropOrphanIterations(j.id, s.id, 'replies');
+        }
       }
     }
   }

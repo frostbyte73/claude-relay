@@ -202,6 +202,37 @@ describe('Orchestrator.reconcileInterruptedSteps', () => {
     expect(reloaded.failure).toBeUndefined();
     expect(queue.get(job.id)!.events?.some((e) => e.kind === 'step_retried')).toBeFalsy();
   });
+
+  // A daemon bounce mid-triage leaves the `replies` iteration in_progress/postedAt:null.
+  // The open-pr handler's `busy` guard then blocks a fresh triage round forever, so the
+  // thread hangs on "Claude is deciding…" with no way to retry. Boot must drop the orphan.
+  it('drops an orphaned in-progress triage iteration so a fresh round can dispatch', async () => {
+    const { engine, queue, resumed } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const step = addOpenPrStep(engine, job.id);
+    queue.mutate(job.id, (j) => ({
+      ...j,
+      state: 'executing',
+      steps: j.steps.map((s) => (s.id === step.id ? {
+        ...s,
+        state: 'comment_pending_response',
+        prState: 'open',
+        sessionId: 'dead-sess',
+        comments: [{ id: 'c1', author: 'bot', body: 'b', createdAt: 1 }],
+        iterations: [{ id: 'it1', kind: 'replies', status: 'in_progress', startedAt: 1 }],
+      } as OpenPrStep : s)),
+    }));
+
+    engine.reconcileInterruptedEdits();
+
+    const reloaded = queue.get(job.id)!.steps.find((s) => s.id === step.id)! as OpenPrStep;
+    expect(reloaded.iterations ?? []).toHaveLength(0);
+
+    // With the orphan cleared, the next tick re-dispatches triage onto the shared session.
+    await engine.tick(job.id);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(resumed.some((r) => r.env.STEP_ID === step.id)).toBe(true);
+  });
 });
 
 function draft(commentId: string, extra: Partial<DraftedReply> = {}): DraftedReply {
