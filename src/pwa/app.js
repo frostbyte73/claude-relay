@@ -270,7 +270,7 @@ async function mountMobileSessionView() {
     baseBranch: hint?.baseBranch ?? null,
     model: hint?.model ?? null,
     fromTicketId: s.currentSessionFromTicketId ?? null,
-    approvalMode: s.approvalMode,
+    approvalMode: hint?.approvalMode ?? s.approvalMode,
   });
   mobileSvSessionId = id;
   mobileSvPendingId = null;
@@ -380,7 +380,13 @@ async function openSession(id, opts) {
   // via the nav session-hint side channel — mountMobileSessionView() (called
   // from render() below) consumes it and mountSessionView is the sole
   // openSessionWs/closeSessionWs owner (no separate direct call here).
-  if (isNew) setSessionHint(id, { cwd, spawnCwd: cwd, spawnMode: opts?.spawn ?? null, baseBranch: opts?.base ?? null });
+  if (isNew) {
+    const defaultMode = settings.get().defaultApprovalMode;
+    setSessionHint(id, {
+      cwd, spawnCwd: cwd, spawnMode: opts?.spawn ?? null, baseBranch: opts?.base ?? null,
+      approvalMode: defaultMode !== 'ask' ? defaultMode : undefined,
+    });
+  }
   render();
   if (!isNew) {
     // race against currentSessionId so a fast tab-switch doesn't leak buckets

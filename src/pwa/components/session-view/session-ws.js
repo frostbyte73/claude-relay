@@ -72,6 +72,7 @@ function wsUrl(id, sinceSeq, spawn) {
   if (spawn?.spawnMode)   params.set('spawn', spawn.spawnMode);
   if (spawn?.baseBranch)  params.set('base', spawn.baseBranch);
   if (spawn?.model)       params.set('model', spawn.model);
+  if (spawn?.approvalMode) params.set('mode', spawn.approvalMode);
   const q = params.toString();
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   return `${scheme}://${location.host}/ws/sessions/${id}${q ? `?${q}` : ''}`;

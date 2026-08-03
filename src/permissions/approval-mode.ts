@@ -39,6 +39,14 @@ export class ApprovalModeStore {
     return this.modes.get(sessionId) ?? 'ask';
   }
 
+  // True once a mode has been explicitly stored for this session. Distinguishes
+  // "never set — safe to seed from the client's spawn default" from "user (or a
+  // prior spawn) already chose one — leave it alone", which get()'s 'ask'
+  // fallback can't tell apart.
+  has(sessionId: string): boolean {
+    return this.modes.has(sessionId);
+  }
+
   set(sessionId: string, mode: ApprovalMode): void {
     if (!VALID_MODES.has(mode)) {
       throw new Error(`invalid ApprovalMode: ${JSON.stringify(mode)}`);

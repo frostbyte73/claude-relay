@@ -1500,6 +1500,10 @@ async function main() {
     let baseBranch: string | undefined;
     let model: 'sonnet' | 'opus' | 'haiku' | 'fable' | undefined;
     let since: number | undefined;
+    // mode=<approval mode> carries the client's default for a brand-new session
+    // so it takes effect server-side at spawn, rather than the PWA healing it
+    // after the first broadcast (which the ⌘K spawn path never armed).
+    let spawnApprovalMode: string | undefined;
     const queryIdx = url.indexOf('?');
     if (queryIdx >= 0) {
       const params = new URLSearchParams(url.slice(queryIdx + 1));
@@ -1511,6 +1515,8 @@ async function main() {
       if (rawBase) baseBranch = rawBase;
       const rawModel = params.get('model');
       if (rawModel === 'sonnet' || rawModel === 'opus' || rawModel === 'haiku' || rawModel === 'fable') model = rawModel;
+      const rawMode = params.get('mode');
+      if (rawMode) spawnApprovalMode = rawMode;
       const rawSince = params.get('since');
       if (rawSince !== null) {
         const n = Number(rawSince);
@@ -1519,6 +1525,13 @@ async function main() {
       }
     }
     manager.attach(sessionId, ws, { cwd, spawnMode, baseBranch, since, model });
+    // Seed the spawn default only when this session has never had a mode set —
+    // a reconnect (or a session whose mode the user already changed) keeps its
+    // stored choice. modes.set() validates and ignores anything unrecognized.
+    if (spawnApprovalMode && !modes.has(sessionId)) {
+      try { modes.set(sessionId, spawnApprovalMode as ApprovalMode); }
+      catch { /* invalid mode in query — fall back to the 'ask' default */ }
+    }
     ws.send(JSON.stringify({ type: 'approval_mode', sessionId, mode: modes.get(sessionId) }));
     // Replay last statusline so the meter renders before claude's next fire; PWA handler is idempotent.
     const cachedSl = latestStatuslineBySession.get(sessionId);

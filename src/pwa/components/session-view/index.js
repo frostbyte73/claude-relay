@@ -642,8 +642,8 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   // brand-new sessions opened via the sidebar's "New session" button, the tab
   // payload carries these so the WS URL query string can carry them to the
   // daemon on first connect.
-  const spawn = (meta.cwd || meta.spawnMode || meta.baseBranch || meta.model)
-    ? { cwd: meta.cwd, spawnMode: meta.spawnMode, baseBranch: meta.baseBranch, model: meta.model }
+  const spawn = (meta.cwd || meta.spawnMode || meta.baseBranch || meta.model || meta.approvalMode)
+    ? { cwd: meta.cwd, spawnMode: meta.spawnMode, baseBranch: meta.baseBranch, model: meta.model, approvalMode: meta.approvalMode }
     : null;
   // NB: do NOT arm pendingDefaultPush here off `spawn`. Both mount paths supply
   // meta.cwd for EXISTING sessions too (resolveSessionContext / mobile mount), so

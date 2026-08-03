@@ -858,6 +858,10 @@ async function launchSession() {
     const id = crypto.randomUUID();
     const spawnMode = worktreeMode === 'worktree' ? 'worktree' : undefined;
     const spawnBaseBranch = spawnMode ? (baseBranch || defaultBranch || 'main') : undefined;
+    // Carry the client's default approval mode so the daemon applies it at spawn.
+    // 'ask' is the daemon's own default, so only send a non-ask override.
+    const defaultMode = settings.get().defaultApprovalMode;
+    const approvalMode = defaultMode !== 'ask' ? defaultMode : undefined;
     setSessionHint(id, {
       id,
       cwd,
@@ -866,6 +870,7 @@ async function launchSession() {
       spawnMode,
       baseBranch: spawnBaseBranch,
       model: MODEL_CHOICES[modelIndex].id ?? undefined,
+      approvalMode,
     });
     nav.select('sessions', id);
     closePalette();
