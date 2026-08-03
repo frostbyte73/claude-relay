@@ -325,7 +325,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       // push (and forcing would rewrite the PR). Fast-forward the round's commits instead.
       const exists = await gitRemoteBranchExists(rec.worktreePath, payload.newBranch);
       const result: GitCommandResult & { url?: string } = exists
-        ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch })
+        ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch })
         : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, newBranch: payload.newBranch, message });
       if (result.ok) {
         const ref = engine.openPrStepForSession(sessionId);

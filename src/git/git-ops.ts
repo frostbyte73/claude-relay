@@ -464,13 +464,62 @@ export async function gitRemoteBranchExists(cwd: string, branch: string): Promis
   return res.ok;
 }
 
+// Conservative "is there an open PR on this branch?" probe. Returns true when gh
+// reports one — and ALSO true when we can't tell (bad name, gh error), so callers
+// default to plain-append and never risk a duplicate/erroring `gh pr create`.
+async function branchHasOpenPr(cwd: string, branch: string): Promise<boolean> {
+  if (!BRANCH_NAME_RE.test(branch)) return true;
+  try {
+    const { stdout } = await execFileP(
+      'gh',
+      ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'url', '--limit', '1'],
+      { cwd, maxBuffer: MAX_BUFFER, timeout: 30_000 },
+    );
+    const arr = JSON.parse(stdout.toString().trim() || '[]');
+    return Array.isArray(arr) && arr.length > 0;
+  } catch {
+    return true;
+  }
+}
+
+// Open a PR for a branch that's already been pushed (used to self-heal an append when
+// the branch is on origin but no PR exists). Unlike gitOpenPr this does NOT push — the
+// caller's fast-forward push already ran.
+async function gitOpenPrForPushedBranch(cwd: string, branch: string, baseBranch: string, push: GitCommandResult): Promise<GitCommandResult & { url?: string }> {
+  if (!BRANCH_NAME_RE.test(baseBranch)) {
+    return { ok: false, stdout: push.stdout, stderr: 'invalid base branch', exitCode: 1 };
+  }
+  try {
+    const { stdout, stderr } = await execFileP(
+      'gh',
+      ['pr', 'create', '--head', branch, '--base', baseBranch, '--fill'],
+      { cwd, maxBuffer: MAX_BUFFER, timeout: 30_000 },
+    );
+    const url = stdout.toString().trim().split('\n').reverse().find((l) => l.startsWith('http')) ?? '';
+    return { ok: true, stdout: `${push.stdout}\n${stdout}`, stderr: `${push.stderr}\n${stderr}`, exitCode: 0, url };
+  } catch (err) {
+    const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; code?: number };
+    return {
+      ok: false,
+      stdout: `${push.stdout}\n${e.stdout?.toString() ?? ''}`,
+      stderr: e.stderr?.toString() ?? (err as Error).message,
+      exitCode: typeof e.code === 'number' ? e.code : 1,
+    };
+  }
+}
+
 // Follow-up round on an already-open PR: the round's commits are already stacked on the
 // pushed PR head, so fast-forward push them as-is. We must NOT `reset --soft <base>` and
 // re-squash (gitFinalizeSquashToBranch does that to *open* a PR — replaying it here
 // rewinds past the pushed head, manufacturing a non-fast-forward divergence) and must
 // NEVER force — that rewrites the open PR's published history. If the push isn't a
 // fast-forward, fail loudly and let the caller reconcile.
-export async function gitFinalizeAppendToBranch(opts: { worktreePath: string; branch: string }): Promise<GitCommandResult> {
+//
+// Self-heals the one case where "branch on origin" does NOT imply "PR is open": a prior
+// gitFinalizeSquashToBranch that pushed the branch but then had `gh pr create` fail. Left
+// alone, every retry lands here, pushes a no-op, and reports success without ever opening
+// the PR. So after the push, if no open PR exists, we open one and return its url.
+export async function gitFinalizeAppendToBranch(opts: { worktreePath: string; branch: string; baseBranch: string }): Promise<GitCommandResult & { url?: string }> {
   if (!BRANCH_NAME_RE.test(opts.branch)) {
     return { ok: false, stdout: '', stderr: 'invalid branch name', exitCode: 1 };
   }
@@ -484,7 +533,10 @@ export async function gitFinalizeAppendToBranch(opts: { worktreePath: string; br
   if (dirty.ok && dirty.stdout.trim().length > 0) {
     return { ok: false, stdout: '', stderr: `worktree has uncommitted changes — commit them before finalizing:\n${dirty.stdout}`, exitCode: 1 };
   }
-  return gitPush(opts.worktreePath);
+  const push = await gitPush(opts.worktreePath);
+  if (!push.ok) return push;
+  if (await branchHasOpenPr(opts.worktreePath, opts.branch)) return push;
+  return gitOpenPrForPushedBranch(opts.worktreePath, opts.branch, opts.baseBranch, push);
 }
 
 async function detectDefaultBranch(cwd: string): Promise<string | null> {

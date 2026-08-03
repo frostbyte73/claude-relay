@@ -39,7 +39,7 @@ describe('gitFinalizeAppendToBranch', () => {
     writeFileSync(join(work, 'f.txt'), 'round two edit\n');
     g('add', '.'); g('commit', '-q', '-m', 'address comment');
     const head = g('rev-parse', 'HEAD').trim();
-    const r = await gitFinalizeAppendToBranch({ worktreePath: work, branch: 'pr' });
+    const r = await gitFinalizeAppendToBranch({ worktreePath: work, branch: 'pr', baseBranch: 'pr' });
     expect(r.ok).toBe(true);
     expect(remoteHead()).toBe(head); // origin advanced to our commit — no rewrite
   });
@@ -51,7 +51,7 @@ describe('gitFinalizeAppendToBranch', () => {
     g('reset', '-q', '--hard', 'HEAD~1');
     writeFileSync(join(work, 'f.txt'), 'divergent\n');
     g('add', '.'); g('commit', '-q', '-m', 'resquash');
-    const r = await gitFinalizeAppendToBranch({ worktreePath: work, branch: 'pr' });
+    const r = await gitFinalizeAppendToBranch({ worktreePath: work, branch: 'pr', baseBranch: 'pr' });
     expect(r.ok).toBe(false);
     expect(remoteHead()).toBe(pushed); // origin untouched — no force-push
   });
@@ -59,7 +59,7 @@ describe('gitFinalizeAppendToBranch', () => {
   it('refuses when the worktree has uncommitted changes', async () => {
     const { work } = makeOpenPrClone();
     writeFileSync(join(work, 'f.txt'), 'unstaged edit\n');
-    const r = await gitFinalizeAppendToBranch({ worktreePath: work, branch: 'pr' });
+    const r = await gitFinalizeAppendToBranch({ worktreePath: work, branch: 'pr', baseBranch: 'pr' });
     expect(r.ok).toBe(false);
     expect(r.stderr).toContain('uncommitted changes');
   });

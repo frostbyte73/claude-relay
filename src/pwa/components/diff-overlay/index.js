@@ -1334,7 +1334,10 @@ async function doFinalize(sessionId, payload) {
       return false;
     }
     if (body.url) window.open(body.url, '_blank', 'noopener');
-    setSourceFeedback('ok', payload.kind === 'merge-to-base' ? 'Merged.' : 'PR opened.', body.url || null);
+    // A squash-to-branch append that fast-forwards an already-open PR returns no url —
+    // don't claim "PR opened" in that case (only a fresh open / self-heal carries a url).
+    const okMsg = payload.kind === 'merge-to-base' ? 'Merged.' : (body.url ? 'PR opened.' : 'Pushed to PR.');
+    setSourceFeedback('ok', okMsg, body.url || null);
     try { await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'POST' }); } catch { /* manual archive fallback */ }
     closeDiffOverlay();
     _deps.leaveSession();
