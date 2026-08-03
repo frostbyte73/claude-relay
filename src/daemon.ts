@@ -714,6 +714,13 @@ async function main() {
         });
         return { ok: true };
       },
+      submit_ci_fixed: async (a) => {
+        engine.markCiFixed(a.jobId as string, a.stepId as string, {
+          status: a.status as 'fixed' | 'unfixable',
+          failure: a.failure as string | undefined,
+        });
+        return { ok: true };
+      },
       submit_action_proposal: async (a) => {
         await onActionProposalHandler(JSON.stringify(a));
         return { ok: true };

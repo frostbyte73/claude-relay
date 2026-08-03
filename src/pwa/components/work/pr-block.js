@@ -12,9 +12,13 @@ function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&'
 function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
 
 function ciBadge(s) {
-  if (!s) return '';
-  if (s === 'success') return '<span class="o-pill ok">CI ok</span>';
-  if (s === 'failure') return '<span class="o-pill danger">CI fail</span>';
+  // ciFixing/ciFixGaveUp take precedence over the plain ciState pill — they
+  // describe what the auto-fixer is doing about a failure, not just the failure.
+  if (s.ciFixing) return '<span class="o-pill warn">Fixing CI…</span>';
+  if (s.ciFixGaveUp && s.ciState === 'failure') return '<span class="o-pill danger">CI failing — auto-fix stopped</span>';
+  if (!s.ciState) return '';
+  if (s.ciState === 'success') return '<span class="o-pill ok">CI ok</span>';
+  if (s.ciState === 'failure') return '<span class="o-pill danger">CI fail</span>';
   return '<span class="o-pill">CI pending</span>';
 }
 function reviewBadge(s) {
@@ -143,7 +147,7 @@ export function renderPrBlockHtml(job, s) {
   const prClosed = isMerged || s.prState === 'closed';
   const reviewReady = !isMerged && !!s.sessionId;
 
-  const badges = [mergeBadge(s), ciBadge(s.ciState), reviewBadge(s.reviewState)].filter(Boolean);
+  const badges = [mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
 
   return `
     <div class="pr-block" data-step-id="${escapeHtml(s.id)}">

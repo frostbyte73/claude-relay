@@ -5,6 +5,8 @@ export type Action =
   | { kind: 'spawn-orchestrator'; jobId: string; mode: 'initial' | 'replan'; envelopePath: string }
   | { kind: 'request-merge-approval'; jobId: string; stepId: string }
   | { kind: 'request-conflict-approval'; jobId: string; stepId: string }
+  | { kind: 'start-ci-fix'; jobId: string; stepId: string }
+  | { kind: 'note-ci-fix-exhausted'; jobId: string; stepId: string }
   | { kind: 'write-linear-in-progress'; linearUuid: string; jobId: string }
   | { kind: 'write-linear-in-review';   linearUuid: string; jobId: string }
   | { kind: 'write-linear-done';        linearUuid: string; jobId: string }

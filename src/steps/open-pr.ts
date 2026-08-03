@@ -1,6 +1,36 @@
-import type { JobRecord, OpenPrStep } from '../work/work-types.js';
+import type { CiCheck, JobRecord, OpenPrStep } from '../work/work-types.js';
 import { writeEnvelope, type OpenPrEnvelope } from '../work/envelope.js';
 import type { ExternalEvent, StepHandler } from './types.js';
+
+const CI_FIX_CAP = 3;
+
+function ciSettled(checks: CiCheck[] | undefined): boolean {
+  return !!checks && checks.length > 0 && !checks.some((c) => c.state === 'pending');
+}
+
+export function ciFailureSignature(checks: CiCheck[] | undefined): string {
+  return (checks ?? []).filter((c) => c.state === 'failure').map((c) => c.name).sort().join('|');
+}
+
+export function shouldAutoFixCi(s: OpenPrStep): boolean {
+  return s.prState === 'open'
+    && s.ciState === 'failure'
+    && ciSettled(s.ciChecks)
+    && !s.ciFixing
+    && (s.ciFixAttempts ?? 0) < CI_FIX_CAP
+    && ciFailureSignature(s.ciChecks) !== s.ciFixLastSignature;
+}
+
+// A settled failure we are declining to fix (cap reached or identical failure
+// recurred) and have not yet flagged as given-up.
+function ciFixExhausted(s: OpenPrStep): boolean {
+  return s.prState === 'open'
+    && s.ciState === 'failure'
+    && ciSettled(s.ciChecks)
+    && !s.ciFixing
+    && !s.ciFixGaveUp
+    && !shouldAutoFixCi(s);
+}
 
 function previousFindings(job: JobRecord, selfId: string) {
   return job.steps
@@ -77,6 +107,9 @@ export const openPrHandler: StepHandler<OpenPrStep> = {
           && s.ciState === 'success'
           && s.reviewState === 'approved';
         if (ready) return { kind: 'request-merge-approval', jobId: job.id, stepId: s.id };
+        // CI auto-fix only runs from pr_open — comment/conflict rounds own the session first.
+        if (shouldAutoFixCi(s)) return { kind: 'start-ci-fix', jobId: job.id, stepId: s.id };
+        if (ciFixExhausted(s)) return { kind: 'note-ci-fix-exhausted', jobId: job.id, stepId: s.id };
         return null;
       }
       case 'conflicting': {

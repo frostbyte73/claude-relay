@@ -147,6 +147,18 @@ export interface OpenPrStep extends StepBase {
   // Set when a squash-to-base attempt hit conflicts and spawned a resolve round;
   // markConflictResolved reads it to auto-retry the squash once conflicts are resolved.
   conflictPostAction?: 'squash-to-base';
+  // True while a code.fix-ci round is mid-flight on the shared session. Guards
+  // decide() from re-spawning and the watcher window before the fix push lands.
+  ciFixing?: boolean;
+  // How many auto-fix rounds we've spawned for this PR. Hard-capped (CI_FIX_CAP)
+  // as a backstop against thrash between two distinct failure signatures.
+  ciFixAttempts?: number;
+  // Signature of the failing-check set we last attempted. If the same set fails
+  // again after a fix, we stop instead of re-attempting the identical failure.
+  ciFixLastSignature?: string;
+  // Set once we've declined to keep auto-fixing (cap hit, or same failure
+  // recurred, or the round reported unfixable). Surfaces "auto-fix stopped" in UI.
+  ciFixGaveUp?: boolean;
   reviewState?: 'approved' | 'changes_requested' | 'review_required';
   comments?: PrComment[];
   iterations?: IterationRecord[];

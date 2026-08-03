@@ -274,6 +274,20 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_ci_fixed',
+    description: 'Signal completion of one code.fix-ci round. `status` is `fixed` (edited the code to fix the failing checks, committed, pushed) or `unfixable` (could not confidently fix — e.g. infra/flake or unclear cause; needs a human). Include `failure` only when unfixable.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'status'],
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        status: { type: 'string', enum: ['fixed', 'unfixable'] },
+        failure: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'submit_action_proposal',
     description: 'Deliver a meta.build-action proposal (new or revised SKILL.md + optional allowlist additions) to the daemon. The user reviews it inline in the PWA.',
     inputSchema: {

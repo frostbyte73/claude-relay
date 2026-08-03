@@ -27,6 +27,7 @@ import { handlerFor, initialStateForType } from '../steps/index.js';
 import type { Action, ExternalEvent, HandlerCtx } from '../steps/types.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
+import { shouldAutoFixCi, ciFailureSignature } from '../steps/open-pr.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
 import type { JournalStore } from '../storage/journal-store.js';
@@ -54,6 +55,7 @@ export function actionNameForStep(s: Step): string {
     // on the durable state (not just the flag) keeps a reopened session able to
     // finish/push the merge instead of reverting to push-forbidden code.implement.
     if (s.conflictResolving || s.state === 'conflicting' || s.state === 'conflict_unresolved') return 'code.resolve-conflicts';
+    if (s.ciFixing) return 'code.fix-ci';
     if (s.state === 'comment_pending_response' || s.state === 'reply_pending_review') {
       return 'code.triage-pr-comments';
     }
@@ -233,6 +235,9 @@ export class WorkEngine {
           // squash must not silently re-fire once the daemon restarts.
           this.mutateOpenPrStep(j.id, s.id, (st) => ({ ...st, conflictResolving: false, conflictPostAction: undefined, updatedAt: this.ctx.now() }));
         }
+        if (s.ciFixing) {
+          this.mutateOpenPrStep(j.id, s.id, (st) => ({ ...st, ciFixing: false, updatedAt: this.ctx.now() }));
+        }
         for (const e of s.editQueue ?? []) {
           if (e.status !== 'running') continue;
           this.markEditDone(j.id, s.id, e.id, { status: 'failed', failure: 'interrupted by daemon restart' });
@@ -400,6 +405,12 @@ export class WorkEngine {
         break;
       case 'request-conflict-approval':
         // The UI inspects step state to surface the resolve-conflicts gate. No-op here.
+        break;
+      case 'start-ci-fix':
+        await this.fixCi(a.jobId, a.stepId);
+        break;
+      case 'note-ci-fix-exhausted':
+        this.markCiFixExhausted(a.jobId, a.stepId);
         break;
       case 'write-linear-in-progress':
       case 'write-linear-in-review':
@@ -1308,6 +1319,84 @@ export class WorkEngine {
     );
   }
 
+  async fixCi(jobId: string, stepId: string): Promise<void> {
+    const job = this.opts.queue.get(jobId);
+    const step = job?.steps.find((x) => x.id === stepId);
+    if (!job || !step || step.type !== 'open-pr') return;
+    if (!shouldAutoFixCi(step)) return;
+
+    // Claim the round synchronously before any await. fixCi runs on the autonomous
+    // tick loop with no per-job mutex, so a second tick during `provision` would
+    // otherwise re-enter decide() with ciFixing still false and double-spawn.
+    const sessionId = step.sessionId ?? this.ctx.newId();
+    this.mutateOpenPrStep(jobId, stepId, (s) => ({
+      ...s,
+      ciFixing: true,
+      ciFixAttempts: (s.ciFixAttempts ?? 0) + 1,
+      ciFixLastSignature: ciFailureSignature(s.ciChecks),
+      ciFixGaveUp: false,
+      sessionId,
+      updatedAt: this.ctx.now(),
+    }));
+
+    let ws;
+    try {
+      ws = await this.opts.worktreeManager.provision(step.id, step.workspace);
+    } catch (e) {
+      // Provision failed after we claimed the round — restore the pre-claim values
+      // so a later tick can retry instead of the step wedging on ciFixing.
+      this.mutateOpenPrStep(jobId, stepId, (s) => ({
+        ...s,
+        ciFixing: false,
+        ciFixAttempts: step.ciFixAttempts,
+        ciFixLastSignature: step.ciFixLastSignature,
+        ciFixGaveUp: step.ciFixGaveUp,
+        updatedAt: this.ctx.now(),
+      }));
+      throw e;
+    }
+    const checks = (step.ciChecks ?? [])
+      .filter((c) => c.state === 'failure')
+      .map((c) => ({ name: c.name, url: c.url }));
+    const envelope = {
+      kind: 'step',
+      jobId: job.id,
+      stepId: step.id,
+      type: 'open-pr',
+      title: step.title,
+      description: step.description,
+      goal: step.goal,
+      approach: step.approach,
+      risks: step.risks,
+      spec: step.spec,
+      implPlan: step.implPlan,
+      job: { source: job.source, title: job.title, description: job.description, externalRef: job.externalRef },
+      previousSteps: job.steps
+        .filter((st) => st.id !== step.id && st.type === 'action' && st.forwardOutput !== false && st.output)
+        .map((st) => ({ id: st.id, title: st.title, action: (st as { action?: string }).action, output: (st as { output?: string }).output })),
+      workspace: step.workspace,
+      typePayload: { branch: step.workspace.branch, round: { kind: 'ci-fix', checks } },
+    };
+    const envelopePath = writeEnvelope(this.ctx.jobsDir, job.id, step.id, envelope);
+    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent('code.fix-ci') ?? []);
+
+    const cwd = ws.path ?? this.orchestratorCwd();
+    this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
+    this.bindAction(sessionId, 'code.fix-ci');
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_started',
+      who: 'orchestrator',
+      stepId,
+      body: `${this.stepLabel(jobId, stepId)} — fixing failing CI`,
+    }));
+    this.opts.sessionManager.sendOrResume(
+      sessionId,
+      cwd,
+      { type: 'user', message: { role: 'user', content: '/code.fix-ci' } },
+      { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
+    );
+  }
+
   // Squash the step's branch onto its base branch locally (no push), then complete
   // the step as if the PR had merged (applyOpenPrPatch → merged → worktree archived).
   // On conflict, hand off to the resolve-conflicts round (merge base into the branch,
@@ -1371,6 +1460,37 @@ export class WorkEngine {
         }
       }).catch((e) => console.error(`[work] squash retry ${stepId.slice(0, 8)}: ${(e as Error).message}`));
     }
+  }
+
+  markCiFixed(jobId: string, stepId: string, result: { status: 'fixed' | 'unfixable'; failure?: string }): void {
+    this.mutateOpenPrStep(jobId, stepId, (s) => ({
+      ...s,
+      ciFixing: false,
+      // 'fixed' pushed a commit — the watcher will re-run CI. 'unfixable' left it
+      // red, so flag give-up to stop decide() re-emitting an exhausted note.
+      ...(result.status === 'unfixable' ? { ciFixGaveUp: true } : {}),
+      updatedAt: this.ctx.now(),
+    }));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed',
+      who: 'orchestrator',
+      stepId,
+      body: result.status === 'fixed'
+        ? `${this.stepLabel(jobId, stepId)} — CI fix pushed`
+        : `${this.stepLabel(jobId, stepId)} — CI auto-fix could not fix it: ${result.failure ?? 'unknown'}`,
+    }));
+  }
+
+  markCiFixExhausted(jobId: string, stepId: string): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId) as OpenPrStep | undefined;
+    if (!step || step.type !== 'open-pr' || step.ciFixGaveUp) return;
+    this.mutateOpenPrStep(jobId, stepId, (s) => ({ ...s, ciFixGaveUp: true, updatedAt: this.ctx.now() }));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed',
+      who: 'orchestrator',
+      stepId,
+      body: `${this.stepLabel(jobId, stepId)} — CI still failing; auto-fix stopped (needs a human)`,
+    }));
   }
 
   addUserReaction(jobId: string, stepId: string, commentId: string, content: string): void {

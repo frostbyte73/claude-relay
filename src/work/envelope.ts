@@ -105,7 +105,8 @@ export interface OpenPrEnvelope extends StepEnvelopeBase {
       | { kind: 'spec'; feedback?: string[] }
       | { kind: 'plan' }
       | { kind: 'pr-comments'; comments: unknown[] }
-      | { kind: 'conflict'; base?: string; push?: boolean; postAction?: 'squash-to-base' };
+      | { kind: 'conflict'; base?: string; push?: boolean; postAction?: 'squash-to-base' }
+      | { kind: 'ci-fix'; checks: { name: string; url?: string }[] };
   };
 }
 

@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.fix-ci output",
+  "description": "Reported via submit_ci_fixed; this covers the summary message.",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": { "type": "string", "enum": ["fixed", "unfixable"] },
+    "failure": { "type": "string" }
+  }
+}
