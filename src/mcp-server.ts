@@ -312,4 +312,22 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
       },
     },
   },
+  {
+    name: 'create_job',
+    description: 'Enqueue an Outpost job from a skill or script. Idempotent on dedupeKey — a key that already maps to a job returns that job instead of creating a duplicate. Use for job-source polling (e.g. one job per open ticket).',
+    inputSchema: {
+      type: 'object',
+      required: ['source', 'title'],
+      properties: {
+        source: { type: 'string', description: 'Job source id, e.g. "linear" or your own source name.' },
+        title: { type: 'string' },
+        body: { type: 'string' },
+        dedupeKey: { type: 'string', description: 'Idempotency key. Same key never enqueues twice.' },
+        externalRef: {
+          type: 'object',
+          properties: { url: { type: 'string' }, issueIdentifier: { type: 'string' }, linearUuid: { type: 'string' } },
+        },
+      },
+    },
+  },
 ];

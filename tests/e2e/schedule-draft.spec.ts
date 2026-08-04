@@ -41,11 +41,14 @@ test('completing name + trigger + what enables the switch, and Save paused persi
   await expect(outpostPage.locator('.sched-detail-state.paused')).toHaveText('Paused');
   await expect(outpostPage.locator('.sched-run-now')).toBeVisible();
 
+  // Builtins are seeded at daemon startup (setup-schedules.ts) alongside this
+  // user-created row, so scope the assertion to the non-builtin ones.
   const res = await outpostPage.request.get(`${daemon.baseUrl}/api/schedules`);
   const body = await res.json();
-  expect(body.schedules).toHaveLength(1);
-  expect(body.schedules[0].name).toBe('Weekly report');
-  expect(body.schedules[0].enabled).toBe(false);
+  const userSchedules = body.schedules.filter((s: { builtin?: boolean }) => !s.builtin);
+  expect(userSchedules).toHaveLength(1);
+  expect(userSchedules[0].name).toBe('Weekly report');
+  expect(userSchedules[0].enabled).toBe(false);
 });
 
 test('clicking + New again while a draft is open resets to a fresh draft', async ({ outpostPage }) => {
@@ -75,9 +78,12 @@ test('navigating away from an incomplete draft persists nothing', async ({ daemo
   await expect(outpostPage.locator('.sched-detail-state.draft')).toBeVisible();
   await expect(outpostPage.locator('input.sched-detail-title-input')).toHaveValue('');
 
+  // Builtins are seeded at daemon startup (setup-schedules.ts) — only the
+  // user-created (non-builtin) count should stay at zero here.
   const res = await outpostPage.request.get(`${daemon.baseUrl}/api/schedules`);
   const body = await res.json();
-  expect(body.schedules).toHaveLength(0);
+  const userSchedules = body.schedules.filter((s: { builtin?: boolean }) => !s.builtin);
+  expect(userSchedules).toHaveLength(0);
 });
 
 test('renaming an existing schedule via the header input persists across a reload', async ({ daemon, outpostPage }) => {

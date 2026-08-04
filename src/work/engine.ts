@@ -34,6 +34,11 @@ import type { JournalStore } from '../storage/journal-store.js';
 
 const MAX_EVENTS_PER_JOB = 50;
 
+// createExternalJob threads dedupeKey through as the job id, which becomes a filesystem
+// path component (see createExternalJob) — same path-traversal / argv-flag-smuggling
+// concern as worktree-manager.ts's SESSION_ID_RE/BRANCH_NAME_RE.
+const DEDUPE_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 // Fields the plan editor may PATCH onto an existing step. `approach`/`risks` only
 // apply to open-pr steps; `action`/`inputs` only apply to action steps — editStepManually
 // picks the applicable subset by the step's own `type`.
@@ -462,6 +467,7 @@ export class WorkEngine {
     title: string;
     description: string;
     externalRef?: JobRecord['externalRef'];
+    dedupeKey?: string;
     id?: string;
     autoPlan?: boolean;
   }): JobRecord {
@@ -470,6 +476,7 @@ export class WorkEngine {
     const j: JobRecord = {
       id,
       source: input.source,
+      dedupeKey: input.dedupeKey,
       title: input.title,
       description: input.description,
       externalRef: input.externalRef,
@@ -484,25 +491,48 @@ export class WorkEngine {
     return j;
   }
 
+  // Single entry point for externally-sourced jobs (Linear script, other job-source scripts,
+  // native watchers). Idempotent on dedupeKey: a key that already maps to a job no-ops and
+  // returns that job (issue triaged once → never re-enqueued, even after it's done), rather
+  // than spawning a duplicate on the next poll tick.
+  createExternalJob(input: {
+    source: string;
+    title: string;
+    body?: string;
+    dedupeKey?: string;
+    externalRef?: JobRecord['externalRef'];
+    autoPlan?: boolean;
+  }): { jobId: string; created: boolean } {
+    // dedupeKey doubles as the job id below, which becomes a filesystem path component
+    // (jobFile in work-queue.ts, writeEnvelope's jobsDir/jobId dir) — reject anything that
+    // could traverse out of jobsDir, mirroring worktree-manager.ts's sessionId/branch guards.
+    if (input.dedupeKey !== undefined) {
+      if (!DEDUPE_KEY_RE.test(input.dedupeKey) || input.dedupeKey.includes('..')) {
+        throw new Error(`invalid dedupeKey: must be a path-safe token (alphanumeric, dot, dash, underscore; no "..")`);
+      }
+    }
+    if (input.dedupeKey) {
+      const existing = this.opts.queue.get(input.dedupeKey);
+      if (existing) return { jobId: existing.id, created: false };
+    }
+    const job = this.createJob({
+      source: input.source,
+      id: input.dedupeKey,               // dedupeKey doubles as the deterministic job id (as Linear does today)
+      dedupeKey: input.dedupeKey,
+      title: input.title,
+      description: input.body ?? '',
+      externalRef: input.externalRef,
+      autoPlan: input.autoPlan ?? true,
+    });
+    return { jobId: job.id, created: true };
+  }
+
   // Explicit launcher — user clicks "Launch orchestrator" on a job that has no plan yet.
   async launchOrchestrator(jobId: string, context?: string): Promise<void> {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
     if (j.steps.length > 0) return; // use reopenOrchestrator for amendments
     await this.spawnInitialOrchestrator(j, 'meta.orchestrate', context);
-  }
-
-  // Linear poller calls this when an issue is first observed. Idempotent.
-  ensureLinearJob(issue: { id: string; identifier: string; url: string; title: string; description?: string }): JobRecord {
-    const existing = this.opts.queue.get(issue.identifier);
-    if (existing) return existing;
-    return this.createJob({
-      source: 'linear',
-      id: issue.identifier,
-      title: issue.title,
-      description: issue.description ?? '',
-      externalRef: { url: issue.url, issueIdentifier: issue.identifier, linearUuid: issue.id },
-    });
   }
 
   async abandonJob(jobId: string): Promise<void> {

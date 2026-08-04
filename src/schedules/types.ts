@@ -15,14 +15,16 @@ export type Guard =
   | { kind: 'usage-threshold'; window: '5h' | '7d'; op: '>' | '>='; value: number }
   | { kind: 'no-repo-changes'; repo?: string };
 
-// A schedule runs one of three things, discriminated by `kind`:
+// A schedule runs one of four things, discriminated by `kind`:
 //   - 'skill'  — a named action from the catalog (the original, kind-less shape)
 //   - 'prompt' — free-text instructions dispatched as a job in `cwd`
 //   - 'script' — a shell script dispatched as a job in `cwd`
+//   - 'native' — an in-daemon handler (no job dispatch, no cwd) for builtin schedules
 export type What =
   | { kind: 'skill'; skill: string; repos?: string[]; scope?: string; model?: string; args?: Record<string, unknown> }
   | { kind: 'prompt'; prompt: string; cwd: string; model?: string }
-  | { kind: 'script'; script: string; cwd: string; model?: string; args?: Record<string, unknown> };
+  | { kind: 'script'; script: string; cwd: string; model?: string; args?: Record<string, unknown> }
+  | { kind: 'native'; handler: string };
 
 // Rows persisted before the discriminated union existed have no `kind` — a bare
 // {skill, ...} is a skill schedule. Applied on read (SchedulesStore) so nothing
@@ -32,14 +34,19 @@ export function normalizeWhat(what: What | LegacyWhat): What {
   return 'kind' in what ? what : { kind: 'skill', ...what };
 }
 
-// The working directory a `what` targets: a skill's first repo, or a prompt/script's cwd.
+// The working directory a `what` targets: a skill's first repo, a prompt/script's cwd,
+// or undefined for native (no job dispatch, so no worktree to point at).
 export function whatCwd(what: What): string | undefined {
-  return what.kind === 'skill' ? what.repos?.[0] : what.cwd;
+  if (what.kind === 'skill') return what.repos?.[0];
+  if (what.kind === 'native') return undefined;
+  return what.cwd;
 }
 
-// Short display/label token for a run — the skill name, or the literal kind.
+// Short display/label token for a run — the skill name, the handler name, or the literal kind.
 export function whatLabel(what: What): string {
-  return what.kind === 'skill' ? what.skill : what.kind;
+  if (what.kind === 'skill') return what.skill;
+  if (what.kind === 'native') return what.handler;
+  return what.kind;
 }
 
 export interface Routing {
@@ -56,6 +63,7 @@ export interface ScheduleRecord {
   what: What;
   guards: Guard[];
   routing: Routing;
+  builtin?: boolean;
   createdAt: number;
   updatedAt: number;
 }

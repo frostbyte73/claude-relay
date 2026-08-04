@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { humanizeCron, guardLabel, scheduleCards, filterScheduleCards, scheduleDetail, runRow, whatSummary, humanizeInterval, systemScheduleCards, draftValidity } from '../../src/pwa/vm/schedules.js';
+import { humanizeCron, guardLabel, scheduleCards, filterScheduleCards, scheduleDetail, runRow, whatSummary, draftValidity } from '../../src/pwa/vm/schedules.js';
 
 const NOW = new Date('2026-07-13T12:00:00Z').getTime(); // a Monday
 
@@ -66,53 +66,8 @@ describe('whatSummary', () => {
   it('uses a script first line (mono)', () => {
     expect(whatSummary({ kind: 'script', script: '\n#!/bin/bash\nnpm test', cwd: '/x' })).toEqual({ kind: 'script', label: '#!/bin/bash', mono: true });
   });
-});
-
-describe('humanizeInterval', () => {
-  it('renders sub-hour intervals in minutes', () => {
-    expect(humanizeInterval(30 * 60_000)).toBe('every 30m');
-  });
-  it('renders whole-hour intervals in hours', () => {
-    expect(humanizeInterval(2 * 60 * 60_000)).toBe('every 2h');
-  });
-  it('falls back to minutes for a non-whole-hour interval', () => {
-    expect(humanizeInterval(90 * 60_000)).toBe('every 90m');
-  });
-  it('calls a null interval adaptive', () => {
-    expect(humanizeInterval(null)).toBe('adaptive');
-  });
-});
-
-describe('systemScheduleCards', () => {
-  const desc = (over = {}) => ({
-    id: 'linear', kind: 'system', name: 'Linear — assigned issues', description: 'x',
-    intervalMs: 60 * 60_000, lastRunAt: NOW - 5 * 60_000, nextRunAt: NOW + 55 * 60_000,
-    lastError: null, running: false, ...over,
-  });
-
-  it('shapes last/next run and interval', () => {
-    const [c] = systemScheduleCards([desc()], NOW);
-    expect(c.intervalLabel).toBe('every 1h');
-    expect(c.lastRunSummary).toBe('5m ago');
-    expect(c.nextRunSummary).toBe('in 55m');
-    expect(c.lastError).toBeNull();
-  });
-
-  it('reports "never run" and no next run before the first run', () => {
-    const [c] = systemScheduleCards([desc({ lastRunAt: null, nextRunAt: null })], NOW);
-    expect(c.lastRunSummary).toBe('never run');
-    expect(c.nextRunSummary).toBeNull();
-  });
-
-  it('shows "running…" as the next-run line while a run is in flight', () => {
-    const [c] = systemScheduleCards([desc({ running: true })], NOW);
-    expect(c.nextRunSummary).toBe('running…');
-    expect(c.running).toBe(true);
-  });
-
-  it('carries a lastError through', () => {
-    const [c] = systemScheduleCards([desc({ lastError: 'gh: 503' })], NOW);
-    expect(c.lastError).toBe('gh: 503');
+  it('labels a native handler by name (mono)', () => {
+    expect(whatSummary({ kind: 'native', handler: 'pr-watcher' })).toEqual({ kind: 'native', label: 'pr-watcher', mono: true });
   });
 });
 
@@ -145,6 +100,13 @@ describe('scheduleCards', () => {
     const [card] = scheduleCards([schedule({ enabled: false })], NOW);
     expect(card.dimmed).toBe(true);
     expect(card.nextRunSummary).toBe('Paused');
+  });
+
+  it('carries builtin through for the badge/delete-hide', () => {
+    const [userCard] = scheduleCards([schedule()], NOW);
+    expect(userCard.builtin).toBe(false);
+    const [builtinCard] = scheduleCards([schedule({ builtin: true })], NOW);
+    expect(builtinCard.builtin).toBe(true);
   });
 
   it('shapes an event card from its descriptor', () => {

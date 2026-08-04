@@ -95,24 +95,9 @@
 }
 .sched-new-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* ── System poller cards (read-only) ─────────────────────────────────── */
-/* Divider label separating the "All" tab's user schedules from the built-in
-   pollers below them. */
-.sched-section-hdr {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-dim); margin: 6px 4px 2px;
-}
-/* Not clickable — no navigation, so drop the card's pointer affordance. */
-.sched-card--system { cursor: default; }
-.sched-card--system:hover { border-color: var(--line); background: var(--bg); }
-.sched-system-pill { margin-left: auto; font-size: 10px; color: var(--text-dim); }
-.sched-sys-status {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  font-size: 11px; color: var(--text-mute); margin-top: 4px;
-  font-variant-numeric: tabular-nums;
-}
-.sched-sys-error { font-size: 11px; color: var(--danger); margin-top: 6px; }
-.sched-sys-actions { margin-top: 10px; }
+/* Marks a card as one of the daemon's seeded builtin schedules — same card,
+   same navigation, just undeletable (see detail.js). */
+.sched-builtin-pill { margin-left: auto; font-size: 10px; color: var(--text-dim); }
 
 /* ── Switch (accessible on/off, non-native) ──────────────────────────── */
 .sched-switch {

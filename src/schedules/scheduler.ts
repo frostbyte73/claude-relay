@@ -24,22 +24,32 @@ export interface SchedulerSpawnDeps {
   spawnSkillSession?: (input: SpawnSkillSessionInput) => Promise<{ sessionId: string }> | { sessionId: string };
 }
 
+// Script/native schedules never spawn a job or session — `fire()` dispatches them inline via
+// these before `resolveSpawnMode`/`spawn()` are even consulted.
+export interface SchedulerInlineDeps {
+  runScript?: (what: Extract<What, { kind: 'script' }>, opts: { builtin?: boolean }) => Promise<{ outcome: 'ok' | 'error'; verdict?: RunVerdict }>;
+  runNative?: (handler: string) => Promise<{ outcome: 'ok' | 'error'; verdict?: RunVerdict }>;
+}
+
 export interface SchedulerDeps {
   store: SchedulesStore;
   guardProviders: GuardProviders;
   spawn: SchedulerSpawnDeps;
   // Optional — omit in tests that only exercise guard/spawn logic, not delivery.
   routing?: RoutingDeps;
+  // Optional — omit in tests that only exercise skill/prompt spawn logic, not script/native.
+  inline?: SchedulerInlineDeps;
   // Wired to the daemon's `notifyAll` (src/daemon.ts). Fired with
   // `{type:'schedule_run_changed', scheduleId, run}` on run start/finish/skip.
   notify?: (message: unknown) => void;
   now?: () => number;
 }
 
-// Prompts and scripts always run as jobs (the orchestrator plans/executes them in a worktree).
-// For a named skill: `code.*` skills drive the tracked-job/PR lifecycle (orchestrator, steps, PR
-// review) so they need a real JobRecord; everything else (read/write/human/meta skills) is a
-// single self-contained run and only needs a session. A structural heuristic, not a setting.
+// Prompts always run as jobs (the orchestrator plans/executes them in a worktree). `script` and
+// `native` are dispatched inline in `fire()` before this is ever consulted, so this only ever
+// sees `skill` and `prompt`. For a named skill: `code.*` skills drive the tracked-job/PR
+// lifecycle (orchestrator, steps, PR review) so they need a real JobRecord; everything else
+// (read/write/human/meta skills) is a single self-contained run and only needs a session.
 function resolveSpawnMode(what: What): 'job' | 'session' {
   if (what.kind !== 'skill') return 'job';
   return what.skill.startsWith('code.') ? 'job' : 'session';
@@ -188,6 +198,32 @@ export class Scheduler {
     if (!run) throw new Error(`schedule deleted during dispatch: ${scheduleId}`);
     this.notify(scheduleId, run);
 
+    // script/native run synchronously to a terminal outcome here — no job/session is spawned,
+    // so there's nothing for `completeRunByRef` to finalize later the way skill/prompt runs are.
+    const what = schedule.what;
+    if (what.kind === 'script' || what.kind === 'native') {
+      try {
+        const result = what.kind === 'script'
+          ? await this.requireInline('runScript').runScript!(what, { builtin: schedule.builtin })
+          : await this.requireInline('runNative').runNative!(what.handler);
+        const done = this.deps.store.updateRun(run.id, {
+          outcome: result.outcome,
+          finishedAt: this.now(),
+          verdict: result.verdict,
+        }) ?? run;
+        this.notify(scheduleId, done);
+        return done;
+      } catch (e) {
+        const failed = this.deps.store.updateRun(run.id, {
+          outcome: 'error',
+          finishedAt: this.now(),
+          verdict: { summary: (e as Error).message },
+        }) ?? run;
+        this.notify(scheduleId, failed);
+        return failed;
+      }
+    }
+
     try {
       const refs = await this.spawn(schedule);
       const updated = this.deps.store.updateRun(run.id, { refs }) ?? run;
@@ -202,6 +238,11 @@ export class Scheduler {
       this.notify(scheduleId, failed);
       return failed;
     }
+  }
+
+  private requireInline(dep: keyof SchedulerInlineDeps): SchedulerInlineDeps {
+    if (!this.deps.inline?.[dep]) throw new Error('inline deps not wired');
+    return this.deps.inline;
   }
 
   private recordSkip(schedule: ScheduleRecord, reason: string): ScheduleRun {

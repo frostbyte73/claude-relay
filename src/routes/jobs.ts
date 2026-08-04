@@ -2,7 +2,7 @@ import type { Server } from '../server.js';
 import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
-import type { LinearPoller } from '../integrations/linear-poller.js';
+import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { readBody, readJsonBody } from './util.js';
@@ -12,13 +12,13 @@ export interface JobsRoutesDeps {
   jobQueue: JobQueue;
   engine: WorkEngine;
   prWatcher: PrWatcher;
-  linearPoller: LinearPoller;
+  scheduler: Scheduler;
   sessionStore: SessionStore;
   worktreeManager: WorktreeManager;
 }
 
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
-  const { jobQueue, engine, prWatcher, linearPoller, sessionStore, worktreeManager } = deps;
+  const { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager } = deps;
 
   server.route('GET', '/api/work/jobs', (_req, res) => {
     res.statusCode = 200;
@@ -365,11 +365,11 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
 
   server.route('POST', '/api/work/sync', async (_req, res) => {
     try {
-      const linear = await linearPoller.syncNow();
+      await scheduler.runNow('linear');
       await prWatcher.syncNow();
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ linear, lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null }));
+      res.end(JSON.stringify({ lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null }));
     } catch (e) {
       res.statusCode = 502; res.end(`sync error: ${(e as Error).message}`);
     }

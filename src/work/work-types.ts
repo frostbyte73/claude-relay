@@ -266,7 +266,8 @@ export interface PlanIteration {
 
 export interface JobRecord {
   id: string;
-  source: 'linear' | 'manual';
+  source: string;        // 'linear' | 'manual' | any external source id (e.g. a second job source)
+  dedupeKey?: string;    // idempotency key; a create_job with a seen key no-ops onto the existing job
   title: string;
   description: string;
   externalRef?: {

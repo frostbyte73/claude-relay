@@ -93,8 +93,9 @@ export function scriptFirstLine(script) {
   return first.length > 48 ? `${first.slice(0, 48)}…` : first;
 }
 
-// One display token per `what` kind: the skill name, a prompt snippet, or a
-// script's first line. `mono` picks the code-pill treatment for skill/script.
+// One display token per `what` kind: the skill name, a prompt snippet, a
+// script's first line, or a native handler's name. `mono` picks the code-pill
+// treatment for skill/script/native.
 export function whatSummary(what) {
   const kind = what?.kind ?? 'skill';
   if (kind === 'prompt') {
@@ -102,6 +103,7 @@ export function whatSummary(what) {
     return { kind, label: p.length > 64 ? `${p.slice(0, 64)}…` : (p || 'prompt'), mono: false };
   }
   if (kind === 'script') return { kind, label: scriptFirstLine(what.script), mono: true };
+  if (kind === 'native') return { kind, label: what?.handler ?? null, mono: true };
   return { kind, label: what?.skill ?? null, mono: true };
 }
 
@@ -157,39 +159,13 @@ export function scheduleCards(schedules = [], now = Date.now()) {
     enabled: !!s.enabled,
     dimmed: !s.enabled,
     nextRunSummary: nextRunSummary(s, now),
+    builtin: !!s.builtin,
   }));
 }
 
 export function filterScheduleCards(cards, tab) {
   if (!tab || tab === 'all') return cards;
   return cards.filter((c) => c.sourceKind === tab);
-}
-
-// "every 60m" / "every 30m" / "every 2h". Falls back to "adaptive" for a
-// self-scheduling poller (intervalMs null, e.g. usage).
-export function humanizeInterval(ms) {
-  if (ms == null) return 'adaptive';
-  const mins = Math.round(ms / 60_000);
-  if (mins < 60) return `every ${mins}m`;
-  const hours = mins / 60;
-  return Number.isInteger(hours) ? `every ${hours}h` : `every ${mins}m`;
-}
-
-// ── System poller cards ──────────────────────────────────────────────────
-// The daemon's built-in pollers (SystemScheduleDescriptor[]) rendered read-only
-// alongside user schedules: interval + last/next run + last error + run-now. No
-// enable toggle, cron edit, or delete — they aren't user-owned.
-export function systemScheduleCards(system = [], now = Date.now()) {
-  return system.map((d) => ({
-    id: d.id,
-    name: d.name ?? d.id,
-    description: d.description ?? null,
-    intervalLabel: humanizeInterval(d.intervalMs),
-    lastRunSummary: d.lastRunAt ? relPast(d.lastRunAt, now) : 'never run',
-    nextRunSummary: d.running ? 'running…' : (d.nextRunAt ? relFuture(d.nextRunAt, now) : null),
-    lastError: d.lastError ?? null,
-    running: !!d.running,
-  }));
 }
 
 // ── Detail-pane cards ────────────────────────────────────────────────────
@@ -271,6 +247,7 @@ export function scheduleDetail(schedule, runs = [], now = Date.now()) {
       skill: schedule.what?.skill ?? null,
       prompt: schedule.what?.prompt ?? null,
       script: schedule.what?.script ?? null,
+      handler: schedule.what?.handler ?? null,
       cwd: schedule.what?.cwd ?? null,
       repos: schedule.what?.repos ?? [],
       scope: schedule.what?.scope ?? null,

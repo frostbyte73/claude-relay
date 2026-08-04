@@ -15,12 +15,11 @@ import { writeDaemonSettings, writeMcpConfig, generateSecret } from './settings-
 import { JobQueue } from './work/work-queue.js';
 import { withLiveness } from './work/job-liveness.js';
 import { JournalStore } from './storage/journal-store.js';
-import { LinearPoller } from './integrations/linear-poller.js';
 import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
 import { UserPrsWatcher } from './integrations/user-prs-watcher.js';
-import { ClaudeUpdater } from './integrations/claude-updater.js';
 import { WorkEngine } from './work/engine.js';
+import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './setup-actions.js';
 import { ActionsStore } from './storage/actions-store.js';
 import { ActionRegistry } from './actions/index.js';
@@ -51,12 +50,13 @@ import { UsageLedger } from './integrations/usage-ledger.js';
 import { createRunsCapture, type ScheduleRunContext } from './storage/runs-capture.js';
 import { registerRunsRoutes } from './routes/runs.js';
 import { SchedulesStore } from './schedules/schedules-store.js';
+import { seedBuiltinSchedules } from './schedules/setup-schedules.js';
 import { whatLabel } from './schedules/types.js';
 import { Scheduler } from './schedules/scheduler.js';
 import { TokenScheduler } from './schedules/token-scheduler.js';
-import { SystemScheduleRegistry } from './schedules/system-schedules.js';
 import { registerSchedulesRoutes } from './routes/schedules.js';
-import { createGuardProviders, createRoutingDeps, createSpawnDeps } from './schedules/wiring.js';
+import { createGuardProviders, createInlineDeps, createRoutingDeps, createSpawnDeps } from './schedules/wiring.js';
+import { NativeHandlerRegistry } from './schedules/native-handlers.js';
 import allowlistDefault from '../config/allowlist.default.json' with { type: 'json' };
 import permissionGroupsDefault from '../config/permission-groups.default.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
@@ -341,10 +341,13 @@ async function main() {
   });
 
   const schedulesStore = new SchedulesStore(join(RUNTIME_DIR, 'schedules', 'index.json'));
+  const nativeHandlers = new NativeHandlerRegistry();
+  const scriptEnv = () => ({ OUTPOST_HOOK_PORT: String(HOOK_PORT), DAEMON_AUTH: secret });
   const scheduler = new Scheduler({
     store: schedulesStore,
     guardProviders: createGuardProviders(() => latestAccountUsage ?? undefined, projectRegistry, worktreeManager),
     spawn: createSpawnDeps(engine, manager, projectRegistry, worktreeManager),
+    inline: createInlineDeps(scriptEnv, nativeHandlers, projectRegistry, worktreeManager),
     routing: createRoutingDeps(() => process.env.OUTPOST_SLACK_WEBHOOK_URL || undefined, projectRegistry, worktreeManager),
     notify: notifyAll,
   });
@@ -358,7 +361,6 @@ async function main() {
     fire: (id) => scheduler.fireTokenOpportunistic(id),
   });
 
-  const linearPoller = new LinearPoller({ queue: jobQueue, engine });
   const prWatcher = new PrWatcher({ queue: jobQueue, engine });
   const userPrsWatcher = new UserPrsWatcher({
     statePath: join(RUNTIME_DIR, 'user-prs.json'),
@@ -368,15 +370,8 @@ async function main() {
     },
   });
 
-  const claudeUpdater = new ClaudeUpdater({ statePath: join(RUNTIME_DIR, 'claude-update.json') });
-
-  // Built-in pollers surfaced as read-only "system" schedules. usagePoller is
-  // constructed later (after the server) and registered there.
-  const systemSchedules = new SystemScheduleRegistry();
-  systemSchedules.register(linearPoller);
-  systemSchedules.register(prWatcher);
-  systemSchedules.register(userPrsWatcher);
-  systemSchedules.register(claudeUpdater);
+  nativeHandlers.register('pr-watcher', () => prWatcher.runOnce());
+  nativeHandlers.register('user-prs-watcher', () => userPrsWatcher.runOnce());
 
   const server = new Server({
     httpPort: config.httpPort,
@@ -744,7 +739,19 @@ async function main() {
         await onActionProposalHandler(JSON.stringify(a));
         return { ok: true };
       },
+      create_job: async (a) => {
+        const r = engine.createExternalJob({
+          source: String(a.source),
+          title: String(a.title),
+          body: a.body ? String(a.body) : undefined,
+          dedupeKey: a.dedupeKey ? String(a.dedupeKey) : undefined,
+          externalRef: a.externalRef as JobRecord['externalRef'] | undefined,
+        });
+        return r;
+      },
     }),
+    onCreateJob: async (p: { source: string; title: string; body?: string; dedupeKey?: string; externalRef?: JobRecord['externalRef'] }) =>
+      engine.createExternalJob(p),
   });
 
   // Static for daemon lifetime; new plugin/skill installs require a restart to surface.
@@ -764,7 +771,7 @@ async function main() {
   });
   registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher });
   registerProjectsRoutes(server, { sessionStore, projectRegistry });
-  registerJobsRoutes(server, { jobQueue, engine, prWatcher, linearPoller, sessionStore, worktreeManager });
+  registerJobsRoutes(server, { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager });
   registerPushRoutes(server, { pushStore, pushSender, userPrsWatcher });
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
@@ -772,7 +779,7 @@ async function main() {
     journalStore, mcpConfigPath,
   });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
-  registerSchedulesRoutes(server, { store: schedulesStore, scheduler, system: systemSchedules, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
+  registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
   registerPreferencesRoutes(server, { preferencesStore });
 
 
@@ -889,7 +896,6 @@ async function main() {
       void tokenScheduler.onUsageSnapshot();
     },
   });
-  systemSchedules.register(usagePoller);
   usagePoller.start();
 
   // Broadcast resolutions so cards render "Timed out" and multi-device sees the decision.
@@ -1061,8 +1067,7 @@ async function main() {
   }
   console.log(`[daemon] hook server on http://127.0.0.1:${HOOK_PORT} (loopback only)`);
 
-  userPrsWatcher.start();
-  claudeUpdater.start();
+  seedBuiltinSchedules(schedulesStore, homedir());
   scheduler.start();
 
   // Broadcast every queue mutation to the notifications WS so the PWA work UI can
@@ -1099,8 +1104,6 @@ async function main() {
   if (process.env.LINEAR_API_TOKEN) {
     // Actions are already seeded + loaded at startup (see the registry construction above).
     console.log(`[work] actions available: ${loadedActionCount}`);
-    linearPoller.start();
-    prWatcher.start();
     engine.reconcileInterruptedEdits();
     engine.reconcileInterruptedSteps();
     engine.reconcileWaits();

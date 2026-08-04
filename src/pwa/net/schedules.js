@@ -21,9 +21,6 @@ export const schedulesApi = {
   update(id, patch)         { return request(idPath(id), { method: 'PATCH', body: JSON.stringify(patch) }); },
   remove(id)                { return request(idPath(id), { method: 'DELETE' }); },
   runNow(id)                { return request(`${idPath(id)}/run-now`, { method: 'POST', body: '{}' }); },
-  // Read-only system pollers (Linear/PR-watcher/user-PRs/usage) surfaced by the
-  // daemon; only a manual run-now is exposed for them.
-  runNowSystem(id)          { return request(`${BASE}/system/${encodeURIComponent(id)}/run-now`, { method: 'POST', body: '{}' }); },
   // Resuming a paused schedule is `update(id, { enabled: true })` — the store's
   // ScheduleUpdate shape (src/schedules/schedules-store.ts) has no separate resume route.
   pause(id)                 { return request(`${idPath(id)}/pause`, { method: 'POST', body: '{}' }); },

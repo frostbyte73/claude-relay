@@ -46,7 +46,7 @@ function renderHeader(schedule, mount, { onRunNow, onDuplicate, onTogglePause, o
         <div class="o-menu-body" hidden>
           <button type="button" class="o-btn o-btn--default sched-duplicate">Duplicate</button>
           <button type="button" class="o-btn o-btn--default sched-toggle-pause">${schedule.enabled ? 'Pause' : 'Resume'}</button>
-          <button type="button" class="o-btn o-btn--danger sched-delete">Delete</button>
+          ${schedule.builtin ? '' : '<button type="button" class="o-btn o-btn--danger sched-delete">Delete</button>'}
         </div>
       </div>
     </div>
@@ -59,7 +59,7 @@ function renderHeader(schedule, mount, { onRunNow, onDuplicate, onTogglePause, o
   hdr.querySelector('.sched-run-now').addEventListener('click', onRunNow);
   hdr.querySelector('.sched-duplicate').addEventListener('click', onDuplicate);
   hdr.querySelector('.sched-toggle-pause').addEventListener('click', onTogglePause);
-  hdr.querySelector('.sched-delete').addEventListener('click', onDelete);
+  hdr.querySelector('.sched-delete')?.addEventListener('click', onDelete);
   wireOverflowMenu(hdr);
   return hdr;
 }

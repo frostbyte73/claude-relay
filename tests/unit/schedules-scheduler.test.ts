@@ -191,10 +191,9 @@ describe('Scheduler — run-now / guards / spawn dispatch', () => {
     expect(readRun!.refs).toEqual({ sessionId: 'sess-1' });
   });
 
-  it('dispatches prompt and script schedules to createJob (never a session)', async () => {
+  it('dispatches prompt schedules to createJob (never a session)', async () => {
     const store = new SchedulesStore(tmpPath());
     store.create(input({ trigger: { kind: 'event', descriptor: 'p' }, what: { kind: 'prompt', prompt: 'summarize PRs', cwd: '/repo' } }));
-    store.create(input({ trigger: { kind: 'event', descriptor: 's' }, what: { kind: 'script', script: 'npm test', cwd: '/repo' } }));
     const seen: What[] = [];
     let sessionCalled = false;
     const scheduler = makeScheduler(store, {
@@ -204,11 +203,52 @@ describe('Scheduler — run-now / guards / spawn dispatch', () => {
       },
     });
     const [promptRun] = await scheduler.registerEventFiring('p');
-    const [scriptRun] = await scheduler.registerEventFiring('s');
     expect(promptRun!.refs).toEqual({ jobId: 'job-prompt' });
-    expect(scriptRun!.refs).toEqual({ jobId: 'job-script' });
-    expect(seen.map((w) => w.kind)).toEqual(['prompt', 'script']);
+    expect(seen.map((w) => w.kind)).toEqual(['prompt']);
     expect(sessionCalled).toBe(false);
+  });
+
+  it('dispatches a script schedule inline via runScript, never spawning a job', async () => {
+    const store = new SchedulesStore(tmpPath());
+    store.create(input({
+      trigger: { kind: 'event', descriptor: 's' },
+      what: { kind: 'script', script: 'npm test', cwd: '/repo' },
+    }));
+    let createJobCalled = false;
+    const scheduler = makeScheduler(store, {
+      spawn: { createJob: () => { createJobCalled = true; return { jobId: 'job-x' }; } },
+      inline: { runScript: async () => ({ outcome: 'ok', verdict: { summary: 'ran' } }) },
+    });
+    const [run] = await scheduler.registerEventFiring('s');
+    expect(run!.outcome).toBe('ok');
+    expect(run!.verdict?.summary).toBe('ran');
+    expect(run!.refs).toBeUndefined();
+    expect(createJobCalled).toBe(false);
+    expect(store.getRun(run!.id)?.finishedAt).toBeDefined();
+  });
+
+  it('dispatches a native schedule inline via runNative with its handler id', async () => {
+    const store = new SchedulesStore(tmpPath());
+    store.create(input({
+      trigger: { kind: 'event', descriptor: 'n' },
+      what: { kind: 'native', handler: 'pr-watcher' },
+    }));
+    let seenHandler: string | undefined;
+    const scheduler = makeScheduler(store, {
+      inline: { runNative: async (handler) => { seenHandler = handler; return { outcome: 'ok' }; } },
+    });
+    const [run] = await scheduler.registerEventFiring('n');
+    expect(run!.outcome).toBe('ok');
+    expect(seenHandler).toBe('pr-watcher');
+  });
+
+  it('records outcome error when inline deps are missing for a script schedule', async () => {
+    const store = new SchedulesStore(tmpPath());
+    store.create(input({ trigger: { kind: 'event', descriptor: 'x' }, what: { kind: 'script', script: 'true', cwd: '/repo' } }));
+    const scheduler = makeScheduler(store);
+    const [run] = await scheduler.registerEventFiring('x');
+    expect(run!.outcome).toBe('error');
+    expect(run!.verdict?.summary).toBe('inline deps not wired');
   });
 
   it('records outcome error when the spawn dependency is missing', async () => {

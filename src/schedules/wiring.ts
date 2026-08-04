@@ -9,8 +9,10 @@ import type { WorktreeManager } from '../git/worktree-manager.js';
 import { isKnownCwd } from '../git/known-cwd.js';
 import type { GuardProviders, UsageSnapshotLike } from './guards.js';
 import type { RoutingDeps } from './routing.js';
-import type { SchedulerSpawnDeps } from './scheduler.js';
+import type { SchedulerInlineDeps, SchedulerSpawnDeps } from './scheduler.js';
 import type { What } from './types.js';
+import { runScript } from './script-runner.js';
+import type { NativeHandlerRegistry } from './native-handlers.js';
 
 // Daemon-specific implementations of the dependency-injection interfaces schedules/*.ts
 // define, kept out of daemon.ts per the "keep wiring thin" rule — daemon.ts just calls
@@ -68,6 +70,8 @@ function describeJob(what: What, projectRegistry: ProjectRegistry, worktreeManag
       what.args ? `Args: ${JSON.stringify(what.args)}` : null,
     ].filter(Boolean).join('\n');
   }
+  // Native schedules run an in-daemon handler directly — never dispatched as a job.
+  if (what.kind === 'native') throw new Error(`Native schedule "${what.handler}" cannot be dispatched as a job`);
   assertKnownCwd(what.cwd, projectRegistry, worktreeManager);
   const meta = ['', '---', `cwd: ${what.cwd}`, `model: ${what.model || 'default'}`];
   if (what.kind === 'prompt') {
@@ -120,6 +124,31 @@ export function createSpawnDeps(
         message: { role: 'user', content: `/${input.skill}${argsSuffix}` },
       });
       return { sessionId };
+    },
+  };
+}
+
+// script/native schedules never go through the orchestrator — `runScript` shells out directly
+// and `runNative` invokes the daemon-registered handler fn, both driving `fire()`'s run straight
+// to a terminal outcome instead of leaving it `running` for a job/session to finish later.
+export function createInlineDeps(
+  scriptEnv: () => Record<string, string>,
+  nativeHandlers: NativeHandlerRegistry,
+  projectRegistry: ProjectRegistry,
+  worktreeManager: WorktreeManager,
+): SchedulerInlineDeps {
+  return {
+    runScript: async (what, opts) => {
+      // A builtin script schedule is daemon-seeded and trusted (its `cwd` is the daemon's own
+      // home dir, not a registered project); a user script schedule still must target a known cwd.
+      if (!opts.builtin) assertKnownCwd(what.cwd, projectRegistry, worktreeManager);
+      const r = await runScript({ script: what.script, cwd: what.cwd, env: scriptEnv() });
+      return { outcome: r.outcome, verdict: { summary: r.output.slice(-4000) } };
+    },
+    runNative: async (handler) => {
+      const fn = nativeHandlers.get(handler);
+      if (!fn) throw new Error(`unknown native handler: ${handler}`);
+      return fn();
     },
   };
 }

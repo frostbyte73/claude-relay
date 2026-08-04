@@ -31,6 +31,11 @@ function viewRows(w) {
       <span class="v"><pre class="sched-args-code sched-script-view">${escapeHtml(w.script ?? '')}</pre></span>
       ${cwdRow}${runnerRow}${argsRow}`;
   }
+  if (w.kind === 'native') {
+    return `
+      <span class="k">Handler</span>
+      <span class="v">${w.handler ? `<span class="o-pill code sched-accent-pill">${escapeHtml(w.handler)}</span>` : '<span class="sched-tz">not set</span>'}</span>`;
+  }
   return `
     <span class="k">Skill</span>
     <span class="v">${w.skill ? `<span class="o-pill code sched-accent-pill">${escapeHtml(w.skill)}</span>` : '<span class="sched-tz">not set</span>'}</span>
@@ -45,15 +50,19 @@ export function renderWhatCard(schedule, detail, editState, repaint, onSave) {
   const card = document.createElement('div');
   card.className = 'o-section sched-card-detail';
 
-  if (!editState.what) {
+  // A native handler is an in-daemon function wired at daemon.ts startup, not
+  // something a form can redirect — no Edit affordance, no kind switcher.
+  const isNative = detail.whatToRun.kind === 'native';
+
+  if (isNative || !editState.what) {
     card.innerHTML = `
       <div class="sched-card-hdr">
         <h3 class="o-microhead">✱ What to run</h3>
-        <button type="button" class="sched-edit-link">Edit</button>
+        ${isNative ? '' : '<button type="button" class="sched-edit-link">Edit</button>'}
       </div>
       <div class="sched-kv">${viewRows(detail.whatToRun)}</div>
     `;
-    card.querySelector('.sched-edit-link').addEventListener('click', () => { editState.what = true; repaint(); });
+    if (!isNative) card.querySelector('.sched-edit-link').addEventListener('click', () => { editState.what = true; repaint(); });
     return card;
   }
 

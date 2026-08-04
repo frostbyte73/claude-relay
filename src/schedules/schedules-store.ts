@@ -94,6 +94,29 @@ export class SchedulesStore {
     return record;
   }
 
+  // Seeds a builtin schedule at daemon startup. Idempotent on `record.id` so re-seeding on
+  // every boot never clobbers a user's edits to timing/enabled state.
+  ensureBuiltin(record: { id: string; name: string; trigger: Trigger; what: What; enabled?: boolean }): ScheduleRecord {
+    const existing = this.get(record.id);
+    if (existing) return existing;
+    const now = this.now();
+    const full: ScheduleRecord = {
+      id: record.id,
+      name: record.name,
+      enabled: record.enabled ?? true,
+      trigger: record.trigger,
+      what: normalizeWhat(record.what),
+      guards: [],
+      routing: {},
+      builtin: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.schedules.set(full.id, full);
+    this.persist();
+    return full;
+  }
+
   update(id: string, patch: ScheduleUpdate): ScheduleRecord | null {
     const cur = this.schedules.get(id);
     if (!cur) return null;

@@ -29,7 +29,6 @@ export interface UserPrsSnapshot {
 
 export interface UserPrsWatcherOpts {
   statePath: string;
-  pollMs?: number;
   runGh?: (args: string[]) => Promise<string>;
   onChange?: (snap: UserPrsSnapshot) => void;
 }
@@ -54,17 +53,14 @@ export class UserPrsWatcher {
   readonly id = 'user-prs';
   readonly name = 'GitHub — my open PRs';
   readonly description = 'Tracks your own open pull requests across repos.';
-  private readonly pollMs: number;
   private readonly runGh: (args: string[]) => Promise<string>;
   private readonly statePath: string;
   private readonly onChange: ((snap: UserPrsSnapshot) => void) | undefined;
-  private timer: NodeJS.Timeout | null = null;
   private snapshot: UserPrsSnapshot;
   private lastHash = '';
   private inFlight: Promise<void> | null = null;
 
   constructor(opts: UserPrsWatcherOpts) {
-    this.pollMs = opts.pollMs ?? (Number(process.env.OUTPOST_USER_PR_POLL_MS) || 30 * 60_000);
     this.runGh = opts.runGh ?? defaultRunGh;
     this.statePath = opts.statePath;
     this.onChange = opts.onChange;
@@ -103,27 +99,12 @@ export class UserPrsWatcher {
     return this.snapshot;
   }
 
-  get intervalMs(): number | null { return this.pollMs; }
-
-  status(): { lastRunAt: number | null; lastError: string | null; running: boolean } {
-    return { lastRunAt: this.snapshot.lastSyncAt, lastError: this.snapshot.lastError, running: !!this.inFlight };
-  }
-
-  runNow(): Promise<void> {
-    return this.syncNow();
-  }
-
-  start(): void {
-    void this.syncNow().catch((e) => console.error('[user-prs] initial sync failed:', (e as Error).message));
-    this.timer = setInterval(() => {
-      void this.syncNow().catch((e) => console.error('[user-prs] sync failed:', (e as Error).message));
-    }, this.pollMs);
-  }
-
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+  async runOnce(): Promise<{ outcome: 'ok' | 'error' }> {
+    try {
+      await this.syncNow();
+      return { outcome: 'ok' };
+    } catch {
+      return { outcome: 'error' };
     }
   }
 

@@ -1,6 +1,6 @@
 import { schedulesStore } from '../../state/schedules.js';
 import { nav } from '../../state/nav.js';
-import { scheduleCards, filterScheduleCards, systemScheduleCards } from '../../vm/schedules.js';
+import { scheduleCards, filterScheduleCards } from '../../vm/schedules.js';
 import { escapeHtml } from '../../util.js';
 import { createSwitch } from './switch.js';
 import { startScheduleDraft } from './draft.js';
@@ -11,7 +11,6 @@ const TABS = [
   { id: 'once', label: 'Once' },
   { id: 'token', label: 'Token' },
   { id: 'event', label: 'Event' },
-  { id: 'system', label: 'System' },
 ];
 
 export function renderList(mount) {
@@ -76,49 +75,6 @@ export function renderList(mount) {
       .some((v) => v.toLowerCase().includes(needle));
   }
 
-  function matchesSystemFilter(c, needle) {
-    return [c.name, c.description ?? '', c.intervalLabel].some((v) => v.toLowerCase().includes(needle));
-  }
-
-  // Read-only card for a built-in poller: interval + last/next run + last error, plus a
-  // run-now button. No enable toggle, cron edit, delete, or navigation — not user-owned.
-  function renderSystemCard(c) {
-    const card = document.createElement('div');
-    card.className = 'sched-card sched-card--system';
-    card.innerHTML = `
-      <div class="sched-hdr">
-        <span class="sched-source-icon">⚙</span>
-        <span class="sched-name">${escapeHtml(c.name)}</span>
-        <span class="o-pill sched-system-pill">system</span>
-      </div>
-      ${c.description ? `<div class="sched-when">${escapeHtml(c.description)}</div>` : ''}
-      <div class="sched-descriptor">${escapeHtml(c.intervalLabel)}</div>
-      <div class="sched-sys-status">
-        <span>Last run ${escapeHtml(c.lastRunSummary)}</span>
-        ${c.nextRunSummary ? `<span>· Next ${escapeHtml(c.nextRunSummary)}</span>` : ''}
-      </div>
-      ${c.lastError ? `<div class="sched-sys-error" role="alert">⚠ ${escapeHtml(c.lastError)}</div>` : ''}
-      <div class="sched-sys-actions">
-        <button type="button" class="o-btn o-btn--default sched-sys-run">Run now</button>
-      </div>
-    `;
-    const runBtn = card.querySelector('.sched-sys-run');
-    runBtn.addEventListener('click', async () => {
-      runBtn.disabled = true;
-      runBtn.textContent = 'Running…';
-      try { await schedulesStore.runNowSystem(c.id); }
-      finally { await schedulesStore.load(); }
-    });
-    return card;
-  }
-
-  function sectionHeader(label) {
-    const el = document.createElement('div');
-    el.className = 'sched-section-hdr';
-    el.textContent = label;
-    return el;
-  }
-
   function renderCard(c, active) {
     const card = document.createElement('div');
     card.className = `sched-card${active ? ' active' : ''}${c.dimmed ? ' disabled' : ''}`;
@@ -129,6 +85,7 @@ export function renderList(mount) {
       <div class="sched-hdr">
         <span class="sched-source-icon">${c.sourceKind === 'event' ? '◆' : c.sourceKind === 'once' ? '◷' : c.sourceKind === 'token' ? '⚡' : '↻'}</span>
         <span class="sched-name">${escapeHtml(c.name)}</span>
+        ${c.builtin ? '<span class="o-pill sched-builtin-pill">builtin</span>' : ''}
       </div>
       <div class="sched-when">${escapeHtml(c.when)}</div>
       <div class="sched-descriptor">${escapeHtml(c.descriptor)}</div>
@@ -144,19 +101,13 @@ export function renderList(mount) {
   }
 
   function paint() {
-    const { schedules, system, loaded, loading } = schedulesStore.get();
+    const { schedules, loaded, loading } = schedulesStore.get();
     paintHeader(schedules);
     const now = Date.now();
     const needle = filter.trim().toLowerCase();
 
     let cards = filterScheduleCards(scheduleCards(schedules, now), tab);
     if (needle) cards = cards.filter((c) => matchesFilter(c, needle));
-
-    // System pollers show in their own tab and inline in "All"; the trigger-kind
-    // tabs (cron/once/event) are about user-owned schedules only.
-    const showSystem = tab === 'all' || tab === 'system';
-    let sysCards = showSystem ? systemScheduleCards(system ?? [], now) : [];
-    if (needle) sysCards = sysCards.filter((c) => matchesSystemFilter(c, needle));
 
     body.textContent = '';
     if (!loaded && loading) {
@@ -167,27 +118,16 @@ export function renderList(mount) {
       return;
     }
 
-    if (cards.length === 0 && sysCards.length === 0) {
+    if (cards.length === 0) {
       const el = document.createElement('div');
       el.className = 'o-frame-empty';
-      const nothing = schedules.length === 0 && (system?.length ?? 0) === 0;
-      el.textContent = nothing ? 'No schedules yet.' : 'No schedules match this filter.';
+      el.textContent = schedules.length === 0 ? 'No schedules yet.' : 'No schedules match this filter.';
       body.appendChild(el);
       return;
     }
 
     const selected = nav.get().selectionBySurface.schedules ?? null;
-    // In "All", user schedules lead and system pollers follow under a divider; in the
-    // dedicated "System" tab, only the pollers show (no header needed).
-    if (tab === 'system') {
-      for (const c of sysCards) body.appendChild(renderSystemCard(c));
-      return;
-    }
     for (const c of cards) body.appendChild(renderCard(c, c.id === selected));
-    if (sysCards.length) {
-      if (cards.length) body.appendChild(sectionHeader('System'));
-      for (const c of sysCards) body.appendChild(renderSystemCard(c));
-    }
   }
 
   paint();

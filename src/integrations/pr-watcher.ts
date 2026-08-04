@@ -15,7 +15,6 @@ async function defaultRunGh(cwd: string, args: string[]): Promise<string> {
 export interface PrWatcherOpts {
   queue: JobQueue;
   engine: WorkEngine;
-  pollMs?: number;
   runGh?: (cwd: string, args: string[]) => Promise<string>;
 }
 
@@ -183,12 +182,7 @@ export class PrWatcher {
   readonly id = 'pr-watcher';
   readonly name = 'GitHub — tracked PRs';
   readonly description = 'Refreshes CI, review, and comment state for open-PR steps.';
-  private readonly pollMs: number;
   private readonly runGh: (cwd: string, args: string[]) => Promise<string>;
-  private timer: NodeJS.Timeout | null = null;
-  private lastRunAt: number | null = null;
-  private lastError: string | null = null;
-  private running = false;
   // Adaptive follow-up polling: after a job's PR changes we re-poll at 1m / 5m /
   // 15m so a fresh push (CI back to pending), a new review, etc. surface within
   // a minute instead of on the next hourly sweep. A new change resets the ladder.
@@ -196,24 +190,16 @@ export class PrWatcher {
   private static readonly ESCALATION_MS = [60_000, 5 * 60_000, 15 * 60_000];
 
   constructor(private readonly opts: PrWatcherOpts) {
-    this.pollMs = opts.pollMs ?? (Number(process.env.OUTPOST_PR_POLL_MS) || 60 * 60_000);
     this.runGh = opts.runGh ?? defaultRunGh;
   }
 
-  start(): void {
-    void this.syncNow().catch((e) => console.error('[pr-watcher] initial sync failed:', (e as Error).message));
-    this.timer = setInterval(() => {
-      void this.syncNow().catch((e) => console.error('[pr-watcher] sync failed:', (e as Error).message));
-    }, this.pollMs);
-  }
-
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
+  async runOnce(): Promise<{ outcome: 'ok' | 'error' }> {
+    try {
+      await this.syncNow();
+      return { outcome: 'ok' };
+    } catch {
+      return { outcome: 'error' };
     }
-    for (const timers of this.escalationTimers.values()) for (const t of timers) clearTimeout(t);
-    this.escalationTimers.clear();
   }
 
   // (Re)arm the 1m/5m/15m follow-up ladder for a job. Called from syncStep when a
@@ -234,30 +220,9 @@ export class PrWatcher {
     this.escalationTimers.set(jobId, timers);
   }
 
-  get intervalMs(): number | null { return this.pollMs; }
-
-  status(): { lastRunAt: number | null; lastError: string | null; running: boolean } {
-    return { lastRunAt: this.lastRunAt, lastError: this.lastError, running: this.running };
-  }
-
-  async runNow(): Promise<void> {
-    await this.syncNow();
-  }
-
   async syncNow(): Promise<void> {
-    this.running = true;
-    try {
-      for (const j of this.opts.queue.list()) {
-        await this.syncJob(j.id);
-      }
-      this.lastRunAt = Date.now();
-      this.lastError = null;
-    } catch (e) {
-      this.lastRunAt = Date.now();
-      this.lastError = (e as Error).message;
-      throw e;
-    } finally {
-      this.running = false;
+    for (const j of this.opts.queue.list()) {
+      await this.syncJob(j.id);
     }
   }
 

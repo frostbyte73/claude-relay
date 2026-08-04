@@ -9,9 +9,6 @@ import { schedulesApi } from '../net/schedules.js';
 
 const store = createStore({
   schedules: [],
-  // Read-only descriptors for the daemon's built-in pollers (SystemScheduleDescriptor[]),
-  // returned alongside `schedules` by GET /api/schedules.
-  system: [],
   runsBySchedule: new Map(),
   loaded: false,
   loading: false,
@@ -36,7 +33,6 @@ export const schedulesStore = {
       store.set((s) => ({
         ...s,
         schedules: Array.isArray(data?.schedules) ? data.schedules : [],
-        system: Array.isArray(data?.system) ? data.system : [],
         loaded: true,
         loading: false,
       }));
@@ -94,9 +90,6 @@ export const schedulesStore = {
   async resume(id)         { return reloadAfter(() => schedulesApi.update(id, { enabled: true })); },
   async duplicate(id)      { return reloadAfter(() => schedulesApi.duplicate(id)); },
   async runNow(id)         { return schedulesApi.runNow(id); }, // schedule_run_changed WS covers the resulting state
-  // System poller run-now returns the refreshed descriptor and fires schedules_changed,
-  // so a reload picks up the new lastRunAt/lastError without merging the response here.
-  async runNowSystem(id)   { return schedulesApi.runNowSystem(id); },
 };
 
 export function enabledScheduleCount(state) {

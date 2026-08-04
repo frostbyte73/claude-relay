@@ -2,7 +2,6 @@ import type { Server } from '../server.js';
 import type { SchedulesStore, CreateScheduleInput, ScheduleUpdate } from '../schedules/schedules-store.js';
 import { validateCronExpr, type Scheduler } from '../schedules/scheduler.js';
 import type { Trigger, What } from '../schedules/types.js';
-import type { SystemScheduleRegistry } from '../schedules/system-schedules.js';
 import type { TokenStatus } from '../schedules/token-scheduler.js';
 import { readJsonBody } from './util.js';
 
@@ -30,7 +29,8 @@ function validateTrigger(trigger: Trigger): string | null {
 
 // A kind-less `what` is the legacy skill shape (normalized on store write). Prompt and script
 // both require a cwd so the scheduler never dispatches a job into the daemon's own checkout.
-function validateWhat(what: What): string | null {
+// Exported for tests (see tests/unit/schedules-native.test.ts).
+export function validateWhat(what: What): string | null {
   if (!what || typeof what !== 'object') return 'what is required';
   const kind = (what as { kind?: string }).kind ?? 'skill';
   if (kind === 'skill') {
@@ -50,15 +50,17 @@ function validateWhat(what: What): string | null {
     if (typeof w.cwd !== 'string' || !w.cwd.trim()) return 'what.cwd is required for script schedules';
     return null;
   }
-  return 'what.kind must be "skill", "prompt", or "script"';
+  if (kind === 'native') {
+    const w = what as Extract<What, { kind: 'native' }>;
+    if (typeof w.handler !== 'string' || !w.handler.trim()) return 'what.handler is required for native schedules';
+    return null;
+  }
+  return 'what.kind must be "skill", "prompt", "script", or "native"';
 }
 
 export interface SchedulesRoutesDeps {
   store: SchedulesStore;
   scheduler: Scheduler;
-  // Read-only registry of the daemon's built-in pollers, surfaced alongside user
-  // schedules on GET /api/schedules. Optional so tests can register the routes without it.
-  system?: SystemScheduleRegistry;
   // Wired to the daemon's `notifyAll`. Fired with `{type:'schedules_changed'}` on any
   // create/update/delete/duplicate/pause of a schedule (list-shape change, not per-run).
   notify?: (message: unknown) => void;
@@ -72,8 +74,22 @@ function idFromUrl(url: string | undefined, suffix: string): string | null {
   return m ? m[1]! : null;
 }
 
+// ScheduleUpdate's allowed keys. Filtering the request body to this set before it reaches
+// store.update's `{...cur, ...patch}` spread stops a client from smuggling in `builtin`
+// (would flag a user schedule undeletable and let its script bypass assertKnownCwd) or
+// `id`/`createdAt` (would desync the store's id-keyed map / persisted metadata).
+const SCHEDULE_UPDATE_KEYS = ['name', 'enabled', 'trigger', 'what', 'guards', 'routing'] as const;
+
+function pickScheduleUpdate(body: Record<string, unknown>): ScheduleUpdate {
+  const patch: ScheduleUpdate = {};
+  for (const key of SCHEDULE_UPDATE_KEYS) {
+    if (key in body) (patch as Record<string, unknown>)[key] = body[key];
+  }
+  return patch;
+}
+
 export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDeps): void {
-  const { store, scheduler, system } = deps;
+  const { store, scheduler } = deps;
   const notifyChanged = () => deps.notify?.({ type: 'schedules_changed' });
 
   server.route('GET', '/api/schedules', (_req, res) => {
@@ -84,20 +100,7 @@ export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDep
     }));
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ schedules, system: system?.list() ?? [] }));
-  });
-
-  // Manual run of a built-in poller. Distinct from the user-schedule `:id/run-now`
-  // route by segment count (.../system/<id>/run-now), so patterns don't collide.
-  server.route('POST', '/api/schedules/system/:id/run-now', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/schedules\/system\/([\w-]+)\/run-now$/);
-    if (!m || !system) { res.statusCode = 404; res.end('not found'); return; }
-    const descriptor = await system.runNow(m[1]!);
-    if (!descriptor) { res.statusCode = 404; res.end('system schedule not found'); return; }
-    notifyChanged();
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ system: descriptor }));
+    res.end(JSON.stringify({ schedules }));
   });
 
   server.route('POST', '/api/schedules', async (req, res) => {
@@ -127,8 +130,9 @@ export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDep
   server.route('PATCH', '/api/schedules/:id', async (req, res) => {
     const id = idFromUrl(req.url, '');
     if (!id) { res.statusCode = 404; res.end('not found'); return; }
-    const patch = await readJsonBody<ScheduleUpdate>(req);
-    if (!patch) { res.statusCode = 400; res.end('invalid json'); return; }
+    const body = await readJsonBody<Record<string, unknown>>(req);
+    if (!body) { res.statusCode = 400; res.end('invalid json'); return; }
+    const patch = pickScheduleUpdate(body);
     if (patch.trigger) {
       const triggerError = validateTrigger(patch.trigger);
       if (triggerError) { res.statusCode = 400; res.end(triggerError); return; }
@@ -149,6 +153,12 @@ export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDep
   server.route('DELETE', '/api/schedules/:id', (req, res) => {
     const id = idFromUrl(req.url, '');
     if (!id) { res.statusCode = 404; res.end('not found'); return; }
+    const existing = store.get(id);
+    if (existing?.builtin) {
+      res.statusCode = 409;
+      res.end('builtin schedule cannot be deleted (edit its timing/enabled state instead)');
+      return;
+    }
     const removed = store.remove(id);
     if (!removed) { res.statusCode = 404; res.end('schedule not found'); return; }
     scheduler.onScheduleDeleted(id);
