@@ -168,3 +168,25 @@ describe('noteDeleted', () => {
     expect(s.noteDeleted('read.investigate', join(root, 'nope'))).toBeUndefined();
   });
 });
+
+describe('reviewed events', () => {
+  const ACTION = 'read.investigate';
+
+  it('stays off the body chain, so the next write is an apply and not drift', () => {
+    writeFileSync(join(actionDir, 'SKILL.md'), 'v1\n');
+    const s = store();
+    s.applyWrite({ action: ACTION, dir: actionDir, body: 'v2\n', author: 'user' });
+    s.record({ action: ACTION, kind: 'reviewed', author: 'improver', rationale: 'nothing to change' });
+    s.applyWrite({ action: ACTION, dir: actionDir, body: 'v3\n', author: 'improver' });
+
+    expect(s.listByAction(ACTION).map((e) => e.kind))
+      .toEqual(['applied', 'reviewed', 'applied', 'created']);
+  });
+
+  it('carries no body, so nothing can be restored from it', () => {
+    const s = store();
+    const ev = s.record({ action: ACTION, kind: 'reviewed', author: 'improver', rationale: 'clean' });
+    expect(ev.bodySha).toBeUndefined();
+    expect(s.bodyFor(ev.bodySha)).toBeUndefined();
+  });
+});

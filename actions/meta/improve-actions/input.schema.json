@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.improve-actions input",
+  "type": "object",
+  "required": ["actionName", "improve"],
+  "properties": {
+    "actionName": {
+      "type": "string",
+      "description": "The single action being reviewed this cycle."
+    },
+    "whySelected": {
+      "type": "string",
+      "description": "Why the daemon's selector picked this action now."
+    },
+    "improve": {
+      "type": "object",
+      "description": "The evidence pack the daemon assembled. The only admissible evidence for a proposal.",
+      "required": ["currentSkillMd", "scorecard"],
+      "properties": {
+        "currentSkillMd": { "type": "string", "description": "SKILL.md as installed. The \"before\" text." },
+        "currentLineCount": { "type": "integer", "description": "Current body length; what a net line delta is measured against." },
+        "scorecard": { "type": "object", "description": "Measured run outcomes. Rates are null, not 0, on an empty denominator." },
+        "failures": {
+          "type": "array",
+          "description": "Failed and gave-up runs. `runId` is the citation handle.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": { "type": "string" },
+              "at": { "type": "integer" },
+              "round": { "type": "string" },
+              "attempt": { "type": "integer" },
+              "jobId": { "type": "string" },
+              "stepId": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "revisions": {
+          "type": "array",
+          "description": "Runs the user sent back for revision, with the size of their feedback.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "runId": { "type": "string" },
+              "at": { "type": "integer" },
+              "round": { "type": "string" },
+              "attempt": { "type": "integer" },
+              "feedbackChars": { "type": "integer" },
+              "jobId": { "type": "string" }
+            }
+          }
+        },
+        "denials": {
+          "type": "array",
+          "description": "Recurring blocked tool calls — the over-triggering and mis-permissioning signal.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "toolName": { "type": "string" },
+              "suggested": {
+                "type": "object",
+                "properties": {
+                  "kind": { "enum": ["tool", "bash", "mcp", "path"] },
+                  "value": { "type": "string" }
+                }
+              },
+              "count": { "type": "integer" },
+              "at": { "type": "integer" }
+            }
+          }
+        },
+        "rejectedProposals": {
+          "type": "array",
+          "description": "Proposals already declined. Re-proposing one is a failure.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "at": { "type": "integer" },
+              "rationale": { "type": "string" },
+              "feedback": { "type": "string" }
+            }
+          }
+        },
+        "lessons": {
+          "type": "array",
+          "description": "Self-reported takeaways. Weaker evidence than the scorecard.",
+          "items": { "type": "object" }
+        },
+        "history": {
+          "type": "array",
+          "description": "Applied and reverted revisions. A reverted improver edit is a strong negative signal.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "at": { "type": "integer" },
+              "kind": { "enum": ["applied", "reverted"] },
+              "author": { "type": "string" },
+              "bodyBytes": { "type": "integer" },
+              "rationale": { "type": "string" }
+            }
+          }
+        },
+        "previousReview": {
+          "type": "object",
+          "description": "What the last improver cycle concluded about this action.",
+          "properties": {
+            "at": { "type": "integer" },
+            "rationale": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

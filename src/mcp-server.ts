@@ -302,15 +302,24 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
   },
   {
     name: 'submit_action_proposal',
-    description: 'Deliver a meta.build-action proposal (new or revised SKILL.md + optional allowlist additions) to the daemon. The user reviews it inline in the PWA.',
+    description: 'Deliver an action proposal (new or revised SKILL.md + optional allowlist additions) to the daemon — posted by meta.build-action and meta.improve-actions alike. The user reviews it inline in the PWA. `skillMdAfter` is required unless `noChange` is true.',
     inputSchema: {
       type: 'object',
-      required: ['sessionId', 'skillMdAfter'],
+      required: ['sessionId'],
       properties: {
         sessionId: { type: 'string' },
         actionName: { type: 'string' },
         summary: { type: 'string' },
         skillMdAfter: { type: 'string' },
+        noChange: {
+          type: 'boolean',
+          description: 'Set true to record that the action was reviewed and nothing was worth changing. Omit skillMdAfter. Produces a history entry, not a review card.',
+        },
+        evidence: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Short cited observations backing this proposal (which runs, which failures). Shown on the review card so the user sees why, not just a diff.',
+        },
         allowlistAdds: {
           type: 'array',
           items: {

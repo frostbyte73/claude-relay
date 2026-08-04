@@ -17,14 +17,31 @@ describe('seedBuiltinSchedules', () => {
     else process.env.LINEAR_API_TOKEN = originalToken;
   });
 
-  it('seeds the four builtins once and is idempotent', () => {
+  it('seeds the five builtins once and is idempotent', () => {
     delete process.env.LINEAR_API_TOKEN;
     const store = new SchedulesStore(tmpPath());
     seedBuiltinSchedules(store, '/tmp');
     const ids = store.list().map((s) => s.id).sort();
-    expect(ids).toEqual(['claude-updater', 'linear', 'pr-watcher', 'user-prs-watcher']);
+    expect(ids).toEqual(['action-improver', 'claude-updater', 'linear', 'pr-watcher', 'user-prs-watcher']);
     seedBuiltinSchedules(store, '/tmp');
-    expect(store.list().length).toBe(4); // no duplicates
+    expect(store.list().length).toBe(5); // no duplicates
+  });
+
+  it('seeds the improver enabled, token-opportunistic and repo-less', () => {
+    const store = new SchedulesStore(tmpPath());
+    seedBuiltinSchedules(store, '/tmp');
+    const improver = store.get('action-improver')!;
+    expect(improver.enabled).toBe(true);
+    expect(improver.trigger).toEqual({ kind: 'token-opportunistic' });
+    expect(improver.what).toEqual({ kind: 'skill', skill: 'meta.improve-actions' });
+  });
+
+  it('does not revive an improver the user paused', () => {
+    const store = new SchedulesStore(tmpPath());
+    seedBuiltinSchedules(store, '/tmp');
+    store.setEnabled('action-improver', false);
+    seedBuiltinSchedules(store, '/tmp');
+    expect(store.get('action-improver')!.enabled).toBe(false);
   });
 
   it('seeds the linear builtin disabled when no LINEAR_API_TOKEN is set', () => {

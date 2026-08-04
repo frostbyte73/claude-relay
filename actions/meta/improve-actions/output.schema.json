@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.improve-actions output",
+  "description": "Either a grounded revision proposal or a no-change verdict. `skillMdAfter` is required unless `noChange` is true.",
+  "type": "object",
+  "required": ["actionName", "summary"],
+  "properties": {
+    "actionName": {
+      "type": "string",
+      "description": "The action reviewed. Must match the envelope's actionName."
+    },
+    "summary": {
+      "type": "string",
+      "description": "For a proposal: what changed, why, and a justification of the net line delta. For a no-change verdict: what was examined and why nothing warranted a change."
+    },
+    "skillMdAfter": {
+      "type": "string",
+      "description": "Full revised SKILL.md including frontmatter. Written verbatim on approval."
+    },
+    "noChange": {
+      "type": "boolean",
+      "description": "True when the evidence did not support a change. Records a reviewed entry in the action's history instead of a review card."
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Cited observations backing the proposal, each naming the runs or counts it rests on. At least two distinct runIds per instruction change.",
+      "items": { "type": "string" }
+    },
+    "allowlistAdds": {
+      "type": "array",
+      "description": "Rules for recurring denials in the pack, scoped as narrowly as the blocked call needs.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": { "enum": ["tool", "bash", "mcp", "path"] },
+          "value": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -202,8 +202,9 @@ function editCardHtml(edit, state) {
     <div class="o-section lib-section lib-edit-card">
       <h4 class="lib-section-hdr o-microhead">Proposal ready</h4>
       ${p.summary ? `<div class="lib-edit-summary">${escapeHtml(p.summary)}</div>` : ''}
+      ${evidenceHtml(p.evidence)}
       <details class="lib-edit-diff">
-        <summary>Proposed SKILL.md (${p.skillMdAfter.length} bytes)</summary>
+        <summary>Proposed SKILL.md (${p.skillMdAfter.length} bytes)${deltaPillHtml(p.netLineDelta)}</summary>
         <pre class="lib-edit-md">${escapeHtml(p.skillMdAfter)}</pre>
       </details>
       ${rules ? `<div class="lib-edit-rules">Allowlist additions: ${rules}</div>` : ''}
@@ -216,6 +217,28 @@ function editCardHtml(edit, state) {
       <div class="lib-edit-error" hidden></div>
     </div>
   `;
+}
+
+// What the proposer cited. An improver must ground every change in observed runs, so this is
+// the difference between reviewing a diff and reviewing an argument.
+function evidenceHtml(evidence) {
+  if (!evidence?.length) return '';
+  const items = evidence.map((e) => `<li>${escapeHtml(e)}</li>`).join('');
+  return `
+    <div class="lib-edit-evidence">
+      <div class="o-microhead">Cited evidence</div>
+      <ul>${items}</ul>
+    </div>
+  `;
+}
+
+// Growth is the failure mode an append-only improver degrades into, so it gets stated up front
+// rather than left for the reader to infer from the diff.
+function deltaPillHtml(delta) {
+  if (typeof delta !== 'number' || delta === 0) return '';
+  const tone = delta > 0 ? 'warn' : 'ok';
+  const text = `${delta > 0 ? '+' : '−'}${Math.abs(delta)} lines`;
+  return ` <span class="o-pill ${tone}">${escapeHtml(text)}</span>`;
 }
 
 function wireEditCard(view, edit) {

@@ -18,6 +18,7 @@ import {
   forgetEdit, loadPersistedEdits, persistEdit,
   type ActionEdit, type ActionProposal,
 } from '../storage/action-edits-store.js';
+import { intakeProposal, ledgerActionFor, onSessionGone } from '../actions/proposal-intake.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
@@ -58,6 +59,11 @@ export interface ActionsRoutesHandlers {
   // Called from the daemon's session-end hook: drop the tracking entry for a
   // dying action-edit session so its card stops showing a stale "review" pill.
   dropEditForSession: (sessionId: string) => void;
+  // Registers the ActionEdit for a schedule-spawned meta.improve-actions session.
+  // Without it the proposal that session posts has no edit to land on and is dropped.
+  beginImproverEdit: (input: { sessionId: string; actionName: string }) => void;
+  // What the improver's selector reads to avoid racing an edit already in flight.
+  listPendingEdits: () => Array<{ actionName: string | null; authorAction?: string }>;
 }
 
 export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): ActionsRoutesHandlers {
@@ -200,6 +206,12 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     actionEdits.set(editKey(edit.actionName, edit.sessionId), edit);
   }
 
+  // An action's history changed. The acting client invalidates its own cache, but improver
+  // events land while nobody is acting, so the History card needs to be told.
+  function notifyRevised(action: string): void {
+    try { notifyAll({ type: 'action_revised', action }); } catch { /* during startup */ }
+  }
+
   // ── Runtime denial tracking ───────────────────────────────────────────
   // Records every tool call that action sessions had blocked by allowlist-miss.
   // The PWA surfaces these as one-click "Add to allowlist" suggestions so the
@@ -241,11 +253,12 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // Score the rejected draft and open the redraft replacing it. Feedback arriving
   // before any proposal was posted isn't a rejection — the same drafting round just
   // got a new brief, so leave its run open.
-  function redraft(sessionId: string, hadProposal: boolean): void {
+  function redraft(edit: ActionEdit, hadProposal: boolean): void {
     if (!hadProposal) return;
+    const { sessionId } = edit;
     actionRunLedger.closeExternal(sessionId, 'submitted');
     actionRunLedger.verdictExternal(sessionId, 'revised');
-    actionRunLedger.openExternal({ action: 'meta.build-action', round: 'redraft', sessionId });
+    actionRunLedger.openExternal({ action: ledgerActionFor(edit), round: 'redraft', sessionId });
   }
 
   // A discarded draft is a rejection. The ledger already counts it; this keeps the text that
@@ -274,18 +287,34 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
   };
 
+  // An improver cycle that found nothing worth changing. Recorded rather than dropped: it's
+  // what advances the review clock, and a quiet cycle is a result the user should be able
+  // to see. No proposal means no review card, so the edit is cleared outright.
+  function acceptNoChange(key: string, edit: ActionEdit, summary: string): void {
+    if (!edit.actionName) {
+      console.warn('[work] action-proposal: noChange with no action name — dropping');
+      return;
+    }
+    actionRevisionsStore.record({
+      action: edit.actionName,
+      kind: 'reviewed',
+      author: edit.author ?? 'improver',
+      rationale: summary,
+      sessionId: edit.sessionId,
+    });
+    actionRunLedger.closeExternal(edit.sessionId, 'submitted');
+    actionRunLedger.verdictExternal(edit.sessionId, 'accepted');
+    clearEdit(key);
+    notifyRevised(edit.actionName);
+    console.log(`[work] ${ledgerActionFor(edit)} reviewed ${edit.actionName}: no change proposed`);
+  }
+
   const onActionProposalHandler: ActionsRoutesHandlers['onActionProposalHandler'] = async (body) => {
-    let payload: {
-      sessionId?: string;
-      actionName?: string | null;
-      summary?: string;
-      skillMdAfter?: string;
-      allowlistAdds?: Array<{ kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string }>;
-    };
+    let payload: Parameters<typeof intakeProposal>[0];
     try { payload = JSON.parse(body); }
-    catch (e) { console.error('[hook] /work/action-proposal: invalid json'); return; }
-    if (!payload.sessionId || typeof payload.skillMdAfter !== 'string') {
-      console.warn('[hook] /work/action-proposal: missing sessionId or skillMdAfter');
+    catch { console.error('[hook] /work/action-proposal: invalid json'); return; }
+    if (!payload.sessionId) {
+      console.warn('[hook] /work/action-proposal: missing sessionId');
       return;
     }
     const located = findEditBySession(payload.sessionId);
@@ -308,14 +337,19 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       try { skillMdBefore = readSkillMd(actionDirFor(outpostActionsDir, edit.actionName).dir); }
       catch { /* invalid/unsettled name */ }
     }
+
+    const intake = intakeProposal(payload, { skillMdBefore, now: Date.now() });
+    if (intake.kind === 'invalid') {
+      console.warn(`[hook] /work/action-proposal: ${intake.reason}`);
+      return;
+    }
+    if (intake.kind === 'no-change') {
+      acceptNoChange(key, edit, intake.summary);
+      return;
+    }
+
     edit.status = 'review';
-    edit.proposal = {
-      summary: payload.summary ?? '',
-      skillMdBefore,
-      skillMdAfter: payload.skillMdAfter,
-      allowlistAdds: Array.isArray(payload.allowlistAdds) ? payload.allowlistAdds.filter((r) => r && (r.kind === 'tool' || r.kind === 'bash' || r.kind === 'mcp' || r.kind === 'path') && typeof r.value === 'string') : [],
-      postedAt: Date.now(),
-    };
+    edit.proposal = intake.proposal;
     setEdit(key, edit);
     // Recorded even though nothing has been applied yet: a proposal the user then rejects is
     // exactly the signal the improver needs about its own suggestions. Skipped while the
@@ -324,14 +358,15 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       actionRevisionsStore.record({
         action: edit.actionName,
         kind: 'proposed',
-        author: 'user',
-        body: payload.skillMdAfter,
-        rationale: edit.proposal.summary,
-        allowlistAdds: edit.proposal.allowlistAdds,
+        author: edit.author ?? 'user',
+        body: intake.proposal.skillMdAfter,
+        rationale: intake.proposal.summary,
+        allowlistAdds: intake.proposal.allowlistAdds,
         sessionId: edit.sessionId,
       });
+      notifyRevised(edit.actionName);
     }
-    console.log(`[work] action-proposal posted for ${edit.actionName ?? '<new>'} (${payload.skillMdAfter.length}b skill_md, ${edit.proposal.allowlistAdds.length} rules)`);
+    console.log(`[work] action-proposal posted for ${edit.actionName ?? '<new>'} (${intake.proposal.skillMdAfter.length}b skill_md, ${intake.proposal.allowlistAdds.length} rules)`);
   };
 
   // ── routes ─────────────────────────────────────────────────────────────
@@ -484,7 +519,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       existing.status = 'editing';
       existing.proposal = undefined;
       setEdit(key, existing);
-      redraft(existing.sessionId, hadProposal);
+      redraft(existing, hadProposal);
       const followup = feedback
         ? `Replacement feedback from the user:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (skill_md_before may be stale if you already applied a draft) and post a new proposal.`
         : 'Replan with no new feedback — refresh the proposal.';
@@ -542,8 +577,9 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     catch (e) { res.statusCode = 400; res.end(`invalid action name: ${(e as Error).message}`); return; }
     const payload = await readJsonBody<{ actor?: string }>(req);
     // Provenance, not authentication — the PWA server is already trusted on the tailnet.
-    // The improver passes actor:'improver' so its edits are distinguishable in the history.
-    const author: ActionAuthor = payload?.actor === 'improver' ? 'improver' : 'user';
+    // The edit itself knows who authored it (the improver's is registered as such at spawn),
+    // so `actor` is only a manual override for callers that have no edit row to speak for them.
+    const author: ActionAuthor = edit.author ?? (payload?.actor === 'improver' ? 'improver' : 'user');
     try {
       // Rules land before the write so the revision can record exactly which ones were new:
       // addRule answers false for a duplicate, and only genuinely-new rules are safe for a
@@ -575,6 +611,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     }
     edit.status = 'applying';
     setEdit(key, edit);
+    notifyRevised(name);
     actionRunLedger.closeExternal(edit.sessionId, 'submitted');
     actionRunLedger.verdictExternal(edit.sessionId, 'accepted');
     void manager.close(edit.sessionId).catch(() => { /* tolerate */ });
@@ -606,7 +643,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     edit.status = 'editing';
     edit.proposal = undefined;
     setEdit(key, edit);
-    redraft(edit.sessionId, hadProposal);
+    redraft(edit, hadProposal);
     const cwd = edit.actionName ? join(outpostActionsDir, edit.actionName) : outpostActionsDir;
     const followup = `Replacement feedback from the user:\n\n${feedback}\n\nDraft a new proposal that addresses this, then POST it again.`;
     manager.sendOrResume(
@@ -698,10 +735,35 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   function dropEditForSession(sessionId: string): void {
     const located = findEditBySession(sessionId);
     if (!located) return;
+    const { keep, outcome } = onSessionGone(located.edit);
+    actionRunLedger.closeExternal(sessionId, outcome);
+    // A posted proposal outlives its session — see onSessionGone. Approve tolerates a dead
+    // session and proposal-feedback resumes one, so the card stays reviewable.
+    if (keep) return;
     noteRejected(located.edit, '', 'system');
-    actionRunLedger.closeExternal(sessionId, 'abandoned');
     clearEdit(located.key);
   }
 
-  return { recordActionDenial, onActionProposalHandler, dropEditForSession };
+  const beginImproverEdit: ActionsRoutesHandlers['beginImproverEdit'] = ({ sessionId, actionName }) => {
+    // Keyed `a:<name>` like a user edit, which is what stops the improver and the user from
+    // both holding an edit on one action — and what the selector reads to skip it.
+    setEdit(editKey(actionName, sessionId), {
+      actionName,
+      sessionId,
+      status: 'editing',
+      startedAt: Date.now(),
+      feedback: '',
+      authorAction: 'meta.improve-actions',
+      author: 'improver',
+    });
+    actionRunLedger.openExternal({ action: 'meta.improve-actions', round: 'review', sessionId });
+  };
+
+  const listPendingEdits: ActionsRoutesHandlers['listPendingEdits'] = () =>
+    Array.from(actionEdits.values()).map((e) => ({ actionName: e.actionName, authorAction: e.authorAction }));
+
+  return {
+    recordActionDenial, onActionProposalHandler, dropEditForSession,
+    beginImproverEdit, listPendingEdits,
+  };
 }

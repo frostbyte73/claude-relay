@@ -53,4 +53,13 @@ export function seedBuiltinSchedules(store: SchedulesStore, homeDir: string): vo
     trigger: { kind: 'cron', expr: '*/10 * * * *' },
     what: { kind: 'native', handler: 'user-prs-watcher' },
   });
+  // No `repos` — the envelope enricher resolves cwd to the action being reviewed. Gated on
+  // accumulated run evidence rather than a clock, so a fire with nothing due records a skip;
+  // on a fresh install that's every fire, which is correct and costs nothing.
+  store.ensureBuiltin({
+    id: 'action-improver',
+    name: 'Improve actions',
+    trigger: { kind: 'token-opportunistic' },
+    what: { kind: 'skill', skill: 'meta.improve-actions' },
+  });
 }

@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SchedulesStore, type CreateScheduleInput } from '../../src/schedules/schedules-store.js';
-import { Scheduler, type SchedulerDeps } from '../../src/schedules/scheduler.js';
+import { Scheduler, SkipRun, type SchedulerDeps } from '../../src/schedules/scheduler.js';
 import type { GuardProviders } from '../../src/schedules/guards.js';
 import type { RoutingDeps } from '../../src/schedules/routing.js';
 import type { What } from '../../src/schedules/types.js';
@@ -258,6 +258,20 @@ describe('Scheduler — run-now / guards / spawn dispatch', () => {
     const [run] = await scheduler.registerEventFiring('x');
     expect(run!.outcome).toBe('error');
     expect(run!.verdict?.summary).toMatch(/spawnSkillSession dependency not wired/);
+  });
+
+  it('turns a SkipRun from the spawn dep into one skipped run, not an error', async () => {
+    const store = new SchedulesStore(tmpPath());
+    const created = store.create(input({ trigger: { kind: 'event', descriptor: 'x' } }));
+    const scheduler = makeScheduler(store, {
+      spawn: { spawnSkillSession: () => { throw new SkipRun('Skipped — nothing due'); } },
+    });
+
+    const [run] = await scheduler.registerEventFiring('x');
+    expect(run!.outcome).toBe('skipped');
+    expect(run!.skipReason).toBe('Skipped — nothing due');
+    // startRun already opened this row — a second one would double-count in the runs list.
+    expect(store.listRuns(created.id)).toHaveLength(1);
   });
 });
 

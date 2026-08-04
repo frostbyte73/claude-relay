@@ -26,7 +26,10 @@ export type ActionEventKind =
   | 'drifted'
   | 'deleted'
   | 'proposed'
-  | 'rejected';
+  | 'rejected'
+  // An improver cycle that examined the action and concluded nothing was worth
+  // changing. Carries no body, so it stays out of BODY_CHANGING and off the chain.
+  | 'reviewed';
 
 export type ActionAuthor = 'user' | 'improver' | 'external' | 'system';
 

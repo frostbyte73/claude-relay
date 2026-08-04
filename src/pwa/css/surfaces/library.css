@@ -166,6 +166,9 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
 .lib-edit-card { padding: 14px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); }
 .lib-edit-status { font-size: 13px; color: var(--text-mute); }
 .lib-edit-summary { font-size: 13px; color: var(--text); margin-bottom: 10px; }
+.lib-edit-evidence { margin-bottom: 10px; }
+.lib-edit-evidence ul { margin: 6px 0 0; padding-left: 18px; }
+.lib-edit-evidence li { font-size: 12px; color: var(--text-mute); line-height: 1.5; }
 .lib-edit-diff { margin-bottom: 10px; }
 .lib-edit-diff summary { font-size: 12px; color: var(--accent); cursor: pointer; }
 .lib-edit-md {

@@ -13,6 +13,8 @@ import type { SchedulerInlineDeps, SchedulerSpawnDeps } from './scheduler.js';
 import type { What } from './types.js';
 import { runScript } from './script-runner.js';
 import type { NativeHandlerRegistry } from './native-handlers.js';
+import { writeScheduleEnvelope, type EnvelopeEnricherRegistry } from './schedule-envelope.js';
+import type { JournalEntry } from '../storage/journal-store.js';
 
 // Daemon-specific implementations of the dependency-injection interfaces schedules/*.ts
 // define, kept out of daemon.ts per the "keep wiring thin" rule — daemon.ts just calls
@@ -88,12 +90,24 @@ function describeJob(what: What, projectRegistry: ProjectRegistry, worktreeManag
   ].filter((l) => l !== null).join('\n');
 }
 
-export function createSpawnDeps(
-  engine: WorkEngine,
-  sessionManager: SessionManager,
-  projectRegistry: ProjectRegistry,
-  worktreeManager: WorktreeManager,
-): SchedulerSpawnDeps {
+export interface SpawnDepsOpts {
+  engine: WorkEngine;
+  sessionManager: SessionManager;
+  projectRegistry: ProjectRegistry;
+  worktreeManager: WorktreeManager;
+  runtimeDir: string;
+  apiUrl: string;
+  hookPort: number;
+  secret: string;
+  enrichers: EnvelopeEnricherRegistry;
+  recentLessons: (skill: string) => JournalEntry[];
+}
+
+export function createSpawnDeps(opts: SpawnDepsOpts): SchedulerSpawnDeps {
+  const {
+    engine, sessionManager, projectRegistry, worktreeManager,
+    runtimeDir, apiUrl, hookPort, secret, enrichers, recentLessons,
+  } = opts;
   return {
     createJob: (input) => {
       const job = engine.createJob({
@@ -105,19 +119,59 @@ export function createSpawnDeps(
       return { jobId: job.id };
     },
     spawnSkillSession: (input) => {
+      // A SkipRun thrown in here ("nothing due") propagates untouched — Scheduler.fire turns it
+      // into a skipped run rather than an error.
+      const enriched = enrichers.get(input.skill)?.({
+        skill: input.skill,
+        args: input.args,
+        repos: input.repos,
+        scope: input.scope,
+      });
+
       // Unlike createJob (routed through the orchestrator's own worktree-isolated path), this
       // spawns a session directly with `repos[0]` as cwd — never fall back to process.cwd()
       // (the daemon's own source checkout when launchd-started) and never spawn into a path
       // the daemon doesn't already recognize as a registered project or worktree.
-      const repo = input.repos?.[0];
-      if (!repo) {
-        throw new Error(`Scheduled skill "${input.skill}" has no repo configured — refusing to run in the daemon's own working directory`);
+      //
+      // An enricher-supplied cwd skips those two checks, and only that case: a schedule's
+      // `repos` is unvalidated user input from POST /api/schedules, whereas the sole producer
+      // of `enriched.cwd` is the daemon's own actionDirFor() — the traversal-safe resolver
+      // /api/actions/:name/edit already spawns into for the same reason.
+      let cwd = enriched?.cwd;
+      if (!cwd) {
+        const repo = input.repos?.[0];
+        if (!repo) {
+          throw new Error(`Scheduled skill "${input.skill}" has no repo configured — refusing to run in the daemon's own working directory`);
+        }
+        if (!existsSync(repo) || !isKnownCwd(repo, projectRegistry, worktreeManager)) {
+          throw new Error(`Scheduled skill "${input.skill}" repo is not a registered project or known worktree: ${repo}`);
+        }
+        cwd = repo;
       }
-      if (!existsSync(repo) || !isKnownCwd(repo, projectRegistry, worktreeManager)) {
-        throw new Error(`Scheduled skill "${input.skill}" repo is not a registered project or known worktree: ${repo}`);
-      }
+
       const sessionId = randomUUID();
-      sessionManager.spawnDetached(sessionId, repo, {}, 'default');
+      const envelopePath = writeScheduleEnvelope(runtimeDir, sessionId, {
+        kind: 'schedule',
+        skill: input.skill,
+        scheduleId: input.scheduleId,
+        scheduleName: input.scheduleName,
+        trigger: input.trigger,
+        args: input.args,
+        repos: input.repos,
+        scope: input.scope,
+        recentLessons: recentLessons(input.skill),
+        // Enricher fields last so a pack can deliberately override a base key.
+        ...(enriched?.envelope ?? {}),
+      });
+      sessionManager.spawnDetached(sessionId, cwd, {
+        OUTPOST_API_URL: apiUrl,
+        OUTPOST_ENVELOPE: envelopePath,
+        OUTPOST_HOOK_PORT: String(hookPort),
+        DAEMON_AUTH: secret,
+      }, 'default');
+      // Before the send: whatever daemon-side state the skill's first turn depends on (an
+      // ActionEdit for its proposal to land on) has to exist by then.
+      enriched?.onSpawned?.(sessionId);
       const argsSuffix = input.args ? ` ${JSON.stringify(input.args)}` : '';
       sessionManager.send(sessionId, {
         type: 'user',

@@ -1,7 +1,9 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ActionAuthor } from './action-revisions-store.js';
 
-// In-flight meta.build-action edits, mirrored to <runtimeDir>/action-edits/<sessionId>/edit.json
+// In-flight action edits (meta.build-action's, and meta.improve-actions' scheduled
+// proposals), mirrored to <runtimeDir>/action-edits/<sessionId>/edit.json
 // beside the envelope that session already reads. They used to live only in a Map, so a daemon
 // bounce lost both the pending draft and any record that it had existed. The live Map stays in
 // routes/actions.ts — this is just the durable half.
@@ -12,6 +14,8 @@ export interface ActionProposal {
   skillMdAfter: string;
   allowlistAdds: Array<{ kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string }>;
   postedAt: number;
+  evidence?: string[];    // observations the proposer cited, one short line each
+  netLineDelta?: number;  // after - before; surfaced on the review card so bloat is visible
 }
 
 export interface ActionEdit {
@@ -21,6 +25,10 @@ export interface ActionEdit {
   startedAt: number;
   feedback: string;  // initial feedback that started this session
   proposal?: ActionProposal;
+  // Which action authored this edit. Absent on rows written before meta.improve-actions
+  // existed, and on every meta.build-action edit — see ledgerActionFor().
+  authorAction?: string;
+  author?: ActionAuthor;
 }
 
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;

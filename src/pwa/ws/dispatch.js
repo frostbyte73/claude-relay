@@ -454,6 +454,11 @@ const broadcastHandlers = {
     import('../state/library.js').then(({ library }) => library.invalidateScorecard(msg.action));
   },
 
+  // The acting client refreshes its own history; improver edits land while nobody is acting.
+  action_revised(msg) {
+    import('../state/library.js').then(({ library }) => library.invalidateRevisions(msg.action));
+  },
+
   launch_concurrency_changed(msg) {
     settings.applyLaunchConcurrency(msg.value);
   },

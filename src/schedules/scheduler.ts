@@ -2,7 +2,12 @@ import { Cron } from 'croner';
 import type { SchedulesStore } from './schedules-store.js';
 import { evaluateGuards, type GuardProviders } from './guards.js';
 import { routeFindings, approveGithubPost, type RoutingDeps } from './routing.js';
-import type { RunVerdict, ScheduleRecord, ScheduleRun, What } from './types.js';
+import type { RunVerdict, ScheduleRecord, ScheduleRun, Trigger, What } from './types.js';
+
+// A spawn dep signalling "nothing to do this fire" — a routine quiet cycle rather than a
+// failure. Without it the schedules UI would show red for the normal case of an evidence-gated
+// schedule finding no work.
+export class SkipRun extends Error {}
 
 export interface CreateJobInput {
   title: string;
@@ -15,6 +20,10 @@ export interface SpawnSkillSessionInput {
   scope?: string;
   model?: string;
   args?: Record<string, unknown>;
+  // Schedule provenance, so the envelope the session reads can name what fired it.
+  scheduleId: string;
+  scheduleName: string;
+  trigger: Trigger;
 }
 
 // Narrow spawn surface the wiring agent maps onto the orchestrator/session-manager. Which one
@@ -230,6 +239,17 @@ export class Scheduler {
       this.notify(scheduleId, updated);
       return updated;
     } catch (e) {
+      if (e instanceof SkipRun) {
+        // updateRun, not recordSkip: startRun already created this row above, and recordSkip
+        // would leave a second one behind.
+        const skipped = this.deps.store.updateRun(run.id, {
+          outcome: 'skipped',
+          skipReason: e.message,
+          finishedAt: this.now(),
+        }) ?? run;
+        this.notify(scheduleId, skipped);
+        return skipped;
+      }
       const failed = this.deps.store.updateRun(run.id, {
         outcome: 'error',
         finishedAt: this.now(),
@@ -268,6 +288,9 @@ export class Scheduler {
       scope: what.scope,
       model: what.model,
       args: what.args,
+      scheduleId: schedule.id,
+      scheduleName: schedule.name,
+      trigger: schedule.trigger,
     });
     return { sessionId: result.sessionId };
   }

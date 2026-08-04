@@ -155,4 +155,20 @@ describe('buildRevisionHistory', () => {
     expect(row.canRevert).toBe(false);
     expect(row.diff).toContain('-bye');
   });
+
+  it('renders a quiet improver cycle as a body-less, unrevertable row', () => {
+    writeFileSync(join(actionDir, 'SKILL.md'), 'unchanged\n');
+    store.applyWrite({ action: ACTION, dir: actionDir, body: 'unchanged\n', author: 'user' });
+    const reviewed = store.record({
+      action: ACTION, kind: 'reviewed', author: 'improver', rationale: '47 runs, nothing worth changing',
+    });
+
+    const row = buildRevisionHistory(store, ACTION)[0]!;
+    expect(row.kind).toBe('reviewed');
+    expect(row.hasBody).toBe(false);
+    expect(row.canRevert).toBe(false);
+    expect(row.diff).toBeUndefined();
+    expect(row.rationale).toBe('47 runs, nothing worth changing');
+    expect(() => revert(reviewed.id)).toThrow(/no applied body/);
+  });
 });

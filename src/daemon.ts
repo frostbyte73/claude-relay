@@ -24,6 +24,7 @@ import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './setup-actions.js';
 import { ActionsStore } from './storage/actions-store.js';
 import { ActionRegistry } from './actions/index.js';
+import { actionDirFor } from './actions/registry.js';
 import type { PermissionGroupMap } from './actions/types.js';
 import { handleHook } from './permissions/hook-handler.js';
 import { type ApprovalMode, ApprovalModeStore } from './permissions/approval-mode.js';
@@ -43,7 +44,7 @@ import { registerSessionsRoutes } from './routes/sessions.js';
 import { registerProjectsRoutes } from './routes/projects.js';
 import { registerPushRoutes } from './routes/push.js';
 import { registerMetaRoutes } from './routes/meta.js';
-import { registerActionsRoutes } from './routes/actions.js';
+import { registerActionsRoutes, type ActionsRoutesHandlers } from './routes/actions.js';
 import { registerActionRevisionsRoutes } from './routes/action-revisions.js';
 import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
 import { runScript } from './schedules/script-runner.js';
@@ -61,11 +62,13 @@ import { registerRunsRoutes } from './routes/runs.js';
 import { SchedulesStore } from './schedules/schedules-store.js';
 import { seedBuiltinSchedules } from './schedules/setup-schedules.js';
 import { whatLabel, type Trigger, type What } from './schedules/types.js';
-import { Scheduler } from './schedules/scheduler.js';
+import { Scheduler, SkipRun } from './schedules/scheduler.js';
 import { TokenScheduler } from './schedules/token-scheduler.js';
 import { registerSchedulesRoutes } from './routes/schedules.js';
 import { createGuardProviders, createInlineDeps, createRoutingDeps, createSpawnDeps } from './schedules/wiring.js';
 import { NativeHandlerRegistry } from './schedules/native-handlers.js';
+import { EnvelopeEnricherRegistry } from './schedules/schedule-envelope.js';
+import { buildImprovementPack, parsePackOpts, selectActionToImprove } from './actions/improvement-pack.js';
 import allowlistDefault from '../config/allowlist.default.json' with { type: 'json' };
 import permissionGroupsDefault from '../config/permission-groups.default.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
@@ -387,11 +390,28 @@ async function main() {
 
   const schedulesStore = new SchedulesStore(join(RUNTIME_DIR, 'schedules', 'index.json'));
   const nativeHandlers = new NativeHandlerRegistry();
+  const envelopeEnrichers = new EnvelopeEnricherRegistry();
+  // Late-bound: the improver's ActionEdit is owned by registerActionsRoutes, which runs well
+  // after the scheduler is constructed. Read through the closure at fire time — same pattern as
+  // `latestAccountUsage` above.
+  let beginImproverEdit: ActionsRoutesHandlers['beginImproverEdit'] | undefined;
+  let listPendingEdits: ActionsRoutesHandlers['listPendingEdits'] | undefined;
   const scriptEnv = () => ({ OUTPOST_HOOK_PORT: String(HOOK_PORT), DAEMON_AUTH: secret });
   const scheduler = new Scheduler({
     store: schedulesStore,
     guardProviders: createGuardProviders(() => latestAccountUsage ?? undefined, projectRegistry, worktreeManager),
-    spawn: createSpawnDeps(engine, manager, projectRegistry, worktreeManager),
+    spawn: createSpawnDeps({
+      engine,
+      sessionManager: manager,
+      projectRegistry,
+      worktreeManager,
+      runtimeDir: RUNTIME_DIR,
+      apiUrl: config.httpPort !== null ? `http://127.0.0.1:${config.httpPort}` : '',
+      hookPort: HOOK_PORT,
+      secret,
+      enrichers: envelopeEnrichers,
+      recentLessons: (skill) => journalStore.recent(skill),
+    }),
     inline: createInlineDeps(scriptEnv, nativeHandlers, projectRegistry, worktreeManager),
     routing: createRoutingDeps(() => process.env.OUTPOST_SLACK_WEBHOOK_URL || undefined, projectRegistry, worktreeManager),
     notify: notifyAll,
@@ -922,6 +942,48 @@ async function main() {
   });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
+  beginImproverEdit = actionRoutes.beginImproverEdit;
+  listPendingEdits = actionRoutes.listPendingEdits;
+
+  // Assembles the evidence for one action per fire and points the session at it. Daemon-side
+  // in TypeScript on purpose: reflection quality is the binding constraint, so the model gets
+  // a curated pack rather than a query API to go fishing with.
+  envelopeEnrichers.register('meta.improve-actions', (ctx) => {
+    const packDeps = {
+      listActionNames: () => actionRegistry.listActions().map((a) => a.name),
+      runsFor: (action: string) => actionRunsStore.listByAction(action),
+      denialsFor: (action: string) => denialsStore.list(action),
+      revisionsFor: (action: string) => actionRevisionsStore.listByAction(action),
+      lessonsFor: (action: string) => journalStore.recent(action),
+      skillMdFor: (action: string) => {
+        try { return readFileSync(join(actionDirFor(outpostActionsDir, action).dir, 'SKILL.md'), 'utf8'); }
+        catch { return ''; }
+      },
+      pendingEdits: () => listPendingEdits?.() ?? [],
+      now: () => Date.now(),
+    };
+    const opts = parsePackOpts(ctx.args);
+    const picked = selectActionToImprove(packDeps, opts);
+    if (!picked) throw new SkipRun('Skipped — no action has enough new run evidence to review');
+    console.log(`[improver] selected ${picked.reason}`);
+    return {
+      envelope: {
+        actionName: picked.action,
+        whySelected: picked.reason,
+        improve: buildImprovementPack(picked.action, packDeps, opts, picked.reason),
+      },
+      cwd: actionDirFor(outpostActionsDir, picked.action).dir,
+      onSpawned: (sessionId) => {
+        // 'action-edit' reuses onSessionExit's cleanup and keeps the improver out of the
+        // user-facing runs ledger. Safe for a pending proposal now that dropEditForSession
+        // preserves one (see onSessionGone).
+        manager.tagKind(sessionId, 'action-edit');
+        engine.bindAction(sessionId, 'meta.improve-actions');
+        engine.stampActionSession(sessionId, 'meta.improve-actions', `Improve action: ${picked.action}`);
+        beginImproverEdit?.({ sessionId, actionName: picked.action });
+      },
+    };
+  });
 
   registerActionRevisionsRoutes(server, {
     outpostActionsDir, actionsStore, revisionsStore: actionRevisionsStore, notifyAll,

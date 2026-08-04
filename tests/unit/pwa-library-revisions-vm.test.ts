@@ -20,6 +20,17 @@ describe('revisionRows', () => {
     expect(out.map((r: { authorLabel: string }) => r.authorLabel)).toEqual(['improver', 'edited outside Outpost', 'system']);
   });
 
+  it('labels a quiet improver cycle without offering a revert', () => {
+    const [row] = rows([{
+      id: 'r', kind: 'reviewed', author: 'improver', at: NOW - 500,
+      rationale: '47 runs, 91% first-try, nothing worth changing',
+    }]);
+    expect(row.kindLabel).toBe('reviewed, no change');
+    expect(row.tone).toBe('idle');
+    expect(row.canRevert).toBe(false);
+    expect(row.rationale).toBe('47 runs, 91% first-try, nothing worth changing');
+  });
+
   it('trusts the server on revertability and defaults the rest', () => {
     const [applied, proposed] = rows([
       { id: 'a', kind: 'applied', author: 'user', at: NOW, canRevert: true, hasBody: true, bodyBytes: 2048 },
