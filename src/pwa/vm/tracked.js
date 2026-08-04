@@ -134,6 +134,29 @@ export function focusAction(job) {
   return { title: 'Waiting', description: 'Waiting on CI, review, or the orchestrator.', cta: { label: 'View', action: 'none' } };
 }
 
+// ── Token-launch queue status ────────────────────────────────────────────
+// Pure derivation from a job's server-attached `launchStatus` (routes/jobs.ts's
+// serializeJob → engine.launchStatusFor). No DOM, no fetch — callers pass the
+// raw job/step LaunchState in.
+
+export function launchBadge(status) {
+  if (!status || status.state === 'idle') return null;
+  if (status.state === 'running') return { label: 'Running', kind: 'running' };
+  return { label: `Queued — ${status.reason}`, kind: 'queued' };
+}
+
+export function jobLaunchBadge(job) {
+  return launchBadge(job.launchStatus?.job);
+}
+
+export function stepLaunchBadge(job, stepId) {
+  return launchBadge(job.launchStatus?.steps?.[stepId]);
+}
+
+export function isHighPriority(job) {
+  return !!job.highPriority;
+}
+
 // "Sessions on this job" for the focus rail — every session id the job has ever
 // spawned (orchestrator, per-step, per-thread edit), deduped, most-recent-looking
 // first. Purely derived from job state; no fetch.

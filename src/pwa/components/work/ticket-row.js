@@ -25,6 +25,12 @@ export function jobTone(j) {
   return 'mute';
 }
 
+// Maps a vm/tracked.js launchBadge()'s `kind` onto an existing .o-pill modifier —
+// no new pill color introduced for this feature.
+export function launchPillClass(kind) {
+  return kind === 'running' ? 'investigate' : 'warn';
+}
+
 export function ago(epochMs) {
   if (!epochMs) return '';
   const s = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));

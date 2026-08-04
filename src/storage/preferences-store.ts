@@ -24,6 +24,13 @@ export class PreferencesStore {
     return this.get();
   }
 
+  // Typed accessor for the one preference the daemon itself needs to read
+  // (the token-launch queue's concurrency) — everything else stays opaque.
+  getLaunchConcurrency(): number {
+    const raw = (this.get() as { launchConcurrency?: unknown }).launchConcurrency;
+    return Number.isInteger(raw) && (raw as number) >= 1 ? (raw as number) : 1;
+  }
+
   private load(): void {
     if (!existsSync(this.path)) return;
     try {

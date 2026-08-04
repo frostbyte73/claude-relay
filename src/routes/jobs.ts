@@ -1,12 +1,13 @@
 import type { Server } from '../server.js';
 import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
+import type { JobRecord } from '../work/work-types.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
 import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { readBody, readJsonBody } from './util.js';
-import { withLiveness } from '../work/job-liveness.js';
+import { serializeJob } from '../work/job-liveness.js';
 
 export interface JobsRoutesDeps {
   jobQueue: JobQueue;
@@ -20,10 +21,13 @@ export interface JobsRoutesDeps {
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   const { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager } = deps;
 
+  const serialize = (j: JobRecord) =>
+    serializeJob(j, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job));
+
   server.route('GET', '/api/work/jobs', (_req, res) => {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    const jobs = jobQueue.list().map((j) => withLiveness(j, (id) => engine.isSessionWorking(id)));
+    const jobs = jobQueue.list().map(serialize);
     res.end(JSON.stringify({ jobs, lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null }));
   });
 
@@ -34,7 +38,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     if (!j) { res.statusCode = 404; res.end('not found'); return; }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ job: withLiveness(j, (id) => engine.isSessionWorking(id)) }));
+    res.end(JSON.stringify({ job: serialize(j) }));
   });
 
   server.route('POST', '/api/work/jobs', async (req, res) => {
@@ -174,6 +178,45 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     catch (e) { res.statusCode = 500; res.end(`delete error: ${(e as Error).message}`); return; }
     res.statusCode = 204;
     res.end();
+  });
+
+  // Launch-now: force-fires whatever's parked for the job's orchestrator under the
+  // token-launch queue, bypassing both the headroom and slot gates.
+  server.route('POST', '/api/work/jobs/:id/launch', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/launch$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const id = m[1]!;
+    if (!jobQueue.get(id)) { res.statusCode = 404; res.end('not found'); return; }
+    const launched = engine.launchNow(id);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ launched }));
+  });
+
+  // Same as above, scoped to a single parked step launch.
+  server.route('POST', '/api/work/jobs/:id/steps/:stepId/launch', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/launch$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const [, id, stepId] = m;
+    const job = jobQueue.get(id!);
+    if (!job || !job.steps.some((s) => s.id === stepId)) { res.statusCode = 404; res.end('not found'); return; }
+    const launched = engine.launchNow(id!, stepId!);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ launched }));
+  });
+
+  server.route('POST', '/api/work/jobs/:id/priority', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/priority$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const id = m[1]!;
+    if (!jobQueue.get(id)) { res.statusCode = 404; res.end('not found'); return; }
+    const payload = await readJsonBody<{ highPriority?: unknown }>(req);
+    if (typeof payload?.highPriority !== 'boolean') { res.statusCode = 400; res.end('highPriority (boolean) required'); return; }
+    engine.setHighPriority(id, payload.highPriority);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ job: serialize(jobQueue.get(id)!) }));
   });
 
   server.route('POST', '/api/work/jobs/:id/launch-orchestrator', async (req, res) => {

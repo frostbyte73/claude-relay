@@ -31,12 +31,17 @@ function loadDefaultModel() {
   const v = localStorage.getItem('cr:defaultModel');
   return VALID_DEFAULT_MODELS.includes(v) ? v : 'default';
 }
+function loadLaunchConcurrency() {
+  const v = Number(localStorage.getItem('cr:launchConcurrency'));
+  return Number.isInteger(v) && v >= 1 ? v : 1;
+}
 
 const store = createStore({
   theme: loadTheme(),
   mode: loadMode(),
   defaultApprovalMode: loadDefaultApprovalMode(),
   defaultModel: loadDefaultModel(),
+  launchConcurrency: loadLaunchConcurrency(),
   acceptEdits: false,
   modePopoverOpen: false,
   pushPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
@@ -72,11 +77,17 @@ function applyDefaultModel(model) {
   try { localStorage.setItem('cr:defaultModel', model); } catch {}
   store.set((s) => (s.defaultModel === model ? s : { ...s, defaultModel: model }));
 }
+function applyLaunchConcurrency(n) {
+  if (!Number.isInteger(n) || n < 1) return;
+  try { localStorage.setItem('cr:launchConcurrency', String(n)); } catch {}
+  store.set((s) => (s.launchConcurrency === n ? s : { ...s, launchConcurrency: n }));
+}
 
 register({ key: 'theme', apply: applyTheme, current: () => store.get().theme });
 register({ key: 'mode', apply: applyMode, current: () => store.get().mode });
 register({ key: 'defaultApprovalMode', apply: applyDefaultApprovalMode, current: () => store.get().defaultApprovalMode });
 register({ key: 'defaultModel', apply: applyDefaultModel, current: () => store.get().defaultModel });
+register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () => store.get().launchConcurrency });
 
 export const settings = {
   get: store.get,
@@ -99,6 +110,11 @@ export const settings = {
     applyDefaultModel(model);
     push('defaultModel', store.get().defaultModel);
   },
+  setLaunchConcurrency(n) {
+    applyLaunchConcurrency(n);
+    push('launchConcurrency', store.get().launchConcurrency);
+  },
+  applyLaunchConcurrency,
   setAcceptEdits(v) {
     store.set((s) => ({ ...s, acceptEdits: !!v }));
   },

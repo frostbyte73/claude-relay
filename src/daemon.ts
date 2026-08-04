@@ -13,12 +13,13 @@ import { handleMcpRequest, OUTPOST_MCP_TOOLS } from './mcp-server.js';
 import { discoverTailscaleEnv } from './tailscale.js';
 import { writeDaemonSettings, writeMcpConfig, generateSecret } from './settings-gen.js';
 import { JobQueue } from './work/work-queue.js';
-import { withLiveness } from './work/job-liveness.js';
+import { serializeJob } from './work/job-liveness.js';
 import { JournalStore } from './storage/journal-store.js';
 import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
 import { UserPrsWatcher } from './integrations/user-prs-watcher.js';
 import { WorkEngine } from './work/engine.js';
+import { LaunchGovernor } from './work/launch-governor.js';
 import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './setup-actions.js';
 import { ActionsStore } from './storage/actions-store.js';
@@ -283,6 +284,9 @@ async function main() {
     onSessionExit: (sessionId, code) => {
       // Session-scoped allow rules die with the session's process.
       allowlist.clearSession(sessionId);
+      // A crash / idle-reap fires no Stop hook, so the Stop-handler slot release never runs —
+      // free any governor slot this session held here too (idempotent; a plain active.delete).
+      engine.releaseLaunchSlot(sessionId);
       // Scheduler has no visibility into session completion on its own; a schedule-spawned
       // skill session (see createSpawnDeps.spawnSkillSession) finishing is exactly this event.
       // No-op (via findRunByRef) for any session the scheduler didn't spawn.
@@ -336,6 +340,15 @@ async function main() {
     ...(process.env.LINEAR_STATE_DONE ? { done: process.env.LINEAR_STATE_DONE } : {}),
   };
   const linearWriter = new LinearWriter({ stateIds: linearStateIds });
+  const preferencesStore = new PreferencesStore(join(RUNTIME_DIR, 'preferences.json'));
+  // Token-aware launch queue. Constructed before the engine (which takes it as a dep).
+  // `latestAccountUsage` is declared later and read lazily through the closure — same
+  // pattern as tokenScheduler below.
+  const launchGovernor = new LaunchGovernor({
+    getSnapshot: () => latestAccountUsage ?? undefined,
+    getConcurrency: () => preferencesStore.getLaunchConcurrency(),
+    onChange: () => notifyLaunchStatesChanged(),
+  });
   const engine = new WorkEngine({
     queue: jobQueue,
     linearWriter,
@@ -346,9 +359,9 @@ async function main() {
     modes,
     journalStore,
     actionRegistry,
+    governor: launchGovernor,
     writeActionMeta: (id, meta) => sessionStore.writeActionMeta(id, meta),
   });
-  const preferencesStore = new PreferencesStore(join(RUNTIME_DIR, 'preferences.json'));
   const runsStore = new RunsStore(join(RUNTIME_DIR, 'runs.jsonl'));
   const usageLedger = new UsageLedger(join(RUNTIME_DIR, 'usage-ledger.json'));
   const runsCapture = createRunsCapture({
@@ -511,6 +524,12 @@ async function main() {
       const sessionId = payload.session_id;
       if (!sessionId) return;
       manager.markTurnEnded(sessionId);
+      // Free the governor slot this turn held BEFORE the stale-Stop / handoff logic below —
+      // this must run even on a stale Stop (which skips onSessionTurnEnded) and for orchestrator
+      // sessions (which onSessionTurnEnded early-returns on), or a queued follow-up round would
+      // deadlock behind the un-freed slot. Draining here also lets any other job's queued launch
+      // fill the freed slot.
+      engine.releaseLaunchSlot(sessionId);
       rebroadcastJobLiveness(sessionId);
       const { shouldNotify, turnDurationMs } = stopTracker.consume(sessionId);
       console.log(`[hook] stop session=${sessionId.slice(0,8)} durationMs=${turnDurationMs ?? 'n/a'} push=${shouldNotify}`);
@@ -809,7 +828,7 @@ async function main() {
   });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
   registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
-  registerPreferencesRoutes(server, { preferencesStore });
+  registerPreferencesRoutes(server, { preferencesStore, notify: notifyAll });
 
 
   // Body: { kind: 'tool'|'bash'|'mcp', value: string, scope?: 'global' | { project: string } | { action: string } | { session: string } | 'session' }.
@@ -912,6 +931,12 @@ async function main() {
     for (const ws of notificationClients) ws.send(payload);
   }
 
+  // Launch-queue state changed (a launch fired, parked, freed a slot, or was cancelled).
+  // The PWA re-fetches per-job launch status on this. Wired as the governor's onChange.
+  function notifyLaunchStatesChanged(): void {
+    try { notifyAll({ type: 'work_launch_changed' }); } catch { /* pre-startup */ }
+  }
+
   // A session's turn ending or its proc exiting usually changes no job state
   // (e.g. an implement session finishing leaves the step in `implementing`), so
   // the queue emits no broadcast and the PWA keeps showing the job as Running.
@@ -921,7 +946,7 @@ async function main() {
     if (!jobId) return;
     const owner = jobQueue.get(jobId);
     if (!owner) return;
-    try { notifyAll({ type: 'work_job_changed', jobId, job: withLiveness(owner, (id) => engine.isSessionWorking(id)) }); }
+    try { notifyAll({ type: 'work_job_changed', jobId, job: serializeJob(owner, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job)) }); }
     catch { /* notifyAll not in scope yet during startup */ }
   };
 
@@ -948,6 +973,8 @@ async function main() {
       // Re-evaluate token-opportunistic schedules against the fresh headroom. Fire-and-forget;
       // the controller latches to serialize and never launches more than one job at a time.
       void tokenScheduler.onUsageSnapshot();
+      // Fresh headroom may unblock parked autonomous launches — drain the launch queue too.
+      launchGovernor.onUsageSnapshot();
     },
   });
   usagePoller.start();
@@ -1131,7 +1158,7 @@ async function main() {
   // of whether Linear integration is configured.
   jobQueue.subscribe((ev) => {
     if (ev.kind === 'upsert') {
-      notifyAll({ type: 'work_job_changed', jobId: ev.jobId, job: withLiveness(ev.job, (id) => engine.isSessionWorking(id)) });
+      notifyAll({ type: 'work_job_changed', jobId: ev.jobId, job: serializeJob(ev.job, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job)) });
       const terminal = ev.job.state === 'done' || ev.job.state === 'failed' || ev.job.state === 'abandoned';
       // A schedule-spawned code.* job (createSpawnDeps.createJob) is a JobRecord like any
       // other — tag it with schedule context so it lands in the ledger as kind:'sched'
@@ -1161,6 +1188,7 @@ async function main() {
     engine.reconcileInterruptedEdits();
     engine.reconcileInterruptedSteps();
     engine.reconcileWaits();
+    engine.reconcilePendingLaunches();
     void engine.tick();
     const n = jobQueue.list().length;
     console.log(`[work] orchestrator started (queue: ${n} ticket${n === 1 ? '' : 's'})`);

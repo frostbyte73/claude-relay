@@ -45,4 +45,7 @@ export const workApi = {
   lockReply(id, stepId, body)      { return request(`${stepPath(id, stepId)}/replies/lock`, { method: 'POST', body: JSON.stringify(body) }); },
   react(id, stepId, body)          { return request(`${stepPath(id, stepId)}/reactions`, { method: 'POST', body: JSON.stringify(body) }); },
   regenerateReply(id, stepId, body) { return request(`${stepPath(id, stepId)}/replies/regenerate`, { method: 'POST', body: JSON.stringify(body) }); },
+  launchJob(id)                    { return request(`${jobPath(id)}/launch`, { method: 'POST', body: '{}' }); },
+  launchStep(id, stepId)           { return request(`${stepPath(id, stepId)}/launch`, { method: 'POST', body: '{}' }); },
+  setJobPriority(id, highPriority) { return request(`${jobPath(id)}/priority`, { method: 'POST', body: JSON.stringify({ highPriority }) }); },
 };

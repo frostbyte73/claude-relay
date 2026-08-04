@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { trackedGroups, focusAction } from '../../src/pwa/vm/tracked.js';
+import { trackedGroups, focusAction, launchBadge, jobLaunchBadge, stepLaunchBadge, isHighPriority } from '../../src/pwa/vm/tracked.js';
 
 const live = (orchestrator: boolean, stepIds: string[] = []) => ({ orchestrator, stepIds });
 
@@ -121,5 +121,60 @@ describe('focusAction', () => {
   it('done job -> no action', () => {
     const a = focusAction({ id: 'j1', state: 'done', steps: [] });
     expect(a.cta.action).toBe('none');
+  });
+});
+
+describe('launchBadge', () => {
+  it('running -> Running badge', () => {
+    expect(launchBadge({ state: 'running' })).toEqual({ label: 'Running', kind: 'running' });
+  });
+
+  it('queued -> Queued badge with reason', () => {
+    expect(launchBadge({ state: 'queued', reason: 'no token headroom' }))
+      .toEqual({ label: 'Queued — no token headroom', kind: 'queued' });
+  });
+
+  it('idle -> no badge', () => {
+    expect(launchBadge({ state: 'idle' })).toBeNull();
+  });
+
+  it('absent -> no badge', () => {
+    expect(launchBadge(undefined)).toBeNull();
+  });
+});
+
+describe('jobLaunchBadge / stepLaunchBadge', () => {
+  const job = {
+    id: 'j1',
+    highPriority: true,
+    launchStatus: {
+      job: { state: 'queued', reason: '1/1 slots busy' },
+      steps: { s1: { state: 'running' }, s2: { state: 'idle' } },
+    },
+  };
+
+  it('reads the job-level status', () => {
+    expect(jobLaunchBadge(job)).toEqual({ label: 'Queued — 1/1 slots busy', kind: 'queued' });
+  });
+
+  it('reads a running step', () => {
+    expect(stepLaunchBadge(job, 's1')).toEqual({ label: 'Running', kind: 'running' });
+  });
+
+  it('idle step -> no badge', () => {
+    expect(stepLaunchBadge(job, 's2')).toBeNull();
+  });
+
+  it('unknown step -> no badge', () => {
+    expect(stepLaunchBadge(job, 's-missing')).toBeNull();
+  });
+
+  it('missing launchStatus -> no badge', () => {
+    expect(jobLaunchBadge({ id: 'j2' })).toBeNull();
+  });
+
+  it('isHighPriority passthrough', () => {
+    expect(isHighPriority(job)).toBe(true);
+    expect(isHighPriority({ id: 'j2' })).toBe(false);
   });
 });

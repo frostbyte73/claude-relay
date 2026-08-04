@@ -55,4 +55,28 @@ describe('PreferencesStore', () => {
     expect(existsSync(`${path}.tmp`)).toBe(false);
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ theme: 'ink' });
   });
+
+  describe('getLaunchConcurrency', () => {
+    it('defaults to 1 when absent', () => {
+      expect(new PreferencesStore(newPath()).getLaunchConcurrency()).toBe(1);
+    });
+
+    it.each([0, -1, 2.5, 'x', null, {}])('defaults to 1 for invalid value %p', (bad) => {
+      const s = new PreferencesStore(newPath());
+      s.merge({ launchConcurrency: bad });
+      expect(s.getLaunchConcurrency()).toBe(1);
+    });
+
+    it('passes through a valid integer', () => {
+      const s = new PreferencesStore(newPath());
+      s.merge({ launchConcurrency: 4 });
+      expect(s.getLaunchConcurrency()).toBe(4);
+    });
+
+    it('reflects a prior merge across instances (reloaded from disk)', () => {
+      const path = newPath();
+      new PreferencesStore(path).merge({ launchConcurrency: 3 });
+      expect(new PreferencesStore(path).getLaunchConcurrency()).toBe(3);
+    });
+  });
 });

@@ -10,7 +10,8 @@ import { renderPlanSection, toggleReplanComposer, submitReplan } from '../work/p
 import { renderTimelineStep, wireTimelineStep, computeGroupPositions } from '../work/step-card.js';
 import { openAddStepDialog } from '../work/add-step-dialog.js';
 import { openActionPickerDialog } from '../work/action-picker-dialog.js';
-import { jobTone, ago, STATE_LABEL } from '../work/ticket-row.js';
+import { jobTone, ago, STATE_LABEL, launchPillClass } from '../work/ticket-row.js';
+import { jobLaunchBadge } from '../../vm/tracked.js';
 import { syncInlineMounts, teardownAllExcept } from './session-mounts.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -68,7 +69,28 @@ function renderHeader(job) {
         ${repo ? `<span class="tk-meta-item">${escapeHtml(shortName(repo))}</span>` : ''}
         <span class="tk-meta-item">Started ${ago(job.createdAt)} ago</span>
       </div>
+      ${renderLaunchRow(job)}
     </header>
+  `;
+}
+
+// Token-launch-queue status + controls — its own inner row so it never crowds
+// onto the title/state or source/repo/started lines above (header-spacing rule).
+function renderLaunchRow(job) {
+  const badge = jobLaunchBadge(job);
+  const showPriorityToggle = job.state !== 'done' && job.state !== 'abandoned';
+  if (!badge && !showPriorityToggle) return '';
+  return `
+    <div class="tk-launch-row">
+      ${badge ? `<span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>` : ''}
+      ${badge?.kind === 'queued' ? `<button type="button" class="o-btn o-btn--ghost" data-job-action="launch-now">Launch now</button>` : ''}
+      ${showPriorityToggle ? `
+        <label class="tk-priority-toggle" title="Run immediately, ignore the token queue">
+          <input type="checkbox" class="tk-priority-checkbox" ${job.highPriority ? 'checked' : ''}>
+          High priority — run immediately, ignore the token queue
+        </label>
+      ` : ''}
+    </div>
   `;
 }
 
@@ -233,9 +255,11 @@ export function renderTrackedDetail(root, jobId) {
   }
 
   // Skip no-op repaints: work-store events for *other* jobs fire subscribers
-  // too, and rebuilding would churn inline session mounts for nothing.
+  // too, and rebuilding would churn inline session mounts for nothing. launchStatus
+  // and highPriority are folded in explicitly — they change on a work_launch_changed
+  // refetch without bumping the job's own `updatedAt`.
   const editing = isEditingPlan(job.id);
-  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}`;
+  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}`;
   if (root.__tkPaintKey === paintKey && root.querySelector('.tk-shell')) return;
   root.__tkPaintKey = paintKey;
 
@@ -336,8 +360,19 @@ export function renderTrackedDetail(root, jobId) {
         if (!confirm('Delete this job? Sessions will be closed, worktrees archived, and the record removed. This cannot be undone.')) return;
         void work.deleteJob(job.id).catch((e) => alert(`Delete failed: ${e?.message ?? e}`));
       }
+      else if (action === 'launch-now') {
+        void work.launchJob(job.id).catch((e) => alert(`Launch failed: ${e?.message ?? e}`));
+      }
     });
   });
+
+  const priorityToggle = root.querySelector('.tk-priority-checkbox');
+  if (priorityToggle) {
+    priorityToggle.addEventListener('change', () => {
+      void work.setPriority(job.id, priorityToggle.checked)
+        .catch((e) => { alert(`Priority update failed: ${e?.message ?? e}`); priorityToggle.checked = !priorityToggle.checked; });
+    });
+  }
 
   root.querySelectorAll('.step-edit-tools').forEach((toolsEl) => {
     const stepId = toolsEl.getAttribute('data-step-id');

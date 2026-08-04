@@ -45,6 +45,17 @@ describe('cockpitGroups', () => {
     expect(jobRow.pills.some((p: any) => p.label === 'Executing')).toBe(true);
   });
 
+  it('an executing job parked behind the token queue shows Queued instead of Executing', () => {
+    const job = {
+      id: 'j1', title: 'Parked job', state: 'executing', updatedAt: NOW, steps: [],
+      launchStatus: { job: { state: 'queued', reason: 'no token headroom' }, steps: {} },
+    };
+    const groups = cockpitGroups({ now: NOW, jobs: [job] });
+    const jobRow = groups.inFlight.find((r: any) => r.id === 'job-exec-j1');
+    expect(jobRow.pills).toEqual([{ label: 'Queued — no token headroom', variant: 'warn' }]);
+    expect(jobRow.tone).toBe('warn');
+  });
+
   it('a ready-to-merge step gets a warn tone, not hot', () => {
     const groups = cockpitGroups({
       now: NOW,

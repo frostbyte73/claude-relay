@@ -4,8 +4,8 @@
 
 import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
-import { trackedGroups } from '../../vm/tracked.js';
-import { jobTone, ago, stepDots } from '../work/ticket-row.js';
+import { trackedGroups, jobLaunchBadge } from '../../vm/tracked.js';
+import { jobTone, ago, stepDots, launchPillClass } from '../work/ticket-row.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
@@ -14,12 +14,18 @@ const TONE_ICON = { gate: 'warn', danger: 'hot', ok: 'ok', accent: 'busy', activ
 function rowHtml(j) {
   const tone = jobTone(j);
   const ref = j.externalRef?.issueIdentifier ?? '';
+  // "Running" is already implied by the row landing in the Running group / active
+  // icon tone — only the queued case (parked behind the token queue) is news the
+  // compact row can't otherwise convey, so that's the only badge shown here.
+  const badge = jobLaunchBadge(j);
+  const queuedPill = badge?.kind === 'queued'
+    ? `<span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>` : '';
   return `
     <button type="button" class="o-row lr-row" data-job-id="${escapeHtml(j.id)}">
       <span class="o-row-icon ${TONE_ICON[tone] ?? 'idle'}">●</span>
       <span class="tracked-row-body">
         <div class="o-row-title">${ref ? `<span class="o-ref">${escapeHtml(ref)}</span>` : ''}${escapeHtml(j.title ?? '(untitled)')}</div>
-        <div class="o-row-sub">${stepDots(j)}</div>
+        <div class="o-row-sub">${stepDots(j)}${queuedPill}</div>
       </span>
       <span class="o-row-time">${ago(j.updatedAt)}</span>
     </button>

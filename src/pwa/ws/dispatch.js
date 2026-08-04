@@ -38,6 +38,17 @@ let deps = /** @type {any} */ (null);
 // Grep, Glob) don't flash the verb too briefly to read.
 const VERB_LINGER_MS = 10_000;
 
+// Debounces work_launch_changed bursts (a governor drain() pass can fire onChange
+// several times in a row) into a single jobs-list refetch.
+let launchStatusRefetchTimer = null;
+function scheduleLaunchStatusRefetch() {
+  if (launchStatusRefetchTimer) return;
+  launchStatusRefetchTimer = setTimeout(() => {
+    launchStatusRefetchTimer = null;
+    void work.loadAll();
+  }, 200);
+}
+
 // Fields expected on the deps object:
 //   state — the app.js mutable state object (pendingNewSession, lingeringTimer, bypassConfirmPending)
 //   renderSession / renderList / render — top-level renderers. renderSession
@@ -437,6 +448,17 @@ const broadcastHandlers = {
 
   run_appended(msg) {
     import('../state/runs.js').then(({ runs }) => runs.applyWsAppend(msg.run));
+  },
+
+  launch_concurrency_changed(msg) {
+    settings.applyLaunchConcurrency(msg.value);
+  },
+
+  // Governor state changed (a launch fired/parked/freed a slot) — carries no jobId,
+  // so refetch the jobs list to pick up fresh launchStatus everywhere. Debounced: a
+  // drain() pass can fire onChange several times in a row.
+  work_launch_changed() {
+    scheduleLaunchStatusRefetch();
   },
 
   schedules_changed(msg) {

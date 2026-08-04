@@ -31,6 +31,7 @@ import { shouldAutoFixCi, ciFailureSignature } from '../steps/open-pr.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
 import type { JournalStore } from '../storage/journal-store.js';
+import type { LaunchGovernor, LaunchState, LaunchPriority } from './launch-governor.js';
 
 const MAX_EVENTS_PER_JOB = 50;
 
@@ -50,6 +51,18 @@ export interface StepEditPatch {
   risks?: string;
   inputs?: Record<string, unknown>;
   action?: string;
+}
+
+// Rounds that continue an already-open PR (CI red, merge conflict, review comment/edit).
+// These launch immediately — they resume an in-flight unit of work rather than starting a
+// new one, so the token-headroom + concurrency gate that throttles fresh launches doesn't
+// apply. (spawnStepSession's plan/implement/spec resumes are NOT here: they route as `queued`
+// and self-unblock when the prior turn's Stop frees the slot — see releaseLaunchSlot.)
+const REACTIVE_ACTIONS = new Set([
+  'code.fix-ci', 'code.resolve-conflicts', 'code.fix-pr-comment', 'code.triage-pr-comments',
+]);
+export function isReactiveAction(action: string): boolean {
+  return REACTIVE_ACTIONS.has(action);
 }
 
 export function actionNameForStep(s: Step): string {
@@ -117,6 +130,11 @@ export interface WorkEngineOpts {
   modes?: ApprovalModeStore;
   journalStore?: JournalStore;
   actionRegistry?: ActionRegistry;
+  // Token-aware launch queue. Every autonomous launch routes through it via submitLaunch;
+  // reactive rounds and high-priority jobs fire immediately, everything else waits for token
+  // headroom + a free concurrency slot. Optional so the unit harnesses (which omit it) keep
+  // firing launches synchronously — the daemon always wires it.
+  governor?: LaunchGovernor;
   // Persists a durable {action, title} marker for a spawned action session so the PWA
   // sessions list can label + title it without loading the transcript. Wired to
   // SessionStore.writeActionMeta in the daemon.
@@ -470,6 +488,7 @@ export class WorkEngine {
     dedupeKey?: string;
     id?: string;
     autoPlan?: boolean;
+    highPriority?: boolean;
   }): JobRecord {
     const id = input.id ?? this.ctx.newId();
     const now = this.ctx.now();
@@ -480,6 +499,7 @@ export class WorkEngine {
       title: input.title,
       description: input.description,
       externalRef: input.externalRef,
+      ...(input.highPriority ? { highPriority: true } : {}),
       state: 'planning',
       steps: [],
       events: [{ id: this.ctx.newId(), at: now, kind: 'created', who: input.source === 'linear' ? 'linear-poller' : 'user' }],
@@ -502,6 +522,7 @@ export class WorkEngine {
     dedupeKey?: string;
     externalRef?: JobRecord['externalRef'];
     autoPlan?: boolean;
+    highPriority?: boolean;
   }): { jobId: string; created: boolean } {
     // dedupeKey doubles as the job id below, which becomes a filesystem path component
     // (jobFile in work-queue.ts, writeEnvelope's jobsDir/jobId dir) — reject anything that
@@ -523,6 +544,7 @@ export class WorkEngine {
       description: input.body ?? '',
       externalRef: input.externalRef,
       autoPlan: input.autoPlan ?? true,
+      ...(input.highPriority ? { highPriority: true } : {}),
     });
     return { jobId: job.id, created: true };
   }
@@ -533,6 +555,78 @@ export class WorkEngine {
     if (!j) return;
     if (j.steps.length > 0) return; // use reopenOrchestrator for amendments
     await this.spawnInitialOrchestrator(j, 'meta.orchestrate', context);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Token-launch queue (LaunchGovernor) integration.
+  // ─────────────────────────────────────────────────────────
+
+  // Routes an autonomous launch through the governor. The actual spawn/send AND the
+  // mutation that records the session id live in `run` — a parked (queued, not yet fired)
+  // launch must leave the job/step looking un-started (orchestratorSessionId / step.sessionId
+  // unset) so decide() + reconcilePendingLaunches recreate it after a daemon restart.
+  private submitLaunch(o: {
+    key: string; jobId: string; stepId?: string; sessionId: string;
+    action: string; label?: string; run: () => boolean;
+  }): void {
+    const gov = this.opts.governor;
+    if (!gov) { o.run(); return; }  // no governor wired (unit harnesses) → fire synchronously
+    const job = this.opts.queue.get(o.jobId);
+    const priority: LaunchPriority = (job?.highPriority || isReactiveAction(o.action)) ? 'immediate' : 'queued';
+    const jobInProgress = !!job && job.steps.some((s) => !!s.sessionId || handlerFor(s).isResolved(s));
+    gov.submit({
+      key: o.key, jobId: o.jobId, stepId: o.stepId, sessionId: o.sessionId,
+      priority, enqueuedAt: this.ctx.now(), jobInProgress,
+      ...(o.label ? { label: o.label } : {}),
+      run: o.run,
+    });
+  }
+
+  // Force-fires the specific parked launch for a job's orchestrator (no stepId) or a step
+  // (stepId given), bypassing the headroom/slot gate. False if nothing was parked there.
+  launchNow(jobId: string, stepId?: string): boolean {
+    return this.opts.governor?.forceFire(stepId ? `${jobId}#${stepId}` : `${jobId}#orchestrator`) ?? false;
+  }
+
+  // Toggles a job's high-priority flag. Turning it on fires any of the job's parked launches
+  // immediately (they were queued behind token headroom / a busy slot).
+  setHighPriority(jobId: string, value: boolean): void {
+    const j = this.opts.queue.get(jobId);
+    if (!j || (j.highPriority ?? false) === value) return;
+    this.mutate(jobId, (jj) => this.appendEvent({ ...jj, highPriority: value }, {
+      kind: 'state_changed', who: 'user',
+      body: value ? 'marked high-priority — launches bypass the token queue' : 'cleared high-priority',
+    }));
+    if (value) this.opts.governor?.forceFireJob(jobId);
+  }
+
+  // Launch-queue status for a job's orchestrator and each of its steps (PWA consumes this).
+  launchStatusFor(job: JobRecord): { job: LaunchState; steps: Record<string, LaunchState> } {
+    const gov = this.opts.governor;
+    const idle: LaunchState = { state: 'idle' };
+    const steps: Record<string, LaunchState> = {};
+    for (const s of job.steps) steps[s.id] = gov ? gov.describe(`${job.id}#${s.id}`) : idle;
+    return { job: gov ? gov.describe(`${job.id}#orchestrator`) : idle, steps };
+  }
+
+  // Frees the governor slot a finished turn held, then drains any launch it unblocked.
+  // Called UNCONDITIONALLY from the daemon Stop hook — deliberately NOT from onSessionTurnEnded,
+  // which early-returns for orchestrator sessions (leaking their slot) and is skipped entirely
+  // on a stale/superseded Stop (deadlocking a queued follow-up round behind the un-freed slot).
+  releaseLaunchSlot(sessionId: string): void {
+    this.opts.governor?.turnEnded(sessionId);
+  }
+
+  // Startup recovery: re-submit the initial orchestrator for any job stuck in `planning` with
+  // no orchestrator session — its launch was parked (never fired) when the daemon stopped.
+  // Executing jobs recover via the daemon's existing tick()/decide() re-emit for sessionless
+  // active-group steps, which now route through submitLaunch — no duplication needed here.
+  reconcilePendingLaunches(): void {
+    for (const j of this.opts.queue.list()) {
+      if (j.state === 'planning' && !j.orchestratorSessionId) {
+        void this.spawnInitialOrchestrator(j, j.orchestratorAction ?? 'meta.orchestrate');
+      }
+    }
   }
 
   async abandonJob(jobId: string): Promise<void> {
@@ -553,11 +647,18 @@ export class WorkEngine {
   // Close any live sessions bound to this job and archive every worktree it owns.
   // Archive (not remove) so JSONL transcripts survive for review.
   private async terminateJobResources(j: JobRecord): Promise<void> {
+    // Drop any parked launches for this job so a later drain can't resurrect it after
+    // abandon/delete/reset. Live sessions are closed below.
+    this.opts.governor?.cancel(j.id);
     const sessionIds = new Set<string>();
     if (j.orchestratorSessionId) sessionIds.add(j.orchestratorSessionId);
     for (const s of j.steps) {
       if (s.sessionId) sessionIds.add(s.sessionId);
     }
+    // Free any governor slots these live sessions hold. closeSessions SIGTERMs them, and a
+    // SIGTERM fires no Stop hook — so release here rather than waiting on the async proc exit
+    // (which does the same via onSessionExit; turnEnded is idempotent).
+    for (const sid of sessionIds) this.opts.governor?.turnEnded(sid);
     await this.closeSessions(sessionIds);
     // Drop any armed meta.wait soak timers so an abandoned/deleted job doesn't keep a
     // stale wake pending (the resolve would no-op anyway, but don't leak the timer).
@@ -1469,23 +1570,31 @@ export class WorkEngine {
     augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent('code.resolve-conflicts') ?? []);
 
     const sessionId = step.sessionId ?? this.ctx.newId();
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({ ...s, conflictResolving: true, sessionId, conflictPostAction: opts?.postAction, updatedAt: this.ctx.now() }));
-
     const cwd = ws.path ?? this.orchestratorCwd();
-    this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
-    this.bindAction(sessionId, 'code.resolve-conflicts');
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'step_started',
-      who: 'orchestrator',
-      stepId,
-      body: `${this.stepLabel(jobId, stepId)} — resolving merge conflicts`,
-    }));
-    this.opts.sessionManager.sendOrResume(
-      sessionId,
-      cwd,
-      { type: 'user', message: { role: 'user', content: '/code.resolve-conflicts' } },
-      { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
-    );
+    // code.resolve-conflicts is reactive → immediate: run fires synchronously. The top-of-method
+    // `state !== 'conflicting' || conflictResolving` check is the double-spawn guard; the flag
+    // itself is claimed in run alongside the send.
+    this.submitLaunch({
+      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: 'code.resolve-conflicts', label: 'conflict',
+      run: () => {
+        this.mutateOpenPrStep(jobId, stepId, (s) => ({ ...s, conflictResolving: true, sessionId, conflictPostAction: opts?.postAction, updatedAt: this.ctx.now() }));
+        this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
+        this.bindAction(sessionId, 'code.resolve-conflicts');
+        this.mutate(jobId, (j) => this.appendEvent(j, {
+          kind: 'step_started',
+          who: 'orchestrator',
+          stepId,
+          body: `${this.stepLabel(jobId, stepId)} — resolving merge conflicts`,
+        }));
+        this.opts.sessionManager.sendOrResume(
+          sessionId,
+          cwd,
+          { type: 'user', message: { role: 'user', content: '/code.resolve-conflicts' } },
+          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
+        );
+        return true;
+      },
+    });
   }
 
   async fixCi(jobId: string, stepId: string): Promise<void> {
@@ -1550,20 +1659,29 @@ export class WorkEngine {
     augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent('code.fix-ci') ?? []);
 
     const cwd = ws.path ?? this.orchestratorCwd();
-    this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
-    this.bindAction(sessionId, 'code.fix-ci');
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'step_started',
-      who: 'orchestrator',
-      stepId,
-      body: `${this.stepLabel(jobId, stepId)} — fixing failing CI`,
-    }));
-    this.opts.sessionManager.sendOrResume(
-      sessionId,
-      cwd,
-      { type: 'user', message: { role: 'user', content: '/code.fix-ci' } },
-      { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
-    );
+    // code.fix-ci is reactive → immediate: `run` fires synchronously here. The ciFixing
+    // claim stays above (before the provision await) so the synchronous double-spawn guard
+    // is unchanged; only the session send moves into run.
+    this.submitLaunch({
+      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: 'code.fix-ci', label: 'ci-fix',
+      run: () => {
+        this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
+        this.bindAction(sessionId, 'code.fix-ci');
+        this.mutate(jobId, (j) => this.appendEvent(j, {
+          kind: 'step_started',
+          who: 'orchestrator',
+          stepId,
+          body: `${this.stepLabel(jobId, stepId)} — fixing failing CI`,
+        }));
+        this.opts.sessionManager.sendOrResume(
+          sessionId,
+          cwd,
+          { type: 'user', message: { role: 'user', content: '/code.fix-ci' } },
+          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
+        );
+        return true;
+      },
+    });
   }
 
   // Squash the step's branch onto its base branch locally (no push), then complete
@@ -1882,19 +2000,31 @@ export class WorkEngine {
   private async spawnOrchestratorSession(jobId: string, mode: 'initial' | 'replan' | 'step-review', envelopePath: string, actionName: string): Promise<void> {
     const sessionId = this.ctx.newId();
     const cwd = this.orchestratorCwd();
-    this.opts.sessionManager.spawnDetached(sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default');
-    this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
-    this.bindAction(sessionId, actionName);
-    this.stampActionSession(sessionId, actionName, this.opts.queue.get(jobId)?.title || 'Job');
-    this.mutate(jobId, (j) => this.appendEvent(
-      { ...j, orchestratorSessionId: sessionId, orchestratorAction: actionName, state: 'planning' },
-      { kind: 'orchestrator_started', who: 'orchestrator', body: mode === 'replan' ? 'replan' : mode === 'step-review' ? 'step-review' : 'initial' },
-    ));
-    // spawnDetached only launches the proc — without a user turn, the orchestrator skill
-    // never activates and the envelope sits unread. Kick it.
-    this.opts.sessionManager.send(sessionId, {
-      type: 'user',
-      message: { role: 'user', content: `/${actionName} ${jobId}` },
+    this.submitLaunch({
+      key: `${jobId}#orchestrator`,
+      jobId,
+      sessionId,
+      action: 'meta.orchestrate',
+      label: mode,
+      run: () => {
+        const cur = this.opts.queue.get(jobId);
+        if (!cur || cur.state === 'abandoned' || cur.state === 'done' || cur.state === 'failed') return false;
+        this.opts.sessionManager.spawnDetached(sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default');
+        this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
+        this.bindAction(sessionId, actionName);
+        this.stampActionSession(sessionId, actionName, cur.title || 'Job');
+        this.mutate(jobId, (j) => this.appendEvent(
+          { ...j, orchestratorSessionId: sessionId, orchestratorAction: actionName, state: 'planning' },
+          { kind: 'orchestrator_started', who: 'orchestrator', body: mode === 'replan' ? 'replan' : mode === 'step-review' ? 'step-review' : 'initial' },
+        ));
+        // spawnDetached only launches the proc — without a user turn, the orchestrator skill
+        // never activates and the envelope sits unread. Kick it.
+        this.opts.sessionManager.send(sessionId, {
+          type: 'user',
+          message: { role: 'user', content: `/${actionName} ${jobId}` },
+        });
+        return true;
+      },
     });
   }
 
@@ -1934,8 +2064,6 @@ export class WorkEngine {
     // One resumable session per step: fall back to a fresh id only if the implement
     // round never recorded one (degrades to today's cold start rather than failing).
     const sessionId = step.sessionId ?? this.ctx.newId();
-    this.markEditRunning(job.id, step.id, editId, sessionId);
-
     const cwd = ws.path ?? this.orchestratorCwd();
     const env = {
       OUTPOST_ENVELOPE: envelopePath,
@@ -1944,14 +2072,24 @@ export class WorkEngine {
       STEP_TYPE: 'open-pr',
       EDIT_JOB_ID: editId,
     };
-    this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
-    this.bindAction(sessionId, 'code.fix-pr-comment');
-    this.opts.sessionManager.sendOrResume(
-      sessionId,
-      cwd,
-      { type: 'user', message: { role: 'user', content: '/code.fix-pr-comment' } },
-      env,
-    );
+    // code.fix-pr-comment is reactive → immediate. The one-running-edit-per-step guard stays
+    // in tickOne; markEditRunning (which flips the head edit to `running`) moves into run so it
+    // fires exactly when the round actually starts.
+    this.submitLaunch({
+      key: `${job.id}#${step.id}`, jobId: job.id, stepId: step.id, sessionId, action: 'code.fix-pr-comment', label: 'edit',
+      run: () => {
+        this.markEditRunning(job.id, step.id, editId, sessionId);
+        this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
+        this.bindAction(sessionId, 'code.fix-pr-comment');
+        this.opts.sessionManager.sendOrResume(
+          sessionId,
+          cwd,
+          { type: 'user', message: { role: 'user', content: '/code.fix-pr-comment' } },
+          env,
+        );
+        return true;
+      },
+    });
   }
 
   // Single-shot resume of the shared open-pr session for a state that decide() does
@@ -1994,61 +2132,76 @@ export class WorkEngine {
     // conversation so the agent keeps full context (why the code looks as it does,
     // sibling comments for "same thing here", etc.).
     if (s.type === 'open-pr' && s.sessionId) {
+      const sessionId = s.sessionId;
       // If the shared session is still mid-turn, its previous round's Stop hook hasn't
       // landed yet. That trailing Stop belongs to the round we're superseding here, not
       // to the one we're about to dispatch — record it so the Stop handler drops it
       // rather than failing this (live) step for "ended without submitting output".
-      if (this.opts.sessionManager.isWorking(s.sessionId)) {
-        this.owedStaleStops.set(s.sessionId, (this.owedStaleStops.get(s.sessionId) ?? 0) + 1);
+      // Recorded SYNCHRONOUSLY (not inside run): a `queued` plan/spec resume may only fire
+      // once that trailing Stop's releaseLaunchSlot frees the slot, so the owed stop must be
+      // on the books before the Stop lands.
+      if (this.opts.sessionManager.isWorking(sessionId)) {
+        this.owedStaleStops.set(sessionId, (this.owedStaleStops.get(sessionId) ?? 0) + 1);
       }
-      this.roleBySession.set(s.sessionId, { role: 'step', jobId, stepId });
-      this.bindAction(s.sessionId, actionName);
-      this.mutate(jobId, (j) => this.appendEvent(j, {
-        kind: 'step_started',
-        who: 'orchestrator',
-        stepId,
-        body: this.stepLabel(jobId, stepId),
-      }));
-      // A triage round runs a turn on the shared session; mark it in-flight so an edit
-      // round can't overwrite the envelope mid-turn. markIterationPosted (on submit_replies),
-      // dropOrphanIterations (pr-watcher, on new comments), and resolveIteration
-      // (approve/reject) already drive it to a terminal state.
-      if (actionName === 'code.triage-pr-comments') this.startIteration(jobId, stepId, 'replies');
-      // Stable envelope path + sendOrResume: whether the proc is still alive (reads
-      // the overwritten envelope.json) or was idle-reaped (respawn picks up extraEnv),
-      // it re-reads the current round.
-      this.opts.sessionManager.sendOrResume(
-        s.sessionId,
-        cwd,
-        { type: 'user', message: { role: 'user', content: `/${actionName}` } },
-        { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: s.type },
-      );
+      this.submitLaunch({
+        key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
+        run: () => {
+          const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+          if (!cur || cur.type !== 'open-pr' || cur.cancelled) return false;
+          this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
+          this.bindAction(sessionId, actionName);
+          this.mutate(jobId, (j) => this.appendEvent(j, {
+            kind: 'step_started', who: 'orchestrator', stepId, body: this.stepLabel(jobId, stepId),
+          }));
+          // A triage round runs a turn on the shared session; mark it in-flight so an edit
+          // round can't overwrite the envelope mid-turn. markIterationPosted (on submit_replies),
+          // dropOrphanIterations (pr-watcher, on new comments), and resolveIteration
+          // (approve/reject) already drive it to a terminal state.
+          if (actionName === 'code.triage-pr-comments') this.startIteration(jobId, stepId, 'replies');
+          // Stable envelope path + sendOrResume: whether the proc is still alive (reads
+          // the overwritten envelope.json) or was idle-reaped (respawn picks up extraEnv),
+          // it re-reads the current round.
+          this.opts.sessionManager.sendOrResume(
+            sessionId,
+            cwd,
+            { type: 'user', message: { role: 'user', content: `/${actionName}` } },
+            { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'open-pr' },
+          );
+          return true;
+        },
+      });
       return;
     }
     const sessionId = this.ctx.newId();
-    // Action-bound step sessions always run in `default` permission mode so the
-    // PreToolUse hook fires on every call — the hook denies-on-miss for action
-    // sessions (no interactive approver attached). Without this, the user's global
-    // `acceptEdits` would silently let edits through.
-    this.opts.sessionManager.spawnDetached(sessionId, cwd, {
-      OUTPOST_ENVELOPE: envelopePath,
-      JOB_ID: jobId,
-      STEP_ID: stepId,
-      STEP_TYPE: s.type,
-    }, 'default');
-    this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
-    this.bindAction(sessionId, actionName);
-    this.stampActionSession(sessionId, actionName, s.title || 'Step');
-    this.mutateStep(jobId, stepId, (st) => ({ ...st, sessionId }) as Step);
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'step_started',
-      who: 'orchestrator',
-      stepId,
-      body: this.stepLabel(jobId, stepId),
-    }));
-    this.opts.sessionManager.send(sessionId, {
-      type: 'user',
-      message: { role: 'user', content: `/${actionName}` },
+    this.submitLaunch({
+      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
+      run: () => {
+        // Re-validate: the step may have been cancelled/retried/started while parked.
+        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        if (!cur || cur.cancelled || cur.failure || cur.sessionId) return false;
+        // Action-bound step sessions always run in `default` permission mode so the
+        // PreToolUse hook fires on every call — the hook denies-on-miss for action
+        // sessions (no interactive approver attached). Without this, the user's global
+        // `acceptEdits` would silently let edits through.
+        this.opts.sessionManager.spawnDetached(sessionId, cwd, {
+          OUTPOST_ENVELOPE: envelopePath,
+          JOB_ID: jobId,
+          STEP_ID: stepId,
+          STEP_TYPE: s.type,
+        }, 'default');
+        this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
+        this.bindAction(sessionId, actionName);
+        this.stampActionSession(sessionId, actionName, s.title || 'Step');
+        this.mutateStep(jobId, stepId, (st) => ({ ...st, sessionId }) as Step);
+        this.mutate(jobId, (j) => this.appendEvent(j, {
+          kind: 'step_started', who: 'orchestrator', stepId, body: this.stepLabel(jobId, stepId),
+        }));
+        this.opts.sessionManager.send(sessionId, {
+          type: 'user',
+          message: { role: 'user', content: `/${actionName}` },
+        });
+        return true;
+      },
     });
   }
 

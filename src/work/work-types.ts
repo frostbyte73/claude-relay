@@ -296,6 +296,9 @@ export interface JobRecord {
   // Set on jobs created via "promote to tracked" (POST /api/work/jobs/from-session/:id) —
   // links the manual job back to the interactive session it was spun out of.
   originSessionId?: string;
+  // Bypasses the token-launch queue: a high-priority job's launches fire immediately,
+  // regardless of token headroom or the concurrency slot budget. Absent = normal.
+  highPriority?: boolean;
   failure?: { reason: string; at: number };
   events?: JobEvent[];
   createdAt: number;

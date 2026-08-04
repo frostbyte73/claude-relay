@@ -1,65 +1,9 @@
 import type { SchedulesStore } from './schedules-store.js';
 import type { ScheduleRecord } from './types.js';
+import { evaluateHeadroom, type TokenUsageSnapshot } from './headroom.js';
 
-// Minimal shape of the account usage snapshot this controller needs — mirrors
-// `AccountUsageSnapshot` (src/integrations/usage-poller.ts) without importing it, keeping
-// src/schedules/ dependency-free. `resets_at` is unix epoch *seconds* (claude's convention).
-export interface TokenWindowUsage {
-  used_percentage: number;
-  resets_at: number;
-}
-export interface TokenUsageSnapshot {
-  five_hour?: TokenWindowUsage;
-  seven_day?: TokenWindowUsage;
-}
-
-const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000;
-// How far behind pace the 7d window must be before we spend on backlog. `headroom` is
-// (fraction of window elapsed − fraction of budget used); a positive value means we've used
-// proportionally less budget than time. The margin keeps us conservative early in a window
-// (elapsed≈0, used≈0 → headroom≈0 → wait) while the pace signal itself grows more permissive
-// as the window drains, so near a reset with budget to spare it launches aggressively.
-const PACE_MARGIN = 0.05;
-// Hard ceiling on the short window: never launch into a nearly-spent 5h bucket, so a burst of
-// backlog jobs can't blow the short limit even when the 7d window looks healthy.
-const FIVE_HOUR_CEILING = 80;
-
-export interface HeadroomDecision {
-  launch: boolean;
-  reason: string;
-}
-
-function humanizeMs(ms: number): string {
-  const mins = Math.round(ms / 60_000);
-  if (mins < 60) return `${mins}m`;
-  const hours = mins / 60;
-  if (hours < 24) return `${Math.round(hours)}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-// Fails closed: any missing/stale signal yields `launch: false`. Never launches on partial data.
-export function evaluateHeadroom(snapshot: TokenUsageSnapshot | undefined, now: number): HeadroomDecision {
-  const seven = snapshot?.seven_day;
-  const five = snapshot?.five_hour;
-  if (!seven || !five || !Number.isFinite(seven.resets_at) || seven.resets_at <= 0) {
-    return { launch: false, reason: 'Waiting — no usage data yet' };
-  }
-  if (five.used_percentage >= FIVE_HOUR_CEILING) {
-    return { launch: false, reason: `Waiting — 5h usage at ${Math.round(five.used_percentage)}%` };
-  }
-  const msUntilReset = seven.resets_at * 1000 - now;
-  if (msUntilReset <= 0) return { launch: false, reason: 'Waiting — awaiting usage refresh' };
-
-  const elapsedFrac = Math.min(1, Math.max(0, (SEVEN_DAY_MS - msUntilReset) / SEVEN_DAY_MS));
-  const usedFrac = Math.min(1, Math.max(0, seven.used_percentage / 100));
-  const headroom = elapsedFrac - usedFrac;
-  const used = Math.round(seven.used_percentage);
-  const until = humanizeMs(msUntilReset);
-  if (headroom < PACE_MARGIN) {
-    return { launch: false, reason: `Waiting — 7d usage ahead of pace (${used}% used, ${until} to reset)` };
-  }
-  return { launch: true, reason: `Headroom — 7d at ${used}% used, ${until} to reset` };
-}
+export type { TokenWindowUsage, TokenUsageSnapshot, HeadroomDecision, HeadroomCode } from './headroom.js';
+export { evaluateHeadroom } from './headroom.js';
 
 export interface TokenSchedulerDeps {
   store: SchedulesStore;

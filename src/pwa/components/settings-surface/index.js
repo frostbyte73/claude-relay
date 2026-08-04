@@ -181,6 +181,13 @@ function renderModelDefaults(mount) {
     </div>
     <p class="settings-note" data-role="approval-desc"></p>
   `);
+  const concurrencySection = block(body, 'Autonomous launch concurrency', `
+    <div class="settings-row">
+      <label class="settings-row-label" for="settings-launch-concurrency">Jobs launched at once</label>
+      <input class="settings-row-input" id="settings-launch-concurrency" type="number" min="1" step="1" inputmode="numeric" />
+    </div>
+    <p class="settings-note">How many token-scheduled jobs run at once. Higher spends tokens faster; 1 finishes one at a time.</p>
+  `);
 
   function paintModel() {
     const current = settings.get().defaultModel;
@@ -196,6 +203,13 @@ function renderModelDefaults(mount) {
     const desc = APPROVAL_MODES.find((m) => m.key === current)?.desc ?? '';
     approvalSection.querySelector('[data-role="approval-desc"]').textContent = desc;
   }
+  const concurrencyInput = concurrencySection.querySelector('#settings-launch-concurrency');
+  function paintConcurrency() {
+    // Skip while the field has focus so a live broadcast from another device
+    // doesn't clobber keystrokes mid-edit here.
+    if (document.activeElement === concurrencyInput) return;
+    concurrencyInput.value = String(settings.get().launchConcurrency);
+  }
 
   modelSection.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-value]');
@@ -205,10 +219,16 @@ function renderModelDefaults(mount) {
     const btn = e.target.closest('button[data-value]');
     if (btn?.dataset.value) settings.setDefaultApprovalMode(btn.dataset.value);
   });
+  concurrencyInput.addEventListener('change', () => {
+    const n = Number(concurrencyInput.value);
+    if (Number.isInteger(n) && n >= 1) settings.setLaunchConcurrency(n);
+    else concurrencyInput.value = String(settings.get().launchConcurrency);
+  });
 
   paintModel();
   paintApproval();
-  const unsub = settings.subscribe(() => { paintModel(); paintApproval(); });
+  paintConcurrency();
+  const unsub = settings.subscribe(() => { paintModel(); paintApproval(); paintConcurrency(); });
   return unsub;
 }
 

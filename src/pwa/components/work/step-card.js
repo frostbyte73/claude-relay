@@ -3,6 +3,8 @@ import { sessions } from '../../state/sessions.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { hasPrBlock, renderPrBlockHtml, wirePrBlockActions } from './pr-block.js';
 import { renderMarkdown } from '../../markdown.js';
+import { stepLaunchBadge } from '../../vm/tracked.js';
+import { launchPillClass } from './ticket-row.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
@@ -199,6 +201,19 @@ function waitBlockHtml(s) {
     </div>`;
 }
 
+// Token-launch-queue status for this step, in its own row (never crammed onto
+// tl-hdr alongside the name/skill/time).
+function launchRowHtml(job, s) {
+  const badge = stepLaunchBadge(job, s.id);
+  if (!badge) return '';
+  return `
+    <div class="tl-launch">
+      <span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>
+      ${badge.kind === 'queued' ? `<button type="button" class="o-btn o-btn--ghost" data-step-action="launch-now">Launch now</button>` : ''}
+    </div>
+  `;
+}
+
 // Structured outbound links per step: whatever real data supports (no
 // fabricated "N log excerpts" counts — the mockup invents structure our data
 // model doesn't have; only render refs we can actually resolve).
@@ -248,6 +263,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
         ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
         ${waitBlockHtml(s)}
+        ${launchRowHtml(job, s)}
         ${s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
         ${showPrBlock ? renderPrBlockHtml(job, s) : (metaFor(s) ? `<div class="tl-meta">${metaFor(s)}</div>` : '')}
         ${refsHtml(refs)}
@@ -274,6 +290,7 @@ export function wireTimelineStep(el, job, s) {
       e.stopPropagation();
       const kind = btn.getAttribute('data-step-action');
       if (kind === 'resolve') void work.resolveStep(job.id, s.id);
+      else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
       else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
       else if (kind === 'retry') void work.retryStep(job.id, s.id);
       else if (kind === 'merge') void work.approve(job.id, { gate: 'merge', stepId: s.id });

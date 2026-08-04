@@ -126,6 +126,25 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .tk-meta-item a { color: var(--accent); text-decoration: none; }
 .tk-meta-item a:hover { text-decoration: underline; }
 
+/* Token-launch-queue status + high-priority toggle — its own row so it never
+   crowds onto .tk-title-row (state pill) or .tk-meta (source/repo/started). */
+.tk-launch-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.tk-priority-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.tk-priority-toggle input { margin: 0; }
+
 .tk-body {
   padding: var(--gap-6) var(--detail-pad-x) var(--detail-pad-bottom);
   min-width: 0;
@@ -353,6 +372,14 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .tl-meta .review-ok   { color: var(--ok); }
 .tl-meta .unresolved  { color: var(--accent); }
 .tl-meta .muted       { color: var(--text-dim); word-break: break-all; }
+
+/* Per-step token-launch-queue status — own row, same rhythm as .tl-meta. */
+.tl-launch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 8px;
+}
 
 /* ── Inline PR block ──────────────────────────────────────────────────── */
 .pr-block {

@@ -83,13 +83,19 @@ function sessionRow(slice) {
 }
 
 function executingJobRow(j) {
+  // Surface the token-launch queue's verdict in place of a flat "Executing" pill
+  // when the job's own launch is parked — the job is "in flight" in the sense
+  // that it's active work, but it isn't actually burning tokens right now.
+  const launch = j.launchStatus?.job;
+  const queued = launch?.state === 'queued';
+  const pill = queued ? { label: `Queued — ${launch.reason}`, variant: 'warn' } : { label: 'Executing', variant: 'accent' };
   return {
     id: `job-exec-${j.id}`,
     kind: 'job',
-    tone: 'busy',
+    tone: queued ? 'warn' : 'busy',
     title: j.title ?? '(untitled job)',
     ref: j.externalRef?.issueIdentifier ?? null,
-    pills: [{ label: 'Executing', variant: 'accent' }],
+    pills: [pill],
     time: j.updatedAt ?? 0,
     open: { surface: 'tracked', id: j.id },
   };
