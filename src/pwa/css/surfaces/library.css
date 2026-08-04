@@ -1,7 +1,7 @@
 /* Skills library surface — list-detail layout. Row/section/pill primitives
    themselves live in primitives.css; this file adds the search+chip list
    chrome and skill-detail-specific layout (header actions, SKILL.md body,
-   Permissions/Recent-runs two-column grid).
+   stacked Permissions + Recent-runs sections).
 
    Mockup token translation (D3): --bg-primary→--bg, --bg-secondary→--bg-elev,
    --bg-tertiary→--bg-elev-2, --border→--line/--line-soft, --text-primary→
@@ -256,12 +256,9 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
 .lib-skillmd :is(.md-p, .md-list, .md-quote):first-child { margin-top: 0; }
 
 .lib-sections {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-}
-@media (max-width: 720px) {
-  .lib-sections { grid-template-columns: 1fr; }
 }
 
 .lib-section { padding: 14px 16px; }
@@ -310,6 +307,9 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
    (verdictTone's fourth bucket, used here for in-progress journal entries)
    isn't one of them. */
 .o-row-icon.info { color: var(--accent); }
+/* Grid cell holding outcome + lesson; min-width:0 lets the nowrap lesson
+   ellipsis-clip instead of forcing the 1fr column (and the row) to overflow. */
+.lib-run-lbl { min-width: 0; }
 .lib-run-outcome { display: block; font-size: 12px; color: var(--text); }
 .lib-run-lesson {
   display: block;
