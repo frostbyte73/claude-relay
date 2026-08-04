@@ -540,14 +540,15 @@ async function main() {
       if (engine.consumeStaleTurnStop(sessionId)) {
         console.log(`[work] stop session=${sessionId.slice(0,8)} → stale (superseded round), ignored`);
       } else {
-        // If this session is bound to an unresolved action step, the assistant
-        // ended its turn without calling submit_step_output. Fail the step so
-        // the orchestrator doesn't hang.
-        if (engine.failStepIfUnresolved(
+        // If this session is bound to an unresolved step, the assistant ended its turn
+        // without calling submit_step_output. Arm the failure rather than applying it —
+        // a round that yielded to background subagents gets re-invoked, and the next tool
+        // call on the session calls the check off (see WorkEngine.armUnresolvedCheck).
+        if (engine.armUnresolvedCheck(
           sessionId,
           'Session ended without submitting output via mcp__outpost__submit_step_output',
         )) {
-          console.log(`[work] stop session=${sessionId.slice(0,8)} → step failed (no MCP submission)`);
+          console.log(`[work] stop session=${sessionId.slice(0,8)} → unresolved-step check armed`);
         }
         // Plan→implement hand-off: if code.plan just ended its turn, dispatch the implement
         // round now that the shared session is idle (see WorkEngine.onSessionTurnEnded).
@@ -567,6 +568,9 @@ async function main() {
     onPreToolHook: async (body) => {
       const hookInput = JSON.parse(body);
       console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)}${hookInput.agent_id ? ` agent=${hookInput.agent_type ?? '?'}/${hookInput.agent_id.slice(0,8)}` : ''} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
+      // Proof of life for the session — disarms any "ended without submitting" check left
+      // by an earlier Stop. Subagent calls count (they carry the parent's session id).
+      if (hookInput.session_id) engine.noteSessionActivity(hookInput.session_id);
       // Light "what is meta.build-action doing right now" ping for the inline edit
       // card. Carries just the tool name — the PWA derives a verb (reading/editing/
       // writing/bashing) and animates a glowy ellipsis. Skip subagent calls; we only

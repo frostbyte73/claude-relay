@@ -139,7 +139,7 @@ describe('WorkEngine human_gate — draft → review → commit', () => {
     const sid = stepOf(queue, jobId, 'g1').sessionId!;
     engine.onWriteDraftReady(jobId, 'g1', 'draft');
     // The draft turn's Stop hook fires while parked — must NOT fail the step.
-    const failed = engine.failStepIfUnresolved(sid, 'ended without output');
+    const failed = engine.armUnresolvedCheck(sid, 'ended without output');
     expect(failed).toBe(false);
     expect(stepOf(queue, jobId, 'g1').failure).toBeUndefined();
     expect(stepOf(queue, jobId, 'g1').state).toBe('gate_pending_approval');

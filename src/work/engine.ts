@@ -37,6 +37,12 @@ import type { LaunchGovernor, LaunchState, LaunchPriority } from './launch-gover
 
 const MAX_EVENTS_PER_JOB = 50;
 
+// How long a step session must stay completely silent after ending its turn before the
+// "never submitted" failure lands. Sized for the quiet stretch between a parent yielding
+// to background subagents and the next tool call on the session — generous, because the
+// only cost of waiting is a later failure report, while firing early kills a live round.
+const UNRESOLVED_GRACE_MS = 5 * 60_000;
+
 // createExternalJob threads dedupeKey through as the job id, which becomes a filesystem
 // path component (see createExternalJob) — same path-traversal / argv-flag-smuggling
 // concern as worktree-manager.ts's SESSION_ID_RE/BRANCH_NAME_RE.
@@ -142,6 +148,8 @@ export interface WorkEngineOpts {
   // sessions list can label + title it without loading the transcript. Wired to
   // SessionStore.writeActionMeta in the daemon.
   writeActionMeta?: (sessionId: string, meta: { action: string; title: string }) => void;
+  // Overrides UNRESOLVED_GRACE_MS (tests).
+  unresolvedGraceMs?: number;
 }
 
 type SessionRole =
@@ -162,6 +170,13 @@ export class WorkEngine {
   // step enters a timed wait, cleared on resume/resolve/abandon, and rebuilt at boot by
   // reconcileWaits (setTimeout does not survive a daemon restart).
   private readonly waitTimers = new Map<string, NodeJS.Timeout>();
+  // Per step session: a pending "ended without submitting" check, armed at the Stop hook
+  // and cancelled by further activity on the session. A turn boundary is not proof the
+  // round is over — a session that yields while background subagents run gets re-invoked
+  // by the harness once they report, and their tool calls keep arriving on the PreToolUse
+  // hook meanwhile. Failing on the Stop edge killed spec rounds that went on to submit
+  // minutes later, so the check now waits for the session to actually fall silent.
+  private readonly unresolvedTimers = new Map<string, NodeJS.Timeout>();
 
   actionForSession(sessionId: string): string | undefined {
     return this.actionBySession.get(sessionId);
@@ -220,7 +235,7 @@ export class WorkEngine {
 
   // A Stop hook fired for `sessionId`. Returns true iff this Stop is owed to a round that
   // was already superseded by a queued resume (see spawnStepSession) — the caller must
-  // then ignore it (skip failStepIfUnresolved / onSessionTurnEnded), because the step is
+  // then ignore it (skip armUnresolvedCheck / onSessionTurnEnded), because the step is
   // actively running its next round and the real turn-end Stop is still to come.
   consumeStaleTurnStop(sessionId: string): boolean {
     const n = this.owedStaleStops.get(sessionId) ?? 0;
@@ -230,31 +245,66 @@ export class WorkEngine {
     return true;
   }
 
-  // Called from the Stop hook when a spawned action-step session ends its turn.
-  // Every action step is expected to resolve via `mcp__outpost__submit_step_output`
-  // (or a role-specific submit_* tool) within its turn. If the turn ends without
-  // that call, the step is still in its initial state — treat as failure rather
-  // than letting the orchestrator hang. Idempotent for already-resolved / already-
-  // failed / cancelled steps.
-  failStepIfUnresolved(sessionId: string, reason: string): boolean {
+  // Called from the Stop hook when a spawned step session ends its turn. Every step is
+  // expected to resolve via `mcp__outpost__submit_step_output` (or a role-specific
+  // submit_* tool); if it never does, the step would sit in its initial state forever and
+  // hang the orchestrator. But a Stop only marks a *turn* boundary, not the end of the
+  // round: a session that dispatches background subagents and yields until they report
+  // gets re-invoked by the harness. So arm the failure instead of applying it, and let
+  // any further activity on the session (noteSessionActivity) call it off. Returns true
+  // iff a check was armed. Idempotent for already-resolved / failed / cancelled steps.
+  armUnresolvedCheck(sessionId: string, reason: string): boolean {
+    if (!this.unresolvedFailable(sessionId)) return false;
+    this.cancelUnresolvedCheck(sessionId);
+    const t = setTimeout(() => {
+      this.unresolvedTimers.delete(sessionId);
+      const role = this.unresolvedFailable(sessionId);
+      if (!role) return;
+      this.onStepFailed(role.jobId, role.stepId, reason);
+    }, this.opts.unresolvedGraceMs ?? UNRESOLVED_GRACE_MS);
+    t.unref?.();
+    this.unresolvedTimers.set(sessionId, t);
+    return true;
+  }
+
+  // Any tool call on the session proves it is still working, so a Stop that preceded it
+  // did not end the round. Subagent calls count: they carry the parent's session id on the
+  // PreToolUse hook, and while background agents run they are the *only* signal the parent
+  // is still alive — its own stdout stays quiet (see SessionManager.startIdleTimer).
+  noteSessionActivity(sessionId: string): void {
+    this.cancelUnresolvedCheck(sessionId);
+  }
+
+  private cancelUnresolvedCheck(sessionId: string): void {
+    const t = this.unresolvedTimers.get(sessionId);
+    if (t) { clearTimeout(t); this.unresolvedTimers.delete(sessionId); }
+  }
+
+  // The step behind `sessionId`, when a turn ending without a submit_* call would be a
+  // genuine hang. Undefined when the session isn't a step's, or when ending the turn is
+  // legitimate for the state it's in.
+  private unresolvedFailable(sessionId: string): { jobId: string; stepId: string } | undefined {
     const role = this.roleBySession.get(sessionId);
-    if (!role || role.role !== 'step') return false;
+    if (!role || role.role !== 'step') return undefined;
     const j = this.opts.queue.get(role.jobId);
-    if (!j) return false;
+    if (!j) return undefined;
     const step = j.steps.find((s) => s.id === role.stepId);
-    if (!step) return false;
+    if (!step) return undefined;
+    // Deferring the check opens a window the edge-triggered version didn't have: the step
+    // can be retried (fresh session, state reset to speccing) while a check armed by the
+    // old session is still pending. That check is owed by a round that no longer exists.
+    if (step.sessionId !== sessionId) return undefined;
     // code.implement and the triage/conflict rounds legitimately end their turn
     // without a submit_* call (they resolve via PR merge / gate approval). The spec
     // and plan rounds MUST submit — if their turn ends without submit_spec /
     // submit_impl_plan, fail the step rather than hang the job.
-    if (step.type === 'open-pr' && step.state !== 'speccing' && step.state !== 'planning') return false;
+    if (step.type === 'open-pr' && step.state !== 'speccing' && step.state !== 'planning') return undefined;
     // A human_gate action's draft turn ends by submitting a draft and parking for approval
     // (submit_write_draft → gate_pending_approval). That's a legitimate turn end, not a
     // hang — don't fail it. The commit/redraft turns run when the user acts.
-    if (step.type === 'action' && step.state === 'gate_pending_approval') return false;
-    if (step.state === 'resolved' || step.failure || step.cancelled) return false;
-    this.onStepFailed(role.jobId, role.stepId, reason);
-    return true;
+    if (step.type === 'action' && step.state === 'gate_pending_approval') return undefined;
+    if (step.state === 'resolved' || step.failure || step.cancelled) return undefined;
+    return { jobId: role.jobId, stepId: role.stepId };
   }
 
   constructor(private readonly opts: WorkEngineOpts) {

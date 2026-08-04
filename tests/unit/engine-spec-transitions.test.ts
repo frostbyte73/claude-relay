@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import type { OpenPrStep, ProposedStep } from '../../src/work/work-types.js';
 // Minimal harness mirroring orchestrator.test.ts's makeEngine, extended to
 // capture the resumed message content (not just the sessionId/env) so the
 // spec/plan/implement round dispatch can be asserted.
-function makeEngine() {
+function makeEngine(unresolvedGraceMs?: number) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-spec-'));
   const queue = new JobQueue(dir);
   const resumed: Array<{ sessionId: string; content: string }> = [];
@@ -35,6 +35,7 @@ function makeEngine() {
     jobsDir: join(dir, 'jobs'),
     newId: (() => { let n = 0; return () => `id-${++n}`; })(),
     now: () => 1,
+    ...(unresolvedGraceMs === undefined ? {} : { unresolvedGraceMs }),
   });
   return { engine, queue, resumed, working };
 }
@@ -81,6 +82,10 @@ describe('WorkEngine.materialize — initial state derives from the handler regi
 // calls (async, but only awaiting an in-memory worktreeManager.provision stub)
 // have settled before assertions run.
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+// Stand-in for UNRESOLVED_GRACE_MS, injected so the unresolved-check tests don't have to
+// drive a five-minute clock.
+const GRACE_MS = 60_000;
 
 describe('WorkEngine spec/plan round transitions', () => {
   let engine: WorkEngine;
@@ -230,9 +235,9 @@ describe('WorkEngine — stale turn-end Stop from a superseded round', () => {
     working.add('sess-1');
     engine.approveSpec(jobId, stepId);
     await flush();
-    // Mirror the daemon Stop handler's gate: a stale Stop is consumed and skips failStep.
+    // Mirror the daemon Stop handler's gate: a stale Stop is consumed and skips the check.
     const stale = engine.consumeStaleTurnStop('sess-1');
-    if (!stale) engine.failStepIfUnresolved('sess-1', 'x');
+    if (!stale) engine.armUnresolvedCheck('sess-1', 'x');
     expect(stale).toBe(true);
     expect(step().failure).toBeUndefined();       // step survived the trailing spec Stop
     engine.onImplPlanReady(jobId, stepId, '# plan');
@@ -244,9 +249,88 @@ describe('WorkEngine — stale turn-end Stop from a superseded round', () => {
     engine.approveSpec(jobId, stepId);
     await flush();
     expect(engine.consumeStaleTurnStop('sess-1')).toBe(false);
-    // A real planning-round turn that ends without submit_impl_plan must still fail the step.
-    expect(engine.failStepIfUnresolved('sess-1', 'no submit')).toBe(true);
+    // A real planning-round turn that ends without submit_impl_plan is failable — the
+    // check arms here and lands once the session stays quiet (covered below).
+    expect(engine.armUnresolvedCheck('sess-1', 'no submit')).toBe(true);
+  });
+});
+
+// Regression: job 2808e24e — a code.spec round dispatched three background subagents and
+// yielded its turn to wait for them. The Stop hook failed the step on the spot; the session
+// was re-invoked when the agents reported and submitted a perfectly good spec six minutes
+// later, but the job had already halted on the stale failure.
+describe('WorkEngine.armUnresolvedCheck — a turn yielded to background subagents', () => {
+  let engine: WorkEngine;
+  let queue: JobQueue;
+  let jobId: string;
+  let stepId: string;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    ({ engine, queue } = makeEngine(GRACE_MS));
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    jobId = job.id;
+    stepId = addOpenPrStep(engine, jobId).id;
+    queue.mutate(jobId, (j) => ({
+      ...j,
+      state: 'executing',
+      steps: j.steps.map((s) => s.id === stepId ? { ...s, state: 'speccing', sessionId: 'sess-1' } as OpenPrStep : s),
+    }));
+    // Real dispatch path — this is what binds sess-1 to the step (roleBySession).
+    engine.reconcileInterruptedSteps();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  function step(): OpenPrStep {
+    return queue.get(jobId)!.steps.find((s) => s.id === stepId) as OpenPrStep;
+  }
+
+  it('does not fail the step on the Stop edge', () => {
+    expect(engine.armUnresolvedCheck('sess-1', 'no submit')).toBe(true);
+    expect(step().failure).toBeUndefined();
+  });
+
+  it('a subagent tool call before the grace elapses calls the failure off', async () => {
+    engine.armUnresolvedCheck('sess-1', 'no submit');
+    await vi.advanceTimersByTimeAsync(GRACE_MS / 2);
+    engine.noteSessionActivity('sess-1');       // PreToolUse from a background subagent
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
+    expect(step().failure).toBeUndefined();
+  });
+
+  it('the spec submitted after the round resumes lands on a healthy step', async () => {
+    engine.armUnresolvedCheck('sess-1', 'no submit');   // yields for subagents
+    await vi.advanceTimersByTimeAsync(GRACE_MS / 2);
+    engine.noteSessionActivity('sess-1');
+    engine.onSpecReady(jobId, stepId, '# spec');
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
+    expect(step().state).toBe('spec_pending_review');
+    expect(step().failure).toBeUndefined();
+  });
+
+  it('re-arming on each yielded turn restarts the grace clock', async () => {
+    engine.armUnresolvedCheck('sess-1', 'no submit');
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 0.8);
+    engine.armUnresolvedCheck('sess-1', 'no submit');   // yielded again, still waiting
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 0.8);
+    expect(step().failure).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(GRACE_MS);
+    expect(step().failure?.reason).toBe('no submit');   // finally silent long enough
+  });
+
+  it('a session that never comes back still fails, so the job cannot hang', async () => {
+    engine.armUnresolvedCheck('sess-1', 'no submit');
+    await vi.advanceTimersByTimeAsync(GRACE_MS);
     expect(step().failure?.reason).toBe('no submit');
+  });
+
+  it('a check armed by a superseded session does not land on the retried step', async () => {
+    engine.armUnresolvedCheck('sess-1', 'no submit');
+    engine.onStepRetry(jobId, stepId);                  // fresh round, sess-1 is history
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2);
+    expect(step().failure).toBeUndefined();
   });
 });
 
