@@ -313,6 +313,21 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_schedule_proposal',
+    description: 'Deliver a meta.build-schedule draft (name + trigger + what) to the daemon. It lands in the schedule editor for the user to test and save.',
+    inputSchema: {
+      type: 'object',
+      required: ['scheduleEditSessionId', 'name', 'trigger', 'what'],
+      properties: {
+        scheduleEditSessionId: { type: 'string' },
+        name: { type: 'string' },
+        summary: { type: 'string' },
+        trigger: { type: 'object' },
+        what: { type: 'object' },
+      },
+    },
+  },
+  {
     name: 'create_job',
     description: 'Enqueue an Outpost job from a skill or script. Idempotent on dedupeKey — a key that already maps to a job returns that job instead of creating a duplicate. Use for job-source polling (e.g. one job per open ticket).',
     inputSchema: {

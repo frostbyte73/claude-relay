@@ -1,0 +1,9 @@
+{
+  "alwaysAllow": ["Read", "Glob", "Grep"],
+  "alwaysAllowBashPatterns": [
+    "^cat ",
+    "^jq ",
+    "^curl -fsS "
+  ],
+  "alwaysAllowPathPatterns": []
+}

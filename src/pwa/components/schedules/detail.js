@@ -5,7 +5,7 @@ import { scheduleDetail, draftValidity } from '../../vm/schedules.js';
 import { escapeHtml } from '../../util.js';
 import { emptyState } from '../shell/placeholder.js';
 import { createSwitch } from './switch.js';
-import { isDraftId, consumeDraftSeed } from './draft.js';
+import { isDraftId, draftSessionId, consumeDraftSeed, startScheduleDraft } from './draft.js';
 import { renderTriggerCard } from './trigger-card.js';
 import { renderWhatCard } from './what-card.js';
 import { renderRoutingCard } from './routing-card.js';
@@ -69,6 +69,9 @@ function renderHeader(schedule, mount, { onRunNow, onDuplicate, onTogglePause, o
 // schedule is POSTed only once name + trigger + what are complete. Trigger and
 // What start in edit mode so it reads as a form.
 function renderDraft(mount, id) {
+  const sessionId = draftSessionId(id);
+  if (sessionId) return renderSessionDraft(mount, id, sessionId);
+
   // Each launch gets a fresh id (draft.js), so a new id always means a new draft.
   if (mount.__schedCurrentId !== id) {
     mount.__draft = consumeDraftSeed() ?? { name: '', trigger: null, what: null, guards: [], routing: {} };
@@ -173,13 +176,168 @@ function renderDraft(mount, id) {
   function renderCardInto(slot, renderFn) {
     const detail = scheduleDetail(draft, [], Date.now());
     const repaintThis = () => { renderCardInto(slot, renderFn); refreshGate(); };
-    slot.replaceChildren(renderFn(draft, detail, editState, repaintThis, onSave));
+    // sessionId:null → what-card offers Test on a script, but not Redraft (no builder session).
+    slot.replaceChildren(renderFn(draft, detail, editState, repaintThis, onSave, { sessionId: null }));
   }
 
   paint();
   const cleanup = () => {};
   mount.__schedCleanup = cleanup;
   return cleanup;
+}
+
+// A prompt-first draft: the meta.build-schedule builder proposes name + trigger +
+// what over WS (schedulesStore.draftBySession), and the user reviews/tests/saves
+// it here. Same three cards + persist path as a blank draft, but seeded from the
+// proposal and re-seeded when a redraft arrives, with Save always available.
+function renderSessionDraft(mount, id, sessionId) {
+  if (mount.__schedCurrentId !== id) {
+    mount.__schedEditState = { trigger: false, what: false, routing: false };
+    mount.__schedCurrentId = id;
+    mount.__seededProposal = null;
+    mount.__draft = null;
+  }
+  let persisting = false;
+
+  const onSave = (patch) => { Object.assign(mount.__draft, patch); return Promise.resolve(); };
+
+  async function persist(enabled) {
+    if (persisting || !mount.__draft) return;
+    persisting = true;
+    mount.querySelector('.sched-draft-save-paused')?.setAttribute('disabled', '');
+    const sw = mount.querySelector('.sched-draft-enable-slot .sched-switch');
+    if (sw) sw.disabled = true;
+    try {
+      const d = mount.__draft;
+      const res = await schedulesStore.create({
+        name: (d.name ?? '').trim(),
+        enabled,
+        trigger: d.trigger,
+        what: d.what,
+        guards: d.guards ?? [],
+        routing: d.routing ?? {},
+      });
+      schedulesStore.clearDraft(sessionId);
+      if (res?.schedule?.id) nav.select('schedules', res.schedule.id);
+    } catch (e) {
+      persisting = false;
+      const err = mount.querySelector('.sched-draft-error');
+      if (err) { err.textContent = `Couldn't save: ${e.message}`; err.hidden = false; }
+      mount.querySelector('.sched-draft-save-paused')?.removeAttribute('disabled');
+      if (sw) sw.disabled = false;
+    }
+  }
+
+  function renderCardInto(slot, renderFn) {
+    const detail = scheduleDetail(mount.__draft, [], Date.now());
+    const repaintThis = () => renderCardInto(slot, renderFn);
+    slot.replaceChildren(renderFn(mount.__draft, detail, mount.__schedEditState, repaintThis, onSave, { sessionId }));
+  }
+
+  function paint() {
+    const proposal = schedulesStore.get().draftBySession.get(sessionId) ?? null;
+    mount.textContent = '';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'sched-detail-hdr sched-detail-hdr--draft';
+
+    if (!proposal) {
+      hdr.innerHTML = `
+        <span class="sched-detail-title-slot"></span>
+        <div class="sched-detail-state draft">Draft</div>
+      `;
+      hdr.querySelector('.sched-detail-title-slot').replaceWith(nameField('', {}));
+      mount.appendChild(hdr);
+      // A failed builder never delivers a proposal — surface the failure with a way out
+      // instead of spinning on "Drafting…" forever.
+      const failure = schedulesStore.get().draftFailedBySession.get(sessionId) ?? null;
+      if (failure) {
+        const err = document.createElement('div');
+        err.className = 'sched-drafting sched-drafting--failed';
+        err.textContent = failure.reason || 'The schedule builder stopped before proposing a draft.';
+        mount.appendChild(err);
+        const startBlank = document.createElement('button');
+        startBlank.type = 'button';
+        startBlank.className = 'o-btn o-btn--default sched-draft-start-blank';
+        startBlank.textContent = 'Start blank';
+        startBlank.addEventListener('click', () => startScheduleDraft());
+        mount.appendChild(startBlank);
+        return;
+      }
+      const drafting = document.createElement('div');
+      drafting.className = 'sched-drafting';
+      drafting.innerHTML = '<span class="sched-drafting-dot"></span>Drafting your schedule…';
+      mount.appendChild(drafting);
+      return;
+    }
+
+    // Re-seed only when a *new* proposal object arrives (initial or redraft), so
+    // an unrelated repaint never discards in-progress card edits.
+    if (mount.__seededProposal !== proposal) {
+      mount.__seededProposal = proposal;
+      mount.__draft = {
+        name: proposal.name ?? '',
+        trigger: proposal.trigger ?? null,
+        what: proposal.what ?? null,
+        guards: [],
+        routing: {},
+      };
+      mount.__schedEditState = { trigger: false, what: false, routing: false };
+    }
+    const draft = mount.__draft;
+
+    hdr.innerHTML = `
+      <span class="sched-detail-title-slot"></span>
+      <div class="sched-detail-state draft">Draft</div>
+      <div class="sched-detail-actions">
+        <button type="button" class="o-btn o-btn--default sched-draft-save-paused">Save paused</button>
+        <label class="sched-draft-enable"><span class="sched-draft-enable-label">Enable</span><span class="sched-draft-enable-slot"></span></label>
+      </div>
+    `;
+    hdr.querySelector('.sched-detail-title-slot').replaceWith(
+      nameField(draft.name, { onInput: (v) => { draft.name = v; } }),
+    );
+    const enableSwitch = createSwitch(false, (on) => { if (on) persist(true); }, 'Enable schedule');
+    hdr.querySelector('.sched-draft-enable-slot').appendChild(enableSwitch);
+    hdr.querySelector('.sched-draft-save-paused').addEventListener('click', () => persist(false));
+    mount.appendChild(hdr);
+
+    if (proposal.summary) {
+      const cap = document.createElement('p');
+      cap.className = 'sched-form-hint sched-draft-caption';
+      cap.textContent = proposal.summary;
+      mount.appendChild(cap);
+    }
+
+    const errLine = document.createElement('div');
+    errLine.className = 'sched-form-error sched-draft-error';
+    errLine.hidden = true;
+    mount.appendChild(errLine);
+
+    const body = document.createElement('div');
+    body.className = 'sched-detail-body';
+    const triggerSlot = document.createElement('div');
+    const whatSlot = document.createElement('div');
+    const routingSlot = document.createElement('div');
+    body.append(triggerSlot, whatSlot, routingSlot);
+    mount.appendChild(body);
+    renderCardInto(triggerSlot, renderTriggerCard);
+    renderCardInto(whatSlot, renderWhatCard);
+    renderCardInto(routingSlot, renderRoutingCard);
+  }
+
+  paint();
+  const unsub = schedulesStore.subscribe(() => {
+    if (persisting) return; // save-in-flight: the clearDraft + list reload it fires aren't ours to paint
+    const proposal = schedulesStore.get().draftBySession.get(sessionId) ?? null;
+    // Test-result writes leave the proposal identity unchanged — skip those once cards are up.
+    if (proposal && proposal === mount.__seededProposal) return;
+    const active = document.activeElement;
+    if (active && active.classList?.contains('sched-detail-title-input') && mount.contains(active)) return;
+    paint();
+  });
+  mount.__schedCleanup = unsub;
+  return unsub;
 }
 
 export function renderDetail(mount, deps) {

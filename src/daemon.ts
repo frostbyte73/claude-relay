@@ -43,6 +43,9 @@ import { registerProjectsRoutes } from './routes/projects.js';
 import { registerPushRoutes } from './routes/push.js';
 import { registerMetaRoutes } from './routes/meta.js';
 import { registerActionsRoutes } from './routes/actions.js';
+import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
+import { runScript } from './schedules/script-runner.js';
+import { homeOrKnownCwd } from './git/known-cwd.js';
 import { PreferencesStore } from './storage/preferences-store.js';
 import { registerPreferencesRoutes } from './routes/preferences.js';
 import { RunsStore } from './storage/runs-store.js';
@@ -51,7 +54,7 @@ import { createRunsCapture, type ScheduleRunContext } from './storage/runs-captu
 import { registerRunsRoutes } from './routes/runs.js';
 import { SchedulesStore } from './schedules/schedules-store.js';
 import { seedBuiltinSchedules } from './schedules/setup-schedules.js';
-import { whatLabel } from './schedules/types.js';
+import { whatLabel, type Trigger, type What } from './schedules/types.js';
 import { Scheduler } from './schedules/scheduler.js';
 import { TokenScheduler } from './schedules/token-scheduler.js';
 import { registerSchedulesRoutes } from './routes/schedules.js';
@@ -303,6 +306,20 @@ async function main() {
         }
         try { notifyAll({ type: 'actions_changed' }); } catch { /* notifyAll not in scope yet during startup */ }
       }
+      if (kind === 'schedule-edit') {
+        // Same reasoning as the action-edit drop above: stop a dead builder session's
+        // card from showing a stale "review" pill.
+        const dropped = scheduleRoutes.dropEditForSession(sessionId);
+        // If the builder exited/crashed/timed out before ever delivering a proposal, no
+        // schedule_draft_ready was broadcast — the draft pane would spin on "Drafting…"
+        // forever. Signal the failure so it can offer a way out. (A delivered proposal
+        // means the user already has a draft to work with — don't fire.)
+        if (dropped && !dropped.proposal) {
+          try {
+            notifyAll({ type: 'schedule_draft_failed', sessionId, reason: 'The schedule builder stopped before proposing a draft.' });
+          } catch { /* notifyAll not in scope yet during startup */ }
+        }
+      }
 
       rebroadcastJobLiveness(sessionId);
     },
@@ -402,7 +419,8 @@ async function main() {
   // routes' explicit archive/delete handlers; runsCapture.onSessionEnd dedupes by sessionId
   // so a session torn down via the PWA doesn't get double-counted.
   function captureSessionEnd(id: string, schedule?: ScheduleRunContext): void {
-    if (manager.getKind(id) === 'action-edit' || manager.getKind(id) === 'skill-edit') return;
+    const kind = manager.getKind(id);
+    if (kind === 'action-edit' || kind === 'skill-edit' || kind === 'schedule-edit') return;
     const found = sessionStore.findSession(id);
     if (!found) return;
     const sl = latestStatuslineBySession.get(id) as { cost?: { total_cost_usd?: number; total_duration_ms?: number } } | undefined;
@@ -425,6 +443,7 @@ async function main() {
     toolName: string;
     toolInput: unknown;
   }) => void = () => { /* wired later */ };
+  let onScheduleProposal: (p: { sessionId: string; name: string; summary: string; trigger: Trigger; what: What }) => void = () => { /* wired later */ };
 
   // Hook endpoints are loopback-only and authenticated by a per-launch secret —
   // see hook-server.ts. Any new endpoint added there must validate the secret header.
@@ -739,6 +758,16 @@ async function main() {
         await onActionProposalHandler(JSON.stringify(a));
         return { ok: true };
       },
+      submit_schedule_proposal: async (a) => {
+        onScheduleProposal({
+          sessionId: String(a.scheduleEditSessionId),
+          name: String(a.name),
+          summary: a.summary ? String(a.summary) : '',
+          trigger: a.trigger as Trigger,
+          what: a.what as What,
+        });
+        return { ok: true };
+      },
       create_job: async (a) => {
         const r = engine.createExternalJob({
           source: String(a.source),
@@ -846,6 +875,31 @@ async function main() {
   });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
+
+  // Same shape meta.orchestrate's envelope carries (WorkEngine.buildActionCatalog),
+  // reproduced here rather than exposed off WorkEngine — the schedule builder only
+  // needs it as a read-only hint of what already exists.
+  const scheduleRoutes = registerScheduleEditRoutes(server, {
+    manager, engine, notifyAll, config, secret, runtimeDir: RUNTIME_DIR,
+    actionCatalog: () => actionRegistry.listActions().map((a) => ({
+      name: a.name,
+      description: a.frontmatter.description,
+      category: a.frontmatter.outpost.category,
+      runner: a.frontmatter.outpost.runner,
+      side_effects: a.frontmatter.outpost.side_effects,
+      human_gate: a.frontmatter.outpost.human_gate ?? false,
+      input_schema: a.inputSchema,
+      output_schema: a.outputSchema,
+    })),
+    runScriptTest: async (what) => {
+      if (!homeOrKnownCwd(what.cwd, projectRegistry, worktreeManager)) {
+        return { outcome: 'error', output: `cwd is not a registered project or your home directory: ${what.cwd}` };
+      }
+      const r = await runScript({ script: what.script, cwd: what.cwd, env: scriptEnv() });
+      return { outcome: r.outcome, output: r.output };
+    },
+  });
+  onScheduleProposal = (p) => scheduleRoutes.onProposal(p);
 
 
 

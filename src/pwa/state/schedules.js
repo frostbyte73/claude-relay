@@ -10,6 +10,16 @@ import { schedulesApi } from '../net/schedules.js';
 const store = createStore({
   schedules: [],
   runsBySchedule: new Map(),
+  // Prompt-first authoring (P-B): the builder's proposed draft per builder
+  // sessionId (arrives over WS as schedule_draft_ready), and the last
+  // Test-run result per session. Both live outside `schedules` — a draft isn't
+  // a persisted record until the user hits Save.
+  draftBySession: new Map(),
+  testResultBySession: new Map(),
+  // sessionId → { reason } when the builder exited before delivering a proposal
+  // (arrives over WS as schedule_draft_failed). Lets the draft pane replace the
+  // stuck "Drafting…" spinner with the failure + a "Start blank" escape hatch.
+  draftFailedBySession: new Map(),
   loaded: false,
   loading: false,
   err: null,
@@ -78,6 +88,52 @@ export const schedulesStore = {
         return { ...s, runsBySchedule };
       });
     }
+  },
+
+  // A fresh proposal supersedes any earlier one for this session and invalidates
+  // its stale Test result — the draft the user just tested no longer exists.
+  setDraft(sessionId, draft) {
+    store.set((s) => {
+      const draftBySession = new Map(s.draftBySession);
+      draftBySession.set(sessionId, draft);
+      const testResultBySession = new Map(s.testResultBySession);
+      testResultBySession.delete(sessionId);
+      // A proposal that lands after (or instead of) a failure supersedes it.
+      const draftFailedBySession = new Map(s.draftFailedBySession);
+      draftFailedBySession.delete(sessionId);
+      return { ...s, draftBySession, testResultBySession, draftFailedBySession };
+    });
+  },
+
+  // The builder session ended before proposing a draft: mark the failure so the pane
+  // can surface it instead of spinning forever.
+  setDraftFailed(sessionId, reason) {
+    store.set((s) => {
+      const draftFailedBySession = new Map(s.draftFailedBySession);
+      draftFailedBySession.set(sessionId, { reason });
+      return { ...s, draftFailedBySession };
+    });
+  },
+
+  clearDraft(sessionId) {
+    store.set((s) => {
+      if (!s.draftBySession.has(sessionId) && !s.testResultBySession.has(sessionId) && !s.draftFailedBySession.has(sessionId)) return s;
+      const draftBySession = new Map(s.draftBySession);
+      draftBySession.delete(sessionId);
+      const testResultBySession = new Map(s.testResultBySession);
+      testResultBySession.delete(sessionId);
+      const draftFailedBySession = new Map(s.draftFailedBySession);
+      draftFailedBySession.delete(sessionId);
+      return { ...s, draftBySession, testResultBySession, draftFailedBySession };
+    });
+  },
+
+  setTestResult(sessionId, result) {
+    store.set((s) => {
+      const testResultBySession = new Map(s.testResultBySession);
+      testResultBySession.set(sessionId, result);
+      return { ...s, testResultBySession };
+    });
   },
 
   // Mutators: the server is authoritative on `nextRunAt` (computed per-GET from the

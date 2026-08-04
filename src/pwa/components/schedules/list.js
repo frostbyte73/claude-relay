@@ -4,6 +4,7 @@ import { scheduleCards, filterScheduleCards } from '../../vm/schedules.js';
 import { escapeHtml } from '../../util.js';
 import { createSwitch } from './switch.js';
 import { startScheduleDraft } from './draft.js';
+import { createScheduleDraft } from '../../net/schedules.js';
 
 const TABS = [
   { id: 'all', label: 'All' },
@@ -12,6 +13,66 @@ const TABS = [
   { id: 'token', label: 'Token' },
   { id: 'event', label: 'Event' },
 ];
+
+// Footer under the card list: a "+ New schedule" button that opens a prompt box
+// (describe-it-in-words → meta.build-schedule builder → a proposed draft), with
+// a "start blank" affordance that still drops into manual card-by-card authoring.
+function renderNewFooter(footer) {
+  function showButton() {
+    footer.textContent = '';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sched-new-btn';
+    btn.textContent = '+ New schedule';
+    btn.addEventListener('click', showForm);
+    footer.appendChild(btn);
+  }
+
+  function showForm() {
+    footer.textContent = '';
+    footer.innerHTML = `
+      <div class="sched-new-form">
+        <textarea class="sched-new-prompt" rows="3" placeholder="Describe the schedule — e.g. &quot;every weekday at 9am, run the flaky-test triage script in outpost&quot;"></textarea>
+        <div class="sched-new-error" hidden></div>
+        <div class="sched-new-actions">
+          <button type="button" class="sched-new-blank">Start blank</button>
+          <button type="button" class="o-btn o-btn--primary sched-new-create">Create</button>
+        </div>
+      </div>
+    `;
+    const prompt = footer.querySelector('.sched-new-prompt');
+    const create = footer.querySelector('.sched-new-create');
+    const err = footer.querySelector('.sched-new-error');
+    prompt.focus();
+
+    async function submit() {
+      const text = prompt.value.trim();
+      if (!text) { err.textContent = 'Describe what to schedule, or start blank.'; err.hidden = false; return; }
+      err.hidden = true;
+      create.disabled = true;
+      create.textContent = 'Creating…';
+      try {
+        const { sessionId } = await createScheduleDraft(text);
+        showButton();
+        startScheduleDraft({ sessionId });
+      } catch (e) {
+        err.textContent = `Couldn't start: ${e.message}`;
+        err.hidden = false;
+        create.disabled = false;
+        create.textContent = 'Create';
+      }
+    }
+
+    create.addEventListener('click', submit);
+    prompt.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit(); }
+      if (e.key === 'Escape') { e.preventDefault(); showButton(); }
+    });
+    footer.querySelector('.sched-new-blank').addEventListener('click', () => { showButton(); startScheduleDraft(); });
+  }
+
+  showButton();
+}
 
 export function renderList(mount) {
   mount.textContent = '';
@@ -38,15 +99,13 @@ export function renderList(mount) {
     e.preventDefault();
     card.click();
   });
-  const newBtn = document.createElement('button');
-  newBtn.type = 'button';
-  newBtn.className = 'sched-new-btn';
-  newBtn.textContent = '+ New schedule';
-  newBtn.addEventListener('click', () => startScheduleDraft());
+  const footer = document.createElement('div');
+  footer.className = 'sched-new';
+  renderNewFooter(footer);
   mount.appendChild(hdr);
   mount.appendChild(filterbar);
   mount.appendChild(body);
-  mount.appendChild(newBtn);
+  mount.appendChild(footer);
 
   filterbar.querySelector('.sched-list-search').addEventListener('input', (e) => {
     filter = e.target.value;

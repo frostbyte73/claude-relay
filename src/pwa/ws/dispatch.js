@@ -447,6 +447,20 @@ const broadcastHandlers = {
     import('../state/schedules.js').then(({ schedulesStore }) => schedulesStore.applyWsEvent(msg));
   },
 
+  schedule_draft_ready(msg) {
+    import('../state/schedules.js').then(({ schedulesStore }) => {
+      schedulesStore.setDraft(msg.sessionId, {
+        name: msg.name, summary: msg.summary, trigger: msg.trigger, what: msg.what,
+      });
+    });
+  },
+
+  schedule_draft_failed(msg) {
+    import('../state/schedules.js').then(({ schedulesStore }) => {
+      schedulesStore.setDraftFailed(msg.sessionId, msg.reason);
+    });
+  },
+
   action_edit_activity(msg) {
     import('../state/actions.js').then(({ actions: actStore }) => {
       actStore.pushActivity(msg.sessionId, msg.toolName, msg.at);

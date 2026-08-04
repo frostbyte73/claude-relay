@@ -6,7 +6,7 @@ import type { WorkEngine } from '../work/engine.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
-import { isKnownCwd } from '../git/known-cwd.js';
+import { isKnownCwd, homeOrKnownCwd } from '../git/known-cwd.js';
 import type { GuardProviders, UsageSnapshotLike } from './guards.js';
 import type { RoutingDeps } from './routing.js';
 import type { SchedulerInlineDeps, SchedulerSpawnDeps } from './scheduler.js';
@@ -140,8 +140,12 @@ export function createInlineDeps(
   return {
     runScript: async (what, opts) => {
       // A builtin script schedule is daemon-seeded and trusted (its `cwd` is the daemon's own
-      // home dir, not a registered project); a user script schedule still must target a known cwd.
-      if (!opts.builtin) assertKnownCwd(what.cwd, projectRegistry, worktreeManager);
+      // home dir, not a registered project); a user script schedule may run in home OR a known
+      // cwd — a direct script is never worktreed, so it doesn't need to resolve to a project.
+      // Shares homeOrKnownCwd with the /test preflight so the two gates can't drift.
+      if (!opts.builtin && !homeOrKnownCwd(what.cwd, projectRegistry, worktreeManager)) {
+        throw new Error(`Scheduled script working directory is not your home directory, a registered project, or a known worktree: ${what.cwd}`);
+      }
       const r = await runScript({ script: what.script, cwd: what.cwd, env: scriptEnv() });
       return { outcome: r.outcome, verdict: { summary: r.output.slice(-4000) } };
     },

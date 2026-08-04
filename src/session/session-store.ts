@@ -4,7 +4,7 @@ import { LineParser } from './stream-json.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
 
-export type SessionKind = 'normal' | 'action-edit' | 'skill-edit';
+export type SessionKind = 'normal' | 'action-edit' | 'skill-edit' | 'schedule-edit';
 
 export interface SessionInfo {
   id: string;

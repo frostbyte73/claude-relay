@@ -5,9 +5,16 @@ async function gotoSchedules(page: Page): Promise<void> {
   await page.locator('.o-sidebar-item[data-surface="schedules"]').click();
 }
 
+// "+ New schedule" now opens a prompt box (prompt-first authoring); manual
+// card-by-card authoring lives behind its "Start blank" affordance.
+async function startBlankDraft(page: Page): Promise<void> {
+  await page.locator('.sched-new-btn').click();
+  await page.locator('.sched-new-blank').click();
+}
+
 test('creating a new schedule opens a draft with a disabled enable switch', async ({ outpostPage }) => {
   await gotoSchedules(outpostPage);
-  await outpostPage.locator('.sched-new-btn').click();
+  await startBlankDraft(outpostPage);
 
   await expect(outpostPage.locator('.sched-detail-state.draft')).toHaveText('Draft');
   await expect(outpostPage.locator('input.sched-detail-title-input')).toHaveValue('');
@@ -18,7 +25,7 @@ test('creating a new schedule opens a draft with a disabled enable switch', asyn
 
 test('completing name + trigger + what enables the switch, and Save paused persists a paused schedule', async ({ daemon, outpostPage }) => {
   await gotoSchedules(outpostPage);
-  await outpostPage.locator('.sched-new-btn').click();
+  await startBlankDraft(outpostPage);
 
   await outpostPage.locator('input.sched-detail-title-input').fill('Weekly report');
 
@@ -53,19 +60,19 @@ test('completing name + trigger + what enables the switch, and Save paused persi
 
 test('clicking + New again while a draft is open resets to a fresh draft', async ({ outpostPage }) => {
   await gotoSchedules(outpostPage);
-  await outpostPage.locator('.sched-new-btn').click();
+  await startBlankDraft(outpostPage);
   await outpostPage.locator('input.sched-detail-title-input').fill('First attempt');
 
   // The list column stays visible beside the draft; a second "+ New" must not
   // resurrect the half-filled draft (each launch gets a unique sentinel id).
-  await outpostPage.locator('.sched-new-btn').click();
+  await startBlankDraft(outpostPage);
   await expect(outpostPage.locator('.sched-detail-state.draft')).toBeVisible();
   await expect(outpostPage.locator('input.sched-detail-title-input')).toHaveValue('');
 });
 
 test('navigating away from an incomplete draft persists nothing', async ({ daemon, outpostPage }) => {
   await gotoSchedules(outpostPage);
-  await outpostPage.locator('.sched-new-btn').click();
+  await startBlankDraft(outpostPage);
   await outpostPage.locator('input.sched-detail-title-input').fill('Abandoned draft');
 
   // Only the name was filled — trigger and what are still missing, so leaving

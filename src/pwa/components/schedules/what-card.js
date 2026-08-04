@@ -1,6 +1,8 @@
 import { escapeHtml } from '../../util.js';
 import { actions } from '../../state/actions.js';
 import { sessions } from '../../state/sessions.js';
+import { schedulesStore } from '../../state/schedules.js';
+import { testScript, redraftSchedule } from '../../net/schedules.js';
 
 // Known project paths, offered as a datalist for the working-directory input so
 // prompt/script schedules land in a registered cwd (the backend rejects unknown ones).
@@ -46,7 +48,78 @@ function viewRows(w) {
     ${runnerRow}${argsRow}`;
 }
 
-export function renderWhatCard(schedule, detail, editState, repaint, onSave) {
+// Test / Redraft controls for a script-kind draft. Test runs the script for real
+// (POST /api/schedules/test); on failure a Redraft button feeds the error back to
+// the builder session (sessionId in scope) for a fresh proposal. Redraft is
+// hidden when there's no builder session (manual blank draft).
+function appendTestSection(card, schedule, sessionId) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sched-test';
+  wrap.innerHTML = `
+    <div class="sched-test-controls">
+      <button type="button" class="o-btn o-btn--default sched-test-btn">Test</button>
+    </div>
+    <div class="sched-test-panel" hidden></div>
+  `;
+  card.appendChild(wrap);
+  const controls = wrap.querySelector('.sched-test-controls');
+  const testBtn = wrap.querySelector('.sched-test-btn');
+  const panel = wrap.querySelector('.sched-test-panel');
+
+  function showResult(result) {
+    panel.hidden = false;
+    panel.className = `sched-test-panel ${result.outcome === 'ok' ? 'ok' : 'error'}`;
+    panel.innerHTML = `
+      <div class="sched-test-hd">${result.outcome === 'ok' ? '✓ Ran clean' : '✕ Failed'}</div>
+      <pre class="sched-test-out">${escapeHtml(result.output ?? '')}</pre>
+    `;
+    controls.querySelector('.sched-redraft-btn')?.remove();
+    if (result.outcome === 'error' && sessionId) {
+      const redraft = document.createElement('button');
+      redraft.type = 'button';
+      redraft.className = 'o-btn o-btn--primary sched-redraft-btn';
+      redraft.textContent = 'Redraft';
+      redraft.addEventListener('click', async () => {
+        redraft.disabled = true; testBtn.disabled = true;
+        redraft.textContent = 'Redrafting…';
+        try {
+          // The fresh schedule_draft_ready this triggers rebuilds the whole draft
+          // pane, so there's no local success state to restore here.
+          await redraftSchedule(sessionId, result.output, {
+            name: schedule.name, trigger: schedule.trigger, what: schedule.what,
+          });
+        } catch (e) {
+          redraft.disabled = false; testBtn.disabled = false;
+          redraft.textContent = 'Redraft';
+          panel.querySelector('.sched-test-out').textContent = `${result.output}\n\nRedraft failed: ${e.message}`;
+        }
+      });
+      controls.appendChild(redraft);
+    }
+  }
+
+  if (sessionId) {
+    const stored = schedulesStore.get().testResultBySession.get(sessionId);
+    if (stored) showResult(stored);
+  }
+
+  testBtn.addEventListener('click', async () => {
+    testBtn.disabled = true;
+    testBtn.textContent = 'Testing…';
+    try {
+      const result = await testScript(schedule.what);
+      if (sessionId) schedulesStore.setTestResult(sessionId, result);
+      showResult(result);
+    } catch (e) {
+      showResult({ outcome: 'error', output: e.message });
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test';
+    }
+  });
+}
+
+export function renderWhatCard(schedule, detail, editState, repaint, onSave, draftCtx = null) {
   const card = document.createElement('div');
   card.className = 'o-section sched-card-detail';
 
@@ -63,6 +136,7 @@ export function renderWhatCard(schedule, detail, editState, repaint, onSave) {
       <div class="sched-kv">${viewRows(detail.whatToRun)}</div>
     `;
     if (!isNative) card.querySelector('.sched-edit-link').addEventListener('click', () => { editState.what = true; repaint(); });
+    if (draftCtx && detail.whatToRun.kind === 'script') appendTestSection(card, schedule, draftCtx.sessionId ?? null);
     return card;
   }
 

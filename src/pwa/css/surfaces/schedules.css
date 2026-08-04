@@ -78,10 +78,10 @@
 
 /* Pinned below the scrolling card list (direct child of .sched-list), same
    placement as the sessions column's .sess-new-btn — reachable however long
-   the list gets. */
+   the list gets. The button toggles into an inline prompt box (.sched-new-form). */
+.sched-new { flex: none; margin: 8px 10px 10px; }
 .sched-new-btn {
-  flex: none;
-  margin: 8px 10px 10px;
+  width: 100%;
   background: transparent;
   border: 1px dashed var(--line);
   color: var(--text-mute);
@@ -94,6 +94,23 @@
   transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
 }
 .sched-new-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.sched-new-form { display: flex; flex-direction: column; gap: 8px; }
+.sched-new-prompt {
+  font: inherit; font-size: 13px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  padding: 8px 10px; resize: vertical; box-sizing: border-box;
+}
+.sched-new-prompt:focus { outline: none; border-color: var(--accent); }
+.sched-new-actions { display: flex; align-items: center; gap: 8px; }
+.sched-new-blank {
+  margin-right: auto;
+  background: none; border: none; color: var(--text-mute);
+  font: inherit; font-size: 12px; cursor: pointer; padding: 0;
+}
+.sched-new-blank:hover { color: var(--accent); }
+.sched-new-error { color: var(--danger); font-size: 12px; }
 
 /* Marks a card as one of the daemon's seeded builtin schedules — same card,
    same navigation, just undeletable (see detail.js). */
@@ -149,6 +166,42 @@
 .sched-draft-enable-label { font-size: 12px; color: var(--text-dim); }
 .sched-draft-hint { margin: 0 0 4px; }
 .sched-switch:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Prompt-first draft: the builder's one-line summary of what it proposed, and
+   the pre-proposal "Drafting…" placeholder shown while the builder session runs. */
+.sched-draft-caption { padding: 12px var(--detail-pad-x) 0; margin: 0; }
+.sched-drafting {
+  display: flex; align-items: center; gap: 8px;
+  padding: 24px var(--detail-pad-x);
+  color: var(--text-mute); font-size: 13px;
+}
+.sched-drafting-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  animation: sched-run-pulse var(--pulse) ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .sched-drafting-dot { animation: none; } }
+
+/* Test / Redraft on a script draft: run-for-real result in a mono panel, tinted
+   green on success / red on failure. */
+.sched-test { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.sched-test-controls { display: flex; gap: 8px; }
+.sched-test-panel {
+  border: 1px solid var(--line-soft); border-radius: var(--r-container);
+  overflow: hidden; font-size: 12px;
+}
+.sched-test-panel.ok { border-color: var(--ok); }
+.sched-test-panel.error { border-color: var(--danger); }
+.sched-test-hd { padding: 6px 10px; font-weight: 500; }
+.sched-test-panel.ok .sched-test-hd { background: var(--ok-soft); color: var(--ok); }
+.sched-test-panel.error .sched-test-hd { background: var(--danger-soft, var(--bg-elev-2)); color: var(--danger); }
+.sched-test-out {
+  margin: 0; padding: 10px;
+  font-family: var(--font-mono); font-size: 12px;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto;
+  background: var(--bg);
+}
 
 .sched-run-now .o-kbd { margin-left: 6px; }
 

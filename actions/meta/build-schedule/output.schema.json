@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.build-schedule output",
+  "description": "Args for mcp__outpost__submit_schedule_proposal.",
+  "type": "object",
+  "required": ["scheduleEditSessionId", "name", "summary", "trigger", "what"],
+  "properties": {
+    "scheduleEditSessionId": {
+      "type": "string",
+      "description": "Passed through verbatim from the envelope."
+    },
+    "name": {
+      "type": "string",
+      "description": "Short human-readable schedule name."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One paragraph for the human reviewing the draft."
+    },
+    "trigger": {
+      "type": "object",
+      "description": "When the schedule fires.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "expr"],
+          "properties": {
+            "kind": { "const": "cron" },
+            "expr": { "type": "string", "description": "Standard 5-field cron expression." },
+            "tz": { "type": "string", "description": "IANA timezone name; omit to use UTC." }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "at"],
+          "properties": {
+            "kind": { "const": "once" },
+            "at": { "type": "integer", "description": "Epoch milliseconds." },
+            "tz": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "what": {
+      "type": "object",
+      "description": "What runs when the schedule fires. Author 'script', 'prompt', or 'skill' — never 'native' (builtin-only).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "script", "cwd"],
+          "properties": {
+            "kind": { "const": "script" },
+            "script": { "type": "string", "description": "Shell script, run directly (no Claude session)." },
+            "cwd": { "type": "string", "description": "Registered project path or the user's home — never the daemon's own checkout." },
+            "model": { "type": "string" },
+            "args": { "type": "object" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "skill"],
+          "properties": {
+            "kind": { "const": "skill" },
+            "skill": { "type": "string", "description": "An action name from actionCatalog." },
+            "repos": { "type": "array", "items": { "type": "string" } },
+            "scope": { "type": "string" },
+            "model": { "type": "string" },
+            "args": { "type": "object" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "prompt", "cwd"],
+          "properties": {
+            "kind": { "const": "prompt" },
+            "prompt": { "type": "string", "description": "Free-text instructions dispatched as a job — an LLM-driven scheduled task." },
+            "cwd": { "type": "string", "description": "Registered project path or the user's home — never the daemon's own checkout." },
+            "model": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

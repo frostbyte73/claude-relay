@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.build-schedule input",
+  "type": "object",
+  "required": ["kind", "mode", "prompt", "actionCatalog", "scheduleEditSessionId", "proposalRoute"],
+  "properties": {
+    "kind": {
+      "const": "schedule-edit"
+    },
+    "mode": {
+      "enum": ["new", "redraft"],
+      "description": "\"new\" drafts from the prompt; \"redraft\" fixes a failed test against currentDraft."
+    },
+    "prompt": {
+      "type": "string",
+      "description": "The user's free-text description of what to schedule and how often. Treat as the spec."
+    },
+    "actionCatalog": {
+      "type": "array",
+      "description": "The full action catalog, same shape meta.orchestrate receives — used to check whether an existing action already covers the request.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "category": { "type": "string" },
+          "runner": { "enum": ["claude", "builtin"] },
+          "side_effects": { "enum": ["none", "gated-write", "worktree-edit", "external-write"] },
+          "human_gate": { "type": "boolean" },
+          "input_schema": {},
+          "output_schema": {}
+        }
+      }
+    },
+    "currentDraft": {
+      "type": "object",
+      "description": "Redraft mode only — the previous proposal.",
+      "properties": {
+        "name": { "type": "string" },
+        "trigger": {},
+        "what": {}
+      }
+    },
+    "testError": {
+      "type": "string",
+      "description": "Redraft mode only — the script's real stdout/stderr from the user's Test click on currentDraft."
+    },
+    "scheduleEditSessionId": {
+      "type": "string",
+      "description": "Pass through verbatim to mcp__outpost__submit_schedule_proposal — matches the proposal back to the waiting editor."
+    },
+    "proposalRoute": {
+      "const": "/work/schedule-proposal",
+      "description": "Informational — confirms where the daemon expects the proposal. Not called directly; the submit tool handles delivery."
+    }
+  }
+}
