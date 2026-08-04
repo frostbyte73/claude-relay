@@ -209,7 +209,7 @@ function launchRowHtml(job, s) {
   return `
     <div class="tl-launch">
       <span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>
-      ${badge.kind === 'queued' ? `<button type="button" class="o-btn o-btn--ghost" data-step-action="launch-now">Launch now</button>` : ''}
+      ${badge.kind === 'queued' ? `<button type="button" class="o-btn o-btn--primary" data-step-action="launch-now">Launch</button>` : ''}
     </div>
   `;
 }

@@ -196,6 +196,25 @@ describe('WorkEngine ↔ LaunchGovernor', () => {
     expect(h.spawns).toHaveLength(2);   // slot freed → job2 launched
   });
 
+  it('launchOrchestrator fires immediately when the slot is busy (manual runs bypass concurrency)', async () => {
+    const h = makeHarness({ snapshot: healthy, concurrency: 1 });
+    await seedExecuting(h, [actionStep()]);   // slot occupied by the live step session
+    expect(h.spawns).toHaveLength(1);
+
+    const job2 = h.engine.createJob({ source: 'manual', title: 't2', description: 'd' });
+    await h.engine.launchOrchestrator(job2.id);
+    await flush();
+    expect(h.spawns).toHaveLength(2);   // explicit user launch bypassed the busy slot
+  });
+
+  it('launchOrchestrator fires immediately under a blocking snapshot (manual runs bypass headroom)', async () => {
+    const h = makeHarness({ snapshot: blocking, concurrency: 1 });
+    const job = h.engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    await h.engine.launchOrchestrator(job.id);
+    await flush();
+    expect(h.spawns).toHaveLength(1);   // bypassed the token-headroom gate
+  });
+
   it('reconcilePendingLaunches re-submits a planning job that has no orchestrator session', async () => {
     const h = makeHarness({ snapshot: healthy, concurrency: 1 });
     // A job stuck in planning with no orchestrator session (launch parked when the daemon died).

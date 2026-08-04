@@ -140,10 +140,9 @@ export const work = {
   },
   async react(id, stepId, body)        { return call(() => workApi.react(id, stepId, body)); },
   async regenerateReply(id, stepId, body) { return call(() => workApi.regenerateReply(id, stepId, body)); },
-  // Launch-now: force-fires a parked launch. No job/step payload comes back (just
-  // `{launched}`) — the badge update rides the WS work_launch_changed refetch, not a
-  // hand-mutate here.
-  async launchJob(id)            { return workApi.launchJob(id); },
+  // Launch a queued step now: force-fires its parked launch. No job/step payload comes
+  // back (just `{launched}`) — the badge update rides the WS work_launch_changed refetch,
+  // not a hand-mutate here.
   async launchStep(id, stepId)   { return workApi.launchStep(id, stepId); },
   async setPriority(id, highPriority) { return call(() => workApi.setJobPriority(id, highPriority)); },
   async syncJob(id) {

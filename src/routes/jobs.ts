@@ -180,20 +180,9 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end();
   });
 
-  // Launch-now: force-fires whatever's parked for the job's orchestrator under the
-  // token-launch queue, bypassing both the headroom and slot gates.
-  server.route('POST', '/api/work/jobs/:id/launch', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/launch$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const id = m[1]!;
-    if (!jobQueue.get(id)) { res.statusCode = 404; res.end('not found'); return; }
-    const launched = engine.launchNow(id);
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ launched }));
-  });
-
-  // Same as above, scoped to a single parked step launch.
+  // Launch a queued step now: force-fires whatever's parked for that step under the
+  // token-launch queue, bypassing both the headroom and slot gates. (The orchestrator
+  // has no equivalent here — its "Launch orchestrator" button force-launches directly.)
   server.route('POST', '/api/work/jobs/:id/steps/:stepId/launch', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/launch$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }

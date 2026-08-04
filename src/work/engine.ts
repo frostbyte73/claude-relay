@@ -554,7 +554,7 @@ export class WorkEngine {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
     if (j.steps.length > 0) return; // use reopenOrchestrator for amendments
-    await this.spawnInitialOrchestrator(j, 'meta.orchestrate', context);
+    await this.spawnInitialOrchestrator(j, 'meta.orchestrate', context, { userInitiated: true });
   }
 
   // ─────────────────────────────────────────────────────────
@@ -568,11 +568,15 @@ export class WorkEngine {
   private submitLaunch(o: {
     key: string; jobId: string; stepId?: string; sessionId: string;
     action: string; label?: string; run: () => boolean;
+    // Explicit user action (Launch orchestrator / replan / redraft). Fires immediately,
+    // bypassing the headroom + concurrency gate — a manual run must always start.
+    userInitiated?: boolean;
   }): void {
     const gov = this.opts.governor;
     if (!gov) { o.run(); return; }  // no governor wired (unit harnesses) → fire synchronously
     const job = this.opts.queue.get(o.jobId);
-    const priority: LaunchPriority = (job?.highPriority || isReactiveAction(o.action)) ? 'immediate' : 'queued';
+    const priority: LaunchPriority =
+      (o.userInitiated || job?.highPriority || isReactiveAction(o.action)) ? 'immediate' : 'queued';
     const jobInProgress = !!job && job.steps.some((s) => !!s.sessionId || handlerFor(s).isResolved(s));
     gov.submit({
       key: o.key, jobId: o.jobId, stepId: o.stepId, sessionId: o.sessionId,
@@ -775,7 +779,7 @@ export class WorkEngine {
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
     };
     const path = writeEnvelope(this.ctx.jobsDir, jobId, null, env);
-    void this.spawnOrchestratorSession(jobId, 'replan', path, actionName);
+    void this.spawnOrchestratorSession(jobId, 'replan', path, actionName, { userInitiated: true });
   }
 
   reopenOrchestrator(jobId: string, feedback: string): void {
@@ -818,7 +822,7 @@ export class WorkEngine {
       return;
     }
     // No prior session — fresh spawn in replan mode.
-    void this.spawnOrchestratorSession(jobId, 'replan', envelopePath, actionName);
+    void this.spawnOrchestratorSession(jobId, 'replan', envelopePath, actionName, { userInitiated: true });
   }
 
   onReconciliationApproved(jobId: string): void {
@@ -1962,7 +1966,7 @@ export class WorkEngine {
     void this.tickOne(jobId);
   }
 
-  private async spawnInitialOrchestrator(j: JobRecord, actionName: string, context?: string): Promise<void> {
+  private async spawnInitialOrchestrator(j: JobRecord, actionName: string, context?: string, opts?: { userInitiated?: boolean }): Promise<void> {
     const launchContext = context?.trim() || undefined;
     const env: OrchestratorEnvelope = {
       kind: 'orchestrator',
@@ -1975,7 +1979,7 @@ export class WorkEngine {
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
     };
     const path = writeEnvelope(this.ctx.jobsDir, j.id, null, env);
-    await this.spawnOrchestratorSession(j.id, 'initial', path, actionName);
+    await this.spawnOrchestratorSession(j.id, 'initial', path, actionName, opts);
   }
 
   private buildActionCatalog(): ActionCatalogEntry[] | undefined {
@@ -1997,7 +2001,7 @@ export class WorkEngine {
   // orchestrator is read-only and shells into target repos as needed via paths from the envelope.
   private orchestratorCwd(): string { return process.cwd(); }
 
-  private async spawnOrchestratorSession(jobId: string, mode: 'initial' | 'replan' | 'step-review', envelopePath: string, actionName: string): Promise<void> {
+  private async spawnOrchestratorSession(jobId: string, mode: 'initial' | 'replan' | 'step-review', envelopePath: string, actionName: string, opts?: { userInitiated?: boolean }): Promise<void> {
     const sessionId = this.ctx.newId();
     const cwd = this.orchestratorCwd();
     this.submitLaunch({
@@ -2006,6 +2010,7 @@ export class WorkEngine {
       sessionId,
       action: 'meta.orchestrate',
       label: mode,
+      ...(opts?.userInitiated ? { userInitiated: true } : {}),
       run: () => {
         const cur = this.opts.queue.get(jobId);
         if (!cur || cur.state === 'abandoned' || cur.state === 'done' || cur.state === 'failed') return false;

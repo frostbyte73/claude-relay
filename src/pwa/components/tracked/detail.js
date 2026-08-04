@@ -83,7 +83,6 @@ function renderLaunchRow(job) {
   return `
     <div class="tk-launch-row">
       ${badge ? `<span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>` : ''}
-      ${badge?.kind === 'queued' ? `<button type="button" class="o-btn o-btn--ghost" data-job-action="launch-now">Launch now</button>` : ''}
       ${showPriorityToggle ? `
         <label class="tk-priority-toggle" title="Run immediately, ignore the token queue">
           <input type="checkbox" class="tk-priority-checkbox" ${job.highPriority ? 'checked' : ''}>
@@ -359,9 +358,6 @@ export function renderTrackedDetail(root, jobId) {
       else if (action === 'delete-job') {
         if (!confirm('Delete this job? Sessions will be closed, worktrees archived, and the record removed. This cannot be undone.')) return;
         void work.deleteJob(job.id).catch((e) => alert(`Delete failed: ${e?.message ?? e}`));
-      }
-      else if (action === 'launch-now') {
-        void work.launchJob(job.id).catch((e) => alert(`Launch failed: ${e?.message ?? e}`));
       }
     });
   });
