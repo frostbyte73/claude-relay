@@ -1155,6 +1155,12 @@ export class WorkEngine {
   }
 
   onStepRetry(jobId: string, stepId: string): void {
+    // Retrying re-provisions the same ref, so a step whose workspace can't provision would
+    // burn a retry and fail instantly again, forever. Refuse (400 at the route) and say what
+    // to fix — editing the step's workspace is the repair, and it re-runs on its own.
+    const cur = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    const wsErr = cur ? workspaceError(cur.workspace) : null;
+    if (wsErr) throw new Error(`${wsErr}. Edit the step's workspace to repair it — that re-runs it.`);
     this.mutateStep(jobId, stepId, (s) => {
       const h = handlerFor(s);
       return {
@@ -1317,6 +1323,11 @@ export class WorkEngine {
     if (step.state === 'resolved' || step.state === 'merged') return false;
     if (step.cancelled) return false;
 
+    // A step that failed because its ref couldn't provision is only repairable through this
+    // patch — and the failure keeps decide() returning null, so clearing the ref without
+    // clearing the failure would look like the repair did nothing. Retry after the mutate.
+    const wasUnprovisionable = !!step.failure && !!workspaceError(step.workspace);
+
     const fields: Partial<Step> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.description !== undefined) fields.description = patch.description;
@@ -1350,7 +1361,8 @@ export class WorkEngine {
       { ...jj, steps: jj.steps.map((s) => s.id === stepId ? { ...s, ...fields, updatedAt: this.ctx.now() } as Step : s) },
       { kind: 'plan_reconciled', who: 'user', body: 'step edited manually', stepId },
     ));
-    void this.tickOne(jobId);
+    if (wasUnprovisionable && patch.workspace !== undefined) this.onStepRetry(jobId, stepId);
+    else void this.tickOne(jobId);
     return true;
   }
 
@@ -2250,6 +2262,15 @@ export class WorkEngine {
     const s = j.steps.find((x) => x.id === stepId);
     if (!s) return;
     let ws: { path: string | null };
+    // Pre-flight with the same validator the plan boundary uses: WorktreeManager's own
+    // guard would catch this too, but its message is written for the daemon log, not for
+    // the user staring at a failed step. This one names the repair.
+    const wsErr = workspaceError(s.workspace);
+    if (wsErr) {
+      console.warn(`[work] unusable workspace on step ${stepId}: ${wsErr}`);
+      this.onStepFailed(jobId, stepId, `workspace provision failed: ${wsErr}`);
+      return;
+    }
     try {
       ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
     } catch (e) {

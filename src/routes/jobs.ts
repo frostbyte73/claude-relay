@@ -353,7 +353,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('POST', '/api/work/jobs/:id/steps/:stepId/retry', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/retry$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    engine.onStepRetry(m[1]!, m[2]!);
+    try { engine.onStepRetry(m[1]!, m[2]!); }
+    catch (e) { res.statusCode = 400; res.end((e as Error).message); return; }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
@@ -369,7 +370,9 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('POST', '/api/work/jobs/:id/rerun-latest', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/rerun-latest$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const stepId = engine.rerunLatest(m[1]!);
+    let stepId: string | undefined;
+    try { stepId = engine.rerunLatest(m[1]!); }
+    catch (e) { res.statusCode = 400; res.end((e as Error).message); return; }
     res.statusCode = stepId ? 200 : 409;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ stepId: stepId ?? null, job: jobQueue.get(m[1]!) ?? null }));

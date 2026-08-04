@@ -838,4 +838,42 @@ describe('Orchestrator — workspace validation', () => {
     expect(() => engine.editStepManually(job.id, stepId, { workspace: { kind: 'readonly' } as never }))
       .toThrow(/requires repoCwd/);
   });
+
+  // A step planned before the boundary validated workspaces carries the bad ref in
+  // ~/.outpost/jobs/<id>.json. Retry re-provisions it and fails instantly, every time —
+  // so retry has to refuse, and repairing the ref has to be enough on its own to re-run.
+  describe('a step already carrying an unprovisionable ref', () => {
+    async function brokenStep() {
+      const h = makeEngine();
+      const job = h.engine.createJob({ source: 'manual', title: 't', description: 'd' });
+      h.engine.onPlanReady(job.id, 'initial', [readonlyStep({ kind: 'none' })]);
+      h.queue.mutate(job.id, (j) => ({
+        ...j,
+        steps: j.steps.map((s) => ({ ...s, workspace: { kind: 'readonly' } } as Step)),
+      }));
+      h.engine.onPlanApproved(job.id);
+      await new Promise((r) => setTimeout(r, 0));
+      return { ...h, job, stepId: h.queue.get(job.id)!.steps[0]!.id };
+    }
+
+    it('fails with a reason that names the repair instead of the raw git error', async () => {
+      const { queue, job, spawned } = await brokenStep();
+      expect(spawned).toHaveLength(0);
+      expect(queue.get(job.id)!.steps[0]!.failure?.reason).toMatch(/absolute path to the repo/);
+    });
+
+    it('refuses a retry that would just re-provision the same ref', async () => {
+      const { engine, queue, job, stepId } = await brokenStep();
+      expect(() => engine.onStepRetry(job.id, stepId)).toThrow(/requires repoCwd/);
+      expect(queue.get(job.id)!.steps[0]!.failure).toBeTruthy();
+    });
+
+    it('re-runs off the workspace edit alone — no second Retry click', async () => {
+      const { engine, queue, job, stepId, spawned } = await brokenStep();
+      engine.editStepManually(job.id, stepId, { workspace: { kind: 'none' } });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(queue.get(job.id)!.steps[0]!.failure).toBeUndefined();
+      expect(spawned).toHaveLength(1);
+    });
+  });
 });

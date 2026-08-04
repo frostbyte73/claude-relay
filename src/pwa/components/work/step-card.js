@@ -337,7 +337,7 @@ export function wireTimelineStep(el, job, s) {
         if (!feedback) { ta?.focus(); return; }
         void work.reject(job.id, { gate: 'gate', stepId: s.id, feedback });
       }
-      else if (kind === 'retry') void work.retryStep(job.id, s.id);
+      else if (kind === 'retry') void work.retryStep(job.id, s.id).catch((err) => alert(`Retry failed: ${err?.message ?? err}`));
       else if (kind === 'merge') void work.approve(job.id, { gate: 'merge', stepId: s.id });
       else if (kind === 'accept-spec') void work.approve(job.id, { gate: 'spec', stepId: s.id });
       else if (kind === 'toggle-spec-feedback') {
