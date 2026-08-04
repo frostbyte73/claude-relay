@@ -8,7 +8,14 @@ export interface StepTypeCatalogEntry {
   description: string;
   required: string[];
   optional: string[];
+  workspace?: string;
 }
+
+const WORKSPACE_SHAPE =
+  'Exactly one of: {"kind":"none"} — no checkout; the session runs in the daemon cwd and can still read anywhere. '
+  + '{"kind":"readonly","repoCwd":"/abs/path","ref":"main"} — detached checkout of ONE repo at `ref` (default HEAD); `repoCwd` is mandatory. '
+  + '{"kind":"writable","repoCwd":"/abs/path","branch":"fix/x"} — worktree on its own branch; both fields mandatory. '
+  + 'Use "none" for investigation that spans several repos or none — a readonly ref without repoCwd is rejected, not defaulted.';
 
 export const STEP_TYPE_CATALOG: StepTypeCatalogEntry[] = [
   {
@@ -16,12 +23,14 @@ export const STEP_TYPE_CATALOG: StepTypeCatalogEntry[] = [
     description: 'Implement code changes in one repo and open a PR. Implementer + PR comment handling are handled by Outpost; you provide goal/approach/risks/branch.',
     required: ['title', 'description', 'goal', 'approach', 'workspace.repoCwd', 'workspace.branch'],
     optional: ['risks', 'parallelGroup'],
+    workspace: WORKSPACE_SHAPE,
   },
   {
     type: 'action',
     description: 'Spawn a named action (skill) for one-shot work — investigation, code review, ops, etc. Pick the action from the catalog passed alongside this entry. Set forwardOutput=true (default) when downstream steps should see this step\'s output; false for ops work that doesn\'t produce findings.',
     required: ['title', 'description', 'action', 'goal'],
     optional: ['workspace', 'forwardOutput', 'parallelGroup'],
+    workspace: `Defaults to {"kind":"none"} when omitted. ${WORKSPACE_SHAPE}`,
   },
 ];
 

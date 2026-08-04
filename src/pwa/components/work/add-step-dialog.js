@@ -16,21 +16,21 @@ function actionOptions(selected) {
   return withSelected.map((n) => `<option value="${escapeHtml(n)}"${n === selected ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
 }
 
-// `editStep` is the current step when editing; its workspace fields render read-only
-// since the plan editor's PATCH endpoint doesn't allow moving a step to another
-// repo/branch/action-target — only the content fields it's already running against.
+// `editStep` is the current step when editing. Workspace fields stay editable: the dialog only
+// opens for steps that haven't started, so nothing has provisioned against the old ref — and a
+// planner-authored workspace that's wrong (missing repo, wrong path) is otherwise unfixable.
 function renderFields(type, editStep) {
   const s = editStep && editStep.type === type ? editStep : null;
   switch (type) {
     case 'open-pr':
       return `
         <div>
-          <div class="field-label">Repo cwd ${s ? '<span class="field-hint">not editable</span>' : ''}</div>
-          <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" value="${escapeHtml(s?.workspace?.repoCwd ?? '')}" ${s ? 'disabled' : ''} />
+          <div class="field-label">Repo cwd</div>
+          <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" value="${escapeHtml(s?.workspace?.repoCwd ?? '')}" />
         </div>
         <div>
-          <div class="field-label">Branch ${s ? '<span class="field-hint">not editable</span>' : ''}</div>
-          <input id="as-branch" class="field-input" type="text" placeholder="fix/dropping-rpc" value="${escapeHtml(s?.workspace?.branch ?? '')}" ${s ? 'disabled' : ''} />
+          <div class="field-label">Branch</div>
+          <input id="as-branch" class="field-input" type="text" placeholder="fix/dropping-rpc" value="${escapeHtml(s?.workspace?.branch ?? '')}" />
         </div>
         <div>
           <div class="field-label">Goal</div>
@@ -63,11 +63,12 @@ function renderFields(type, editStep) {
           <div class="field-label">Inputs <span class="field-hint">JSON, optional</span></div>
           <textarea id="as-inputs" class="field-textarea" placeholder="{}">${escapeHtml(JSON.stringify(s.inputs ?? {}, null, 2))}</textarea>
         </div>
-        ` : `
+        ` : ''}
         <div>
-          <div class="field-label">Repo cwd <span class="field-hint">optional</span></div>
-          <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" />
+          <div class="field-label">Repo cwd <span class="field-hint">optional — blank means no checkout</span></div>
+          <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" value="${escapeHtml(s?.workspace?.repoCwd ?? '')}" />
         </div>
+        ${s ? '' : `
         <div>
           <label class="field-check">
             <input id="as-forward" type="checkbox" checked />
@@ -157,12 +158,10 @@ export function openAddStepDialog(jobId, opts = {}) {
       step.goal = goal ?? '';
       step.approach = approach ?? '';
       step.risks = risks ?? '';
-      if (!isEdit) {
-        const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
-        const branch  = wrap.querySelector('#as-branch')?.value.trim();
-        if (!repoCwd || !branch) return showError('Repo cwd and branch required for open-pr');
-        step.workspace = { kind: 'writable', repoCwd, branch };
-      }
+      const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
+      const branch  = wrap.querySelector('#as-branch')?.value.trim();
+      if (!repoCwd || !branch) return showError('Repo cwd and branch required for open-pr');
+      step.workspace = { kind: 'writable', repoCwd, branch };
     } else {
       const action = wrap.querySelector('#as-action')?.value.trim();
       if (!action) return showError('Action required');
@@ -170,6 +169,18 @@ export function openAddStepDialog(jobId, opts = {}) {
       if (!goal) return showError('Goal required');
       step.action = action;
       step.goal = goal;
+      const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
+      // Keep the existing ref when it already matches the field and is well-formed, so saving
+      // unrelated fields can't downgrade a writable action step or drop its pinned `ref`.
+      // Anything else — including a malformed ref like {kind:'readonly'} with no repoCwd — is
+      // rebuilt from the field, which is how such a step gets repaired.
+      const cur = editStep?.workspace ?? {};
+      const keepable = repoCwd
+        ? (cur.kind === 'readonly' || cur.kind === 'writable') && cur.repoCwd === repoCwd
+        : cur.kind === 'none';
+      if (!isEdit || !keepable) {
+        step.workspace = repoCwd ? { kind: 'readonly', repoCwd } : { kind: 'none' };
+      }
       if (isEdit) {
         const rawInputs = wrap.querySelector('#as-inputs')?.value.trim();
         if (rawInputs) {
@@ -179,10 +190,7 @@ export function openAddStepDialog(jobId, opts = {}) {
           step.inputs = {};
         }
       } else {
-        const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
-        const forward = !!wrap.querySelector('#as-forward')?.checked;
-        step.workspace = repoCwd ? { kind: 'readonly', repoCwd } : { kind: 'none' };
-        step.forwardOutput = forward;
+        step.forwardOutput = !!wrap.querySelector('#as-forward')?.checked;
       }
     }
 

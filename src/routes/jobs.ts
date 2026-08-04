@@ -265,11 +265,18 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     let payload: Record<string, unknown>;
     try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
     const { afterStepId, ...stepFields } = payload;
-    const step = engine.addStepManually(
-      m[1]!,
-      stepFields as never,
-      typeof afterStepId === 'string' ? { afterStepId } : undefined,
-    );
+    let step;
+    try {
+      step = engine.addStepManually(
+        m[1]!,
+        stepFields as never,
+        typeof afterStepId === 'string' ? { afterStepId } : undefined,
+      );
+    } catch (e) {
+      res.statusCode = 400;
+      res.end((e as Error).message);
+      return;
+    }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ step }));
@@ -281,10 +288,12 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     const body = await readBody(req);
     let payload: Record<string, unknown>;
     try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    const EDITABLE_FIELDS = ['title', 'description', 'goal', 'approach', 'risks', 'inputs', 'action'];
+    const EDITABLE_FIELDS = ['title', 'description', 'goal', 'approach', 'risks', 'inputs', 'action', 'workspace'];
     const patch: Record<string, unknown> = {};
     for (const field of EDITABLE_FIELDS) if (field in payload) patch[field] = payload[field];
-    const ok = engine.editStepManually(m[1]!, m[2]!, patch as never);
+    let ok: boolean;
+    try { ok = engine.editStepManually(m[1]!, m[2]!, patch as never); }
+    catch (e) { res.statusCode = 400; res.end((e as Error).message); return; }
     if (!ok) {
       res.statusCode = 409;
       res.end('step cannot be edited (already running, resolved, merged, or cancelled)');

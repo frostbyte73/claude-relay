@@ -801,3 +801,41 @@ describe('WorkEngine per-step review', () => {
     expect(original.reviewed).toBe(true);
   });
 });
+
+describe('Orchestrator — workspace validation', () => {
+  const readonlyStep = (workspace: unknown): ProposedStep => ({
+    type: 'action', action: 'read.investigate', title: 'map coverage', description: '', goal: 'g',
+    workspace,
+  } as unknown as ProposedStep);
+
+  it('rejects a readonly workspace with no repoCwd at the plan boundary', () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    expect(() => engine.onPlanReady(job.id, 'initial', [readonlyStep({ kind: 'readonly' })]))
+      .toThrow(/step 1 \("map coverage"\).*requires repoCwd/);
+    expect(queue.get(job.id)!.steps).toHaveLength(0);
+  });
+
+  it('rejects an open-pr workspace with a blank branch', () => {
+    const { engine } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const step = {
+      type: 'open-pr', title: 'bump', description: '', goal: 'g', approach: 'a',
+      workspace: { kind: 'writable', repoCwd: '/tmp/repo', branch: '' },
+    } as unknown as ProposedStep;
+    expect(() => engine.onPlanReady(job.id, 'initial', [step])).toThrow(/requires branch/);
+  });
+
+  it('repairs a not-yet-started step workspace through editStepManually', () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    engine.onPlanReady(job.id, 'initial', [readonlyStep({ kind: 'none' })]);
+    const stepId = queue.get(job.id)!.steps[0]!.id;
+
+    expect(engine.editStepManually(job.id, stepId, { workspace: { kind: 'readonly', repoCwd: '/tmp/repo' } })).toBe(true);
+    expect(queue.get(job.id)!.steps[0]!.workspace).toEqual({ kind: 'readonly', repoCwd: '/tmp/repo' });
+
+    expect(() => engine.editStepManually(job.id, stepId, { workspace: { kind: 'readonly' } as never }))
+      .toThrow(/requires repoCwd/);
+  });
+});

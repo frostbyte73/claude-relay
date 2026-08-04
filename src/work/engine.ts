@@ -20,8 +20,10 @@ import type {
   ProposedStep,
   ReviewComment,
   Step,
+  WorkspaceRef,
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
+import { workspaceError } from './workspace.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
 import type { Action, ExternalEvent, HandlerCtx } from '../steps/types.js';
@@ -51,6 +53,7 @@ export interface StepEditPatch {
   risks?: string;
   inputs?: Record<string, unknown>;
   action?: string;
+  workspace?: WorkspaceRef;
 }
 
 // Rounds that continue an already-open PR (CI red, merge conflict, review comment/edit).
@@ -706,6 +709,13 @@ export class WorkEngine {
   onPlanReady(jobId: string, mode: 'initial' | 'replan', proposed: ProposedStep[], drops?: string[], feedback?: string, findings?: Finding): void {
     const j = this.opts.queue.get(jobId);
     if (!j) throw new Error(`unknown jobId: ${jobId}`);
+    // Reject a malformed workspace here, where the throw becomes a JSON-RPC error the planner
+    // can act on. Past the plan boundary it is unrecoverable: the step materializes, then fails
+    // at provision on every dispatch and retry.
+    proposed.forEach((p, i) => {
+      const err = workspaceError(p.workspace);
+      if (err) throw new Error(`step ${i + 1} ("${p.title}"): ${err}`);
+    });
     const activeSteps = j.steps.filter((s) => !s.cancelled);
     // Wholesale-replace path: no active steps to reconcile against, or the
     // orchestrator explicitly declared this as an initial plan (e.g. after a
@@ -1310,6 +1320,17 @@ export class WorkEngine {
     const fields: Partial<Step> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.description !== undefined) fields.description = patch.description;
+    // Safe only because of the no-sessionId guard above: nothing has provisioned against the
+    // old ref yet. This is also the only way to repair a step whose planner-authored workspace
+    // was wrong — dropping and re-adding loses the step's position and history.
+    if (patch.workspace !== undefined) {
+      const err = workspaceError(patch.workspace);
+      if (err) throw new Error(err);
+      if (step.type === 'open-pr' && patch.workspace.kind !== 'writable') {
+        throw new Error('open-pr step requires writable workspace');
+      }
+      fields.workspace = patch.workspace as Step['workspace'];
+    }
     if (step.type === 'open-pr') {
       if (patch.goal !== undefined) (fields as Partial<OpenPrStep>).goal = patch.goal;
       if (patch.approach !== undefined) (fields as Partial<OpenPrStep>).approach = patch.approach;
@@ -2354,9 +2375,12 @@ export class WorkEngine {
   private materialize(p: ProposedStep): Step {
     const id = this.ctx.newId();
     const now = this.ctx.now();
+    const wsErr = workspaceError(p.workspace);
+    if (wsErr) throw new Error(wsErr);
     switch (p.type) {
       case 'open-pr': {
-        const ws = p.workspace ?? { kind: 'writable' as const, repoCwd: '', branch: '' };
+        const ws = p.workspace;
+        if (!ws) throw new Error('open-pr step requires workspace.repoCwd + workspace.branch');
         if (ws.kind !== 'writable') throw new Error('open-pr step requires writable workspace');
         const { keepId: _, ...rest } = p;
         return { ...rest, id, workspace: ws, state: initialStateForType('open-pr'), createdAt: now, updatedAt: now } as OpenPrStep;
