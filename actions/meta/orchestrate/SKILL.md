@@ -111,7 +111,7 @@ Before composing steps, name the category out loud (you'll print this in Step 6 
 - **Staged rollout / infra-as-code** — anything that ships through a repo where merging the PR *is* the deploy (a GitOps config repo, helm charts, Terraform, k8s manifests). → one `open-pr` step **per ring** (staging → canary → prod). Between rings: `read.investigate` produces the health verdict (DD metrics, error rates, restart counts), then `meta.wait` holds the job so the user can *promote* given those findings (resume) or halt (abandon). The deploys themselves are `open-pr`; never collapse "open the PR" or "check health" into a `meta.wait`.
 - **Investigation (root-cause unknown)** — a page, a customer-reported symptom, "find what's dropping requests". → investigate inline (Step 4), record what you found in the `findings` artifact on `submit_plan`, and emit the fix/comm steps your findings now ground. Only emit a standalone `read.investigate` step when the investigation must run *during execution* (e.g. a health check between deploy rings) or when a tracked, re-runnable investigation is the deliverable itself.
 - **Investigation with likely follow-up** — same as above and you're confident a fix or comm will follow. Do the investigation inline, capture it in `findings`, and emit the grounded follow-up steps in the same pass — you now have the findings that let you shape them.
-- **Customer incident ticket** — investigate inline, put the verdict in `findings` (the verdict block), and emit `meta.wait` → `write.linear-issue` (the bug filing) → `write.linear-comment` (back on the incident ticket) in one pass, packing `verdict.writeup` / `verdict.customer_summary` into the write steps' `inputs`. The `meta.wait` still guards the write-back so the user approves the verdict (resume) before anything posts.
+- **Customer incident ticket** — investigate inline, put the verdict in `findings` (the verdict block), and emit `write.linear-issue` (the bug filing) → `write.linear-comment` (back on the incident ticket) in one pass, packing `verdict.writeup` / `verdict.customer_summary` into the write steps' `inputs`. Each `write.*` step is hard-gated by the daemon (`human_gate`) — it parks for the user's approval of the exact body before it posts, so you don't need a separate `meta.wait` in front purely to guard the write. Add a leading `meta.wait` only if you want a single combined hold on the verdict *before* either write is even prepared.
 - **Code review** — someone else's PR (community, teammate, dependabot-ish). No dedicated review action ships today, and there is no generic-Claude action — every `action` step must name a catalog entry. If nothing in the catalog fits, surface that in `risks` and stop short of the review step; the user extends with a new action via `meta.build-action`.
 - **Operational / non-PR work** — flip a feature flag, post a Slack note, send a customer email, schedule a meeting. Same constraint: only the actions in `actionCatalog` are real. If the op doesn't fit one (`write.linear-comment`, `meta.wait`, etc.), don't emit a fake step — call out the gap in `risks` so the user can decide whether to build the action first.
 - **Mixed** — most large jobs are mixed. Emit the steps that are clearly knowable now and stop at the boundary of "what depends on findings we don't have yet". The user can extend after.
@@ -138,17 +138,49 @@ Use the absolute paths from the registered-projects list. If a repo is on disk b
 
 ## Step 4 — Investigate to confidence
 
-Investigate as deeply as the job needs before composing the plan — this is the investigation, not a precursor to one. Use the read-shaped tools below (the same set `read.investigate` documents). **Always verify the load-bearing claim** before you build a plan on it; treat the ticket's framing as a hypothesis. Even an obvious-looking bugfix gets a confirmation pass — the recorded finding can be as small as "verified the NPE reproduces at `session.go:142`."
+Investigate as deeply as the job needs before composing the plan — this is the investigation, not a precursor to one. The recorded finding can be as small as "verified the NPE reproduces at `session.go:142`," but you don't get to skip it. Record what you found in the `findings` field of `submit_plan` (Step 7); skip `findings` only when there was genuinely nothing to verify.
 
-When you investigate, record what you found in the `findings` field of `submit_plan` (Step 7). Skip `findings` only when there was genuinely nothing to verify.
+**Two production failures this step exists to prevent.** CS-1931 — planned an egress-retry fix off two Linear comments, never opened the Datadog link sitting *in the ticket body*, and misread the load-bearing claim (the "80% error rate" was metric pollution, not failing egresses). CS-1105 — committed two `open-pr` steps guessing which server SDK the ticket meant and asserting a proto/version history it never checked against live state; "completely wrong." Both plans looked plausible. Neither was investigated.
 
-**Grep / Read** — direct file paths → `Read`. Symbol names → `Grep`. Distinctive error substrings → `Grep` (skip timestamps/UUIDs).
+### 4a — Sweep every relevant angle
 
-**Datadog** — only when the ticket carries log-shaped evidence and you can't decide from code alone. `ToolSearch` for `mcp__claude_ai_DataDog_MCP__search_datadog_logs` first. Useful query shapes: filter on the most specific ID (`@request_id:`, `@user_id:`); `use_log_patterns: true` clusters by message. Domain skills via `list_datadog_skills` + `load_datadog_skill`.
+Don't stop at the first angle that seems to answer it. Cover each angle that carries signal for this job:
 
-**Grafana / incident.io** — for paged-style jobs, search active or recent incidents (`ToolSearch` for the incident-io and grafana tool families). Skip if the job has no ops signal.
+- **Code** — trace the actual path, not just the one file the ticket named. Direct paths → `Read`; symbols → `Grep`; distinctive error substrings → `Grep` (skip timestamps/UUIDs).
+- **Logs / metrics** — **mandatory whenever the ticket links logs, references an incident/alert, or carries log-shaped evidence** (timestamps, request IDs, error strings). Open the linked query — don't reason around it. `ToolSearch` for `mcp__claude_ai_DataDog_MCP__search_datadog_logs`; filter on the most specific ID (`@request_id:`, `@egressID:`); `use_log_patterns: true` clusters by message; domain syntax via `list_datadog_skills` + `load_datadog_skill`. For paged/incident jobs also search the `incident-io` / `grafana` tool families.
+- **Live state** — verify version, API, and history claims against the current ref (GitHub `main` via `gh` / GitHub MCP), never a possibly-stale local checkout. "We just pushed X" and "it's just a version bump" are claims to check, not facts.
+- **Prior art** — recent PRs and git history for in-flight or already-landed work the fix would duplicate.
+
+### 4b — Verify every load-bearing claim
+
+A claim is load-bearing if a plan step rests on it. Each one ships with a citation — `file:line`, a log-query URL, a live ref, a PR link — or it is not yet a finding. The ticket's title, framing, and comments are hypotheses the filer pattern-matched, not findings; find the specific evidence that supports or refutes each before you build on it.
+
+### 4c — Coverage check before you plan
+
+Before composing, confirm for every claim a step will rest on:
+
+- Traced the real code path, not just the named file?
+- If the ticket links logs / references an incident / has log-shaped evidence — opened it?
+- Verified version/API/state claims against a live ref, not a stale checkout?
+- Checked for prior or in-flight work this would duplicate?
+- Every step-bearing claim carries a citation?
+
+Any "no" on a load-bearing item → keep investigating, or record the gap in `risks` and don't build a step on it.
+
+### Red flags — STOP, you're about to ship a guess
+
+| Thought | Reality |
+|---|---|
+| "The ticket says it's just a version bump / a one-line fix." | The filer's hypothesis. Verify the mechanism yourself — CS-1105 was "just a version bump" and completely wrong. |
+| "The comments already explain what's happening." | Comments are leads, not findings. Read the code and logs they describe — CS-1931 planned a fix off two comments and misread the core claim. |
+| "The ticket links logs but I can decide from code." | If it carries a log link or log-shaped evidence, open it. You don't skip the angle the filer thought was load-bearing. |
+| "My local checkout shows X." | Checkouts go stale. Confirm against live state before asserting version/API/history. |
+| "I'm fairly sure which repo this targets." | Fairly sure isn't grounded. Can't cite why → it's a guess; flag it in `risks`, don't commit a worktree to it. |
+| "I'll emit the `open-pr` and let the implementer work out the approach." | A blind open-pr burns an implementer worktree. Can't name the verified files/functions → it's not ready to be a step. |
 
 ## Step 5 — Compose the plan
+
+**Gate — no ungrounded `open-pr`.** Before you emit any `open-pr` step, confirm both: (1) its target repo was chosen from evidence you can cite, and (2) its `approach` names real files/functions you read *this run*. If either is missing, do NOT emit the open-pr — instead surface the unknown in `risks` and stop at that boundary, or, if the missing piece can only be resolved during execution, emit a `read.investigate` step for it. A guessed open-pr is the single most expensive mistake here (CS-1105): it burns an implementer worktree on a plan shape you couldn't yet see.
 
 For each step you emit, fill the fields the catalog requires for its `type`. Refer to `stepTypeCatalog` for the legacy shape and `actionCatalog` for action names + their input/output schemas.
 
@@ -190,7 +222,7 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
 
 - `read.investigate` — anything investigation-shaped.
 - `read.linear-issue` — when a downstream step needs the ticket as structured data (team, comments, etc.).
-- `write.linear-comment` / `write.linear-issue` — for the write-back side of customer-incident flows. **Always pair with an upstream `action: "meta.wait"`** before these — they declare `human_gate: true`, so the user must approve the body before anything posts.
+- `write.linear-comment` / `write.linear-issue` — for the write-back side of customer-incident flows. They declare `human_gate: true`, and **the daemon hard-gates them**: the step parks in `gate_pending_approval` and the user must approve the exact body before the session runs and anything posts. You do **not** need to insert a `meta.wait` in front just to gate the write — that's enforced automatically. A leading `meta.wait` is only for a combined hold on the verdict before the writes are prepared at all.
 - `code.review-diff` — only for diffs in OUR worktrees, not someone else's PR.
 - `meta.wait` — a daemon-side hold between steps. Two shapes: a **manual hold** (omit `duration_sec`) that parks the job until the user resumes or abandons — for "given these findings, promote when ready"; and a **timed soak** (`inputs.duration_sec`) that auto-resumes after N seconds, then the next step runs on its own. The timed soak is how you bake a deploy before acting on it — e.g. an `open-pr` that ships the change, then `meta.wait` with `duration_sec: 3600`, then `read.investigate` to check health an hour after rollout (set `forwardOutput: true` on nothing here — the wait's own output is just `{resumed_by}`; the investigate reads live signal fresh). Never use `meta.wait` to *assess* something — "is staging healthy?" is `read.investigate`. And never use it as a stand-in for actual work — a "deploy" step is `open-pr` (the merge IS the deploy).
 
