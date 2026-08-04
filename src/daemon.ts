@@ -19,6 +19,7 @@ import { LinearPoller } from './integrations/linear-poller.js';
 import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
 import { UserPrsWatcher } from './integrations/user-prs-watcher.js';
+import { ClaudeUpdater } from './integrations/claude-updater.js';
 import { WorkEngine } from './work/engine.js';
 import { ensureActionsInstalled, bundledRepoDir } from './setup-actions.js';
 import { ActionsStore } from './storage/actions-store.js';
@@ -366,12 +367,15 @@ async function main() {
     },
   });
 
+  const claudeUpdater = new ClaudeUpdater({ statePath: join(RUNTIME_DIR, 'claude-update.json') });
+
   // Built-in pollers surfaced as read-only "system" schedules. usagePoller is
   // constructed later (after the server) and registered there.
   const systemSchedules = new SystemScheduleRegistry();
   systemSchedules.register(linearPoller);
   systemSchedules.register(prWatcher);
   systemSchedules.register(userPrsWatcher);
+  systemSchedules.register(claudeUpdater);
 
   const server = new Server({
     httpPort: config.httpPort,
@@ -1057,6 +1061,7 @@ async function main() {
   console.log(`[daemon] hook server on http://127.0.0.1:${HOOK_PORT} (loopback only)`);
 
   userPrsWatcher.start();
+  claudeUpdater.start();
   scheduler.start();
 
   // Broadcast every queue mutation to the notifications WS so the PWA work UI can
