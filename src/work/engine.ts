@@ -245,6 +245,10 @@ export class WorkEngine {
     // and plan rounds MUST submit — if their turn ends without submit_spec /
     // submit_impl_plan, fail the step rather than hang the job.
     if (step.type === 'open-pr' && step.state !== 'speccing' && step.state !== 'planning') return false;
+    // A human_gate action's draft turn ends by submitting a draft and parking for approval
+    // (submit_write_draft → gate_pending_approval). That's a legitimate turn end, not a
+    // hang — don't fail it. The commit/redraft turns run when the user acts.
+    if (step.type === 'action' && step.state === 'gate_pending_approval') return false;
     if (step.state === 'resolved' || step.failure || step.cancelled) return false;
     this.onStepFailed(role.jobId, role.stepId, reason);
     return true;
@@ -979,6 +983,114 @@ export class WorkEngine {
         else this.scheduleWaitWake(j.id, s.id, s.resumeAt - now);
       }
     }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // human_gate — draft → review → commit loop for external writes.
+  // Mirrors the open-pr spec_pending_review gate: the action's draft turn composes the
+  // payload and submits it for review (submit_write_draft) WITHOUT posting; the user
+  // approves (→ commit turn posts it) or proposes changes (→ redraft turn). The external
+  // write is hard-blocked by the hook until gateApproved (see writeGateHeldForSession),
+  // so nothing posts before the user's OK — independent of the skill's behaviour.
+  // ─────────────────────────────────────────────────────────
+
+  // The draft turn submitted a payload for review. Store it and park the step for the
+  // user's approval. Does NOT dispatch — approveGate/rejectGate drive the next turn.
+  onWriteDraftReady(jobId: string, stepId: string, draft: string): void {
+    let ok = false;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'action' || (s.state !== 'running' && s.state !== 'gate_pending_approval')) return s;
+      ok = true;
+      return { ...s, draft, state: 'gate_pending_approval', updatedAt: this.ctx.now() };
+    });
+    if (!ok) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'session', stepId,
+      body: `${this.stepLabel(jobId, stepId)} — draft ready for your approval`,
+    }));
+  }
+
+  // PWA "Approve & run": the user approved the drafted payload. Flip gateApproved (which
+  // lifts the hook's write-block) and resume the same session in its commit turn to post.
+  approveGate(jobId: string, stepId: string): void {
+    let ok = false;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'action' || s.state !== 'gate_pending_approval') return s;
+      ok = true;
+      return { ...s, state: 'running', gateApproved: true, updatedAt: this.ctx.now() };
+    });
+    if (!ok) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'user', stepId, body: `${this.stepLabel(jobId, stepId)} — approved`,
+    }));
+    void this.dispatchActionResume(jobId, stepId);
+  }
+
+  // PWA "Propose changes": the user wants a different payload. Record the feedback and
+  // resume the same session in a redraft turn — it revises and re-submits via
+  // submit_write_draft, re-parking for approval. The write never fired (gateApproved is
+  // still false, so the hook keeps blocking it).
+  rejectGate(jobId: string, stepId: string, feedback: string): void {
+    const note = feedback?.trim();
+    if (!note) return;
+    let ok = false;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'action' || s.state !== 'gate_pending_approval') return s;
+      ok = true;
+      return { ...s, state: 'running', gateFeedback: [...(s.gateFeedback ?? []), note], updatedAt: this.ctx.now() };
+    });
+    if (!ok) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'user', stepId, body: note,
+    }));
+    void this.dispatchActionResume(jobId, stepId);
+  }
+
+  // Resume a human_gate action's persistent session for its next turn (commit after
+  // approval, or redraft after feedback). Rebuilds the envelope at the stable path so the
+  // resumed session re-reads the current phase/draft/feedback, then sendOrResume's it.
+  private async dispatchActionResume(jobId: string, stepId: string): Promise<void> {
+    const j = this.opts.queue.get(jobId);
+    const s = j?.steps.find((x) => x.id === stepId);
+    if (!j || !s || s.type !== 'action' || !s.sessionId) return;
+    const sessionId = s.sessionId;
+    const actionName = actionNameForStep(s);
+    const envelope = handlerFor(s).buildEnvelope(s, j, this.ctx);
+    const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
+    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(actionName) ?? []);
+    const cwd = (await this.opts.worktreeManager.provision(stepId, s.workspace)).path ?? this.orchestratorCwd();
+    // A resume queued behind an in-flight turn leaves a trailing Stop for the superseded
+    // round; record it so the Stop handler drops it rather than failing this live step.
+    if (this.opts.sessionManager.isWorking(sessionId)) {
+      this.owedStaleStops.set(sessionId, (this.owedStaleStops.get(sessionId) ?? 0) + 1);
+    }
+    this.submitLaunch({
+      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
+      run: () => {
+        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        if (!cur || cur.type !== 'action' || cur.cancelled || cur.failure) return false;
+        this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
+        this.bindAction(sessionId, actionName);
+        this.opts.sessionManager.sendOrResume(
+          sessionId,
+          cwd,
+          { type: 'user', message: { role: 'user', content: `/${actionName}` } },
+          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'action' },
+        );
+        return true;
+      },
+    });
+  }
+
+  // Hook backstop: true while a human_gate action's session is in its draft/redraft phase
+  // (not yet gateApproved). The PreToolUse hook denies external writes for such sessions,
+  // so the write cannot fire before the user approves the draft — even if the skill tries.
+  writeGateHeldForSession(sessionId: string): boolean {
+    const role = this.roleBySession.get(sessionId);
+    if (!role || role.role !== 'step') return false;
+    const s = this.opts.queue.get(role.jobId)?.steps.find((x) => x.id === role.stepId);
+    if (!s || s.type !== 'action' || s.gateApproved) return false;
+    return !!this.ctx.actionRegistry?.getAction(s.action)?.frontmatter.outpost.human_gate;
   }
 
   // code.spec finished a spec round. Store the spec and pause on the user gate —

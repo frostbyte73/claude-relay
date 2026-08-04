@@ -25,6 +25,7 @@ function stateLabel(s) {
     if (s.state === 'reply_pending_review') return 'pending';
     return s.state.replace(/_/g, ' ');
   }
+  if (s.state === 'gate_pending_approval') return 'needs approval';
   return s.state;
 }
 function stateTone(s) {
@@ -38,6 +39,8 @@ function stateTone(s) {
   if (s.state === 'resolved' || s.state === 'merged') return 'ok';
   // meta.wait hold — a soft gate the user (or a soak timer) releases.
   if (s.type === 'action' && s.state === 'waiting') return 'gate';
+  // human_gate hard hold — an external-write action awaiting explicit approval.
+  if (s.type === 'action' && s.state === 'gate_pending_approval') return 'gate';
   if (s.type === 'open-pr') {
     // Gates: spec review, pending review, ready-to-merge.
     if (s.state === 'spec_pending_review') return 'gate';
@@ -111,6 +114,19 @@ function actionFor(s) {
   // meta.wait hold: let the user release it early (timed) or at all (indefinite).
   if (s.type === 'action' && s.state === 'waiting') {
     return `<button class="o-btn o-btn--primary" data-step-action="resume">Resume now</button>`;
+  }
+  // human_gate: approve the drafted write, or propose changes (redraft with feedback).
+  if (s.type === 'action' && s.state === 'gate_pending_approval') {
+    return `
+      <button class="o-btn o-btn--primary" data-step-action="approve-gate">Approve &amp; post</button>
+      <button class="o-btn o-btn--default" data-step-action="toggle-gate-feedback">Propose changes</button>
+      <div class="thread-composer" data-composer="gate-feedback" hidden>
+        <textarea class="thread-compose-input" data-autogrow placeholder="What should change about this draft?"></textarea>
+        <div class="thread-composer-row">
+          <button class="o-btn o-btn--primary" data-step-action="submit-gate-feedback">Submit</button>
+        </div>
+      </div>
+    `;
   }
   // Resolve is a manual fallback for action steps whose session subprocess
   // exited without POSTing output. It must never appear while the session is
@@ -201,6 +217,25 @@ function waitBlockHtml(s) {
     </div>`;
 }
 
+// The approval block for a human_gate action parked in gate_pending_approval: the exact
+// drafted payload (s.draft) the action will post once approved, plus any feedback the user
+// already sent this round. This is the daemon-enforced gate — the write is blocked until
+// approval. Approve & run / Propose changes render via actionFor.
+function gateBlockHtml(s) {
+  if (s.type !== 'action' || s.state !== 'gate_pending_approval') return '';
+  const draft = s.draft ? renderMarkdown(String(s.draft)) : '';
+  const feedback = (s.gateFeedback ?? [])
+    .map((f) => `<div class="tl-gate-feedback">↩ ${escapeHtml(f)}</div>`)
+    .join('');
+  const what = s.action ? s.action.split('.').pop() : 'action';
+  return `
+    <div class="tl-gate">
+      <div class="tl-gate-head">⚠ Review before this ${escapeHtml(what)} posts</div>
+      ${draft ? `<div class="tl-gate-body md-body">${draft}</div>` : '<div class="tl-gate-body muted">Drafting…</div>'}
+      ${feedback ? `<div class="tl-gate-feedbacks">${feedback}</div>` : ''}
+    </div>`;
+}
+
 // Token-launch-queue status for this step, in its own row (never crammed onto
 // tl-hdr alongside the name/skill/time).
 function launchRowHtml(job, s) {
@@ -263,6 +298,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
         ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
         ${waitBlockHtml(s)}
+        ${gateBlockHtml(s)}
         ${launchRowHtml(job, s)}
         ${s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
         ${showPrBlock ? renderPrBlockHtml(job, s) : (metaFor(s) ? `<div class="tl-meta">${metaFor(s)}</div>` : '')}
@@ -292,6 +328,15 @@ export function wireTimelineStep(el, job, s) {
       if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
       else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
+      else if (kind === 'approve-gate') void work.approve(job.id, { gate: 'gate', stepId: s.id });
+      else if (kind === 'toggle-gate-feedback') {
+        el.querySelector('[data-composer="gate-feedback"]')?.toggleAttribute('hidden');
+      } else if (kind === 'submit-gate-feedback') {
+        const ta = el.querySelector('[data-composer="gate-feedback"] textarea');
+        const feedback = (ta?.value ?? '').trim();
+        if (!feedback) { ta?.focus(); return; }
+        void work.reject(job.id, { gate: 'gate', stepId: s.id, feedback });
+      }
       else if (kind === 'retry') void work.retryStep(job.id, s.id);
       else if (kind === 'merge') void work.approve(job.id, { gate: 'merge', stepId: s.id });
       else if (kind === 'accept-spec') void work.approve(job.id, { gate: 'spec', stepId: s.id });

@@ -46,7 +46,7 @@ export function stepDotState(s) {
   if (s.type === 'open-pr' && s.state === 'merged') return 'ok';
   if (s.state === 'resolved') return 'ok';
   if (s.state === 'reply_pending_review' || s.state === 'spec_pending_review') return 'gate';
-  if (s.type === 'action' && s.state === 'waiting') return 'gate';
+  if (s.type === 'action' && (s.state === 'gate_pending_approval' || s.state === 'waiting')) return 'gate';
   if (s.type === 'open-pr' && s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success') return 'gate';
   if (s.sessionId) return 'active';
   return 'todo';

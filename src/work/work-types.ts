@@ -183,9 +183,21 @@ export interface ActionStep extends StepBase {
   forwardOutput?: boolean;
   // 'waiting' is a builtin-runner-only state: a meta.wait hold. The engine parks the
   // step here (no session spawned) until the user resumes or `resumeAt` elapses.
-  state: 'running' | 'waiting' | 'resolved' | 'failed';
+  // 'gate_pending_approval' is the hard human-gate: an action whose frontmatter
+  // declares `human_gate: true` parks here (no session spawned) before its session
+  // ever runs, until the user approves (→ running) or declines (→ cancelled). The
+  // daemon enforces this regardless of whether a planner inserted a meta.wait.
+  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
   // Epoch ms when a timed meta.wait auto-resumes. Unset for an indefinite manual hold.
   resumeAt?: number;
+  // human_gate draft/review/commit loop (mirrors open-pr spec_pending_review). The action
+  // runs in a draft phase that composes `draft` and parks in gate_pending_approval WITHOUT
+  // performing the external write (the hook hard-blocks the write until gateApproved). The
+  // user approves (→ commit phase posts it) or proposes changes (→ redraft phase with the
+  // accumulated gateFeedback). The write only ever fires once gateApproved is set.
+  draft?: string;
+  gateFeedback?: string[];
+  gateApproved?: boolean;
 }
 
 export type Step = OpenPrStep | ActionStep;

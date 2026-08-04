@@ -192,6 +192,19 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_write_draft',
+    description: 'Submit the drafted payload of a human_gate write action (e.g. write.linear-comment / write.linear-issue) for the user\'s approval. `draft` is the full payload as markdown — the exact body that will be posted. Sets the step to gate_pending_approval and DOES NOT perform the external write (the daemon blocks it until approval). The user approves (→ this session resumes in its commit phase and posts) or proposes changes (→ resumes in a redraft phase with their feedback). Call this in the draft phase instead of writing; only call the external-write tool in the commit phase (envelope typePayload.phase === "commit").',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'draft'],
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        draft: { type: 'string', description: 'The full payload to be posted, as markdown.' },
+      },
+    },
+  },
+  {
     name: 'submit_spec',
     description: 'Post the design spec for this open-pr step back to Outpost. `spec` is the full design doc as markdown. Sets the step to spec_pending_review — the user reviews the rendered spec and either accepts (→ plan round) or proposes changes (resumes this session as code.spec with their feedback). Call once, at the end of the spec round, after your self-review.',
     inputSchema: {

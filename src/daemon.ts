@@ -619,6 +619,7 @@ async function main() {
           return rec && !rec.archivedAt ? rec.worktreePath : undefined;
         },
         actionForSession: (id) => engine.actionForSession(id),
+        writeGateHeldForSession: (id) => engine.writeGateHeldForSession(id),
         onNotify: (approval) => {
           console.log(`[hook] enqueued approval ${approval.id.slice(0,8)} for ${approval.toolName}`);
           const summary = summarizeToolInput(approval.toolName, approval.toolInput);
@@ -732,6 +733,10 @@ async function main() {
       },
       submit_step_failed: async (a) => {
         engine.onStepFailed(a.jobId as string, a.stepId as string, a.reason as string);
+        return { ok: true };
+      },
+      submit_write_draft: async (a) => {
+        engine.onWriteDraftReady(a.jobId as string, a.stepId as string, a.draft as string);
         return { ok: true };
       },
       submit_spec: async (a) => {

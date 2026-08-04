@@ -82,6 +82,13 @@ export function focusAction(job) {
         cta: { label: 'Review replies', action: 'review-replies', stepId: step.id },
       };
     }
+    if (step.type === 'action' && step.state === 'gate_pending_approval') {
+      return {
+        title: 'Approval required',
+        description: `${step.title} is an external write that needs your OK before it runs.`,
+        cta: { label: 'Review', action: 'review-gate', stepId: step.id },
+      };
+    }
     if (step.type === 'action' && step.state === 'waiting') {
       return {
         title: 'On hold',

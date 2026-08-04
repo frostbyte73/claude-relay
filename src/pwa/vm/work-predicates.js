@@ -4,6 +4,8 @@
 
 export function stepNeedsYou(s) {
   return s.state === 'reply_pending_review' || s.state === 'spec_pending_review'
+    // A human_gate action parked before an external write only runs on explicit approval.
+    || (s.type === 'action' && s.state === 'gate_pending_approval')
     // An indefinite meta.wait hold only clears when the user resumes; a timed soak
     // (resumeAt set) auto-resumes, so it's waiting on the clock, not on you.
     || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null)

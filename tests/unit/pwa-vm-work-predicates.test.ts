@@ -40,6 +40,10 @@ describe('stepNeedsYou', () => {
   it('false for a plain running step', () => {
     expect(stepNeedsYou(step({ state: 'running' }))).toBe(false);
   });
+
+  it('true for a human_gate action parked in gate_pending_approval', () => {
+    expect(stepNeedsYou(step({ type: 'action', state: 'gate_pending_approval' }))).toBe(true);
+  });
 });
 
 describe('needsYou', () => {

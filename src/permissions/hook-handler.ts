@@ -2,6 +2,15 @@ import type { Allowlist } from './allowlist.js';
 import type { ApprovalQueue, PendingApproval } from './approvals.js';
 import { ApprovalModeStore, PLAN_MODE_ALWAYS, isPlanModeReadableMcpTool } from './approval-mode.js';
 
+// An MCP call that mutates external state: not one of our own submit tools, and not
+// read-shaped. Used to hard-block writes during a human_gate action's draft phase.
+function isExternalWriteTool(toolName: string): boolean {
+  if (EDIT_TOOLS.has(toolName)) return true;
+  if (!toolName.startsWith('mcp__')) return false;      // local Bash is allowlist-scoped already
+  if (toolName.startsWith('mcp__outpost__')) return false; // our own submit/report tools
+  return !isPlanModeReadableMcpTool(toolName);
+}
+
 export interface HookInput {
   tool_name: string;
   tool_input: unknown;
@@ -43,6 +52,10 @@ export interface HandleHookOpts {
   // Lookup a session's bound action name. The orchestrator binds this when it spawns
   // a step session; PWA-spawned sessions return undefined.
   actionForSession?: (sessionId: string) => string | undefined;
+  // True while a human_gate action's session is in its draft/redraft phase (not yet
+  // approved). When set, external-write tools are denied so nothing posts before the user
+  // approves the draft — the hard backstop behind the draft→review→commit loop.
+  writeGateHeldForSession?: (sessionId: string) => boolean;
   onNotify: (approval: PendingApproval) => void;
   // Called when an action-bound session has a tool call denied by allowlist-miss.
   // The daemon stores these so the user can review + add suggested rules in the PWA.
@@ -74,7 +87,7 @@ function denyResp(reason: string): HookResponse {
 const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
-  const { hookInput, allowlist, queue, modes, cwdForSession, worktreePathForSession, actionForSession, onNotify, onActionDenial } = opts;
+  const { hookInput, allowlist, queue, modes, cwdForSession, worktreePathForSession, actionForSession, writeGateHeldForSession, onNotify, onActionDenial } = opts;
   const mode = modes.get(hookInput.session_id);
 
   // Bypass: short-circuit before any check. Equivalent to --dangerously-skip-permissions.
@@ -106,6 +119,12 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
   const worktreePath = worktreePathForSession?.(hookInput.session_id);
   const action = actionForSession?.(hookInput.session_id);
   if (action) {
+    // human_gate draft phase: the external write is held until the user approves the
+    // draft. Reads and our own submit tools still pass so the session can research and
+    // call submit_write_draft; the actual write (save_comment, etc.) is denied.
+    if (writeGateHeldForSession?.(hookInput.session_id) && isExternalWriteTool(hookInput.tool_name)) {
+      return denyResp('Held for approval — this write runs only after you approve the draft in the PWA.');
+    }
     if (allowlist.allows(hookInput.tool_name, hookInput.tool_input, projectCwd, action, worktreePath, hookInput.session_id)) {
       return allowResp();
     }
