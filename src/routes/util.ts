@@ -12,3 +12,14 @@ export async function readJsonBody<T>(req: NodeJS.ReadableStream): Promise<T | n
   if (!body) return null;
   try { return JSON.parse(body) as T; } catch { return null; }
 }
+
+// "24h", "7d", "90m", or a bare millisecond count. Anything else (including
+// "all"/missing) means no cutoff.
+export function parseWindowMs(raw: string | null): number | undefined {
+  if (!raw || raw === 'all') return undefined;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const m = raw.match(/^(\d+)(m|h|d)$/);
+  if (!m) return undefined;
+  const unitMs = m[2] === 'm' ? 60_000 : m[2] === 'h' ? 3_600_000 : 86_400_000;
+  return Number(m[1]) * unitMs;
+}

@@ -53,12 +53,12 @@ export function orchestratorStepShim(job) {
   return { state: 'resolved', events: [{ kind: 'spawned', at: start }, { kind: 'resolved', at: end }] };
 }
 
-// A real step's state/failure live on the step, but the engine records its timing
-// only on the JOB timeline (step_started → step_resolved/step_merged/step_failed) —
-// step.events is declared but never populated. Without this the terminal chip falls
-// back to createdAt→updatedAt, and a later plan reconcile bumps every surviving
-// step's updatedAt to the same instant, so all steps read one bogus multi-day
-// duration. Synthesize the spawned+terminal pair the chip needs from the timeline.
+// Legacy fallback for job records written before the engine wrote step.events:
+// synthesize the spawned+terminal pair the chip needs from the JOB timeline
+// (step_started → step_resolved/step_merged/step_failed). Without it those steps
+// fall back to createdAt→updatedAt, and a later plan reconcile bumps every
+// surviving step's updatedAt to the same instant, so all of them read one bogus
+// multi-day duration.
 export function withStepTiming(job, step) {
   if (step.events && step.events.length) return step;
   const { start, end } = runBounds(job.events ?? [], {

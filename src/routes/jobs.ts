@@ -8,6 +8,7 @@ import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { readBody, readJsonBody } from './util.js';
 import { serializeJob } from '../work/job-liveness.js';
+import { readJobEvents } from '../storage/job-event-log.js';
 
 export interface JobsRoutesDeps {
   jobQueue: JobQueue;
@@ -16,10 +17,14 @@ export interface JobsRoutesDeps {
   scheduler: Scheduler;
   sessionStore: SessionStore;
   worktreeManager: WorktreeManager;
+  jobsDir: string;
 }
 
+const DEFAULT_EVENT_LIMIT = 500;
+const MAX_EVENT_LIMIT = 5000;
+
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
-  const { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager } = deps;
+  const { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager, jobsDir } = deps;
 
   const serialize = (j: JobRecord) =>
     serializeJob(j, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job));
@@ -39,6 +44,19 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: serialize(j) }));
+  });
+
+  // Whole timeline from the spill log — the JobRecord itself only keeps the last 50.
+  server.route('GET', '/api/work/jobs/:id/events', (req, res) => {
+    const path = (req.url ?? '').split('?')[0]!;
+    const m = path.match(/^\/api\/work\/jobs\/([\w-]+)\/events$/);
+    if (!m || !jobQueue.get(m[1]!)) { res.statusCode = 404; res.end('not found'); return; }
+    const url = new URL(req.url ?? '', 'http://internal');
+    const raw = Number(url.searchParams.get('limit') ?? DEFAULT_EVENT_LIMIT);
+    const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), MAX_EVENT_LIMIT) : DEFAULT_EVENT_LIMIT;
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ events: readJobEvents(jobsDir, m[1]!, limit) }));
   });
 
   server.route('POST', '/api/work/jobs', async (req, res) => {

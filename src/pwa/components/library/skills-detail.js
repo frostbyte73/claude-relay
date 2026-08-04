@@ -1,7 +1,7 @@
-// Skills library — detail pane (header + actions, pending edit/proposal
-// review card, denial suggestions, rendered SKILL.md, Permissions + Recent
-// runs two-column grid). Registered as the 'skills' surface's renderDetail
-// in shell/surfaces.js.
+// Skills library — detail pane (header + actions, pending edit/proposal review
+// card, denial suggestions, rendered SKILL.md, then a stack of Permissions,
+// Scorecard and the self-reported journal). Registered as the 'skills' surface's
+// renderDetail in shell/surfaces.js.
 
 import { actions, editFor, findEditBySession } from '../../state/actions.js';
 import { actionsApi } from '../../net/actions.js';
@@ -17,6 +17,7 @@ import { emptyState } from '../shell/placeholder.js';
 import { openPalette } from '../palette/index.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { renderComposeForm } from './compose.js';
+import { scorecardSectionHtml, wireScorecard } from './scorecard-card.js';
 import { mountInlineSession } from '../work/inline-session.js';
 
 export function renderDetail(mount, deps) {
@@ -112,11 +113,15 @@ export function renderDetail(mount, deps) {
     view.innerHTML = skillHtml(item, library.get(), state, null);
     wire(view, item);
     wireDenials(view, item, state);
+    wireScorecard(view);
   };
 
   paint();
   library.loadPermissionGroups();
-  if (selection && !selection.startsWith('new:')) library.loadJournal(selection);
+  if (selection && !selection.startsWith('new:')) {
+    library.loadJournal(selection);
+    library.loadScorecard(selection);
+  }
   if (!actions.get().loaded && !actions.get().loading) actions.load();
 
   const unsubActions = actions.subscribe(paint);
@@ -164,7 +169,8 @@ function skillHtml(item, libState, state, edit) {
 
     <div class="lib-sections">
       ${permissionsSectionHtml(item, libState)}
-      ${recentRunsSectionHtml(item, libState)}
+      ${scorecardSectionHtml(item, libState)}
+      ${journalSectionHtml(item, libState)}
     </div>
   `;
 }
@@ -318,21 +324,22 @@ function permissionsSectionHtml(item, libState) {
   `;
 }
 
-function recentRunsSectionHtml(item, libState) {
+function journalSectionHtml(item, libState) {
   const loading = libState.journalLoading?.has?.(item.name);
   const entries = libState.journalByAction?.get?.(item.name);
   let body;
   if (loading && !entries) {
     body = '<div class="lib-empty-note">Loading…</div>';
   } else if (!entries || entries.length === 0) {
-    body = '<div class="lib-empty-note">No runs logged yet.</div>';
+    body = '<div class="lib-empty-note">No lessons logged yet.</div>';
   } else {
     body = entries.slice().reverse().map(journalRowHtml).join('')
       + `<button type="button" class="lib-view-all" data-action="view-all-runs">View all runs →</button>`;
   }
   return `
     <div class="o-section lib-section">
-      <h4 class="lib-section-hdr o-microhead">Recent runs${entries?.length ? ` · ${entries.length}` : ''}</h4>
+      <h4 class="lib-section-hdr o-microhead">Self-reported lessons${entries?.length ? ` · ${entries.length}` : ''}</h4>
+      <div class="lib-runs-note">What the action wrote about its own runs — its claims, not measured outcomes.</div>
       <div class="lib-runs-list">${body}</div>
     </div>
   `;

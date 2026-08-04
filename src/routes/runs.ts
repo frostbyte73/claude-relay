@@ -2,6 +2,7 @@ import type { Server } from '../server.js';
 import type { RunFilters, RunKind, RunsStore } from '../storage/runs-store.js';
 import type { UsageLedger } from '../integrations/usage-ledger.js';
 import type { AccountUsageSnapshot } from '../integrations/usage-poller.js';
+import { parseWindowMs } from './util.js';
 
 export interface RunsRoutesDeps {
   runsStore: RunsStore;
@@ -15,17 +16,6 @@ const RUN_KINDS: ReadonlySet<string> = new Set(['sess', 'track', 'sched']);
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 const DEFAULT_BREAKDOWN_WINDOW_MS = 5 * 60 * 60 * 1000;
-
-// "24h", "7d", "90m", or a bare millisecond count. Anything else (including "all"/missing) = no cutoff.
-function parseWindowMs(raw: string | null): number | undefined {
-  if (!raw || raw === 'all') return undefined;
-  if (/^\d+$/.test(raw)) return Number(raw);
-  const m = raw.match(/^(\d+)(m|h|d)$/);
-  if (!m) return undefined;
-  const n = Number(m[1]);
-  const unitMs = m[2] === 'm' ? 60_000 : m[2] === 'h' ? 3_600_000 : 86_400_000;
-  return n * unitMs;
-}
 
 function filtersFromQuery(url: URL): RunFilters {
   const windowMs = parseWindowMs(url.searchParams.get('window'));

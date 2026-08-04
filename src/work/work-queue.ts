@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { JobRecord } from './work-types.js';
+import { deleteJobEventLog } from '../storage/job-event-log.js';
 
 export type QueueEvent =
   | { kind: 'upsert'; jobId: string; job: JobRecord }
@@ -171,6 +172,7 @@ export class JobQueue {
     if (!this.index.has(id)) return;
     const path = this.jobFile(id);
     if (existsSync(path)) rmSync(path);
+    deleteJobEventLog(this.dir, id);
     this.index.delete(id);
     for (const cb of this.subscribers) cb({ kind: 'delete', jobId: id });
   }

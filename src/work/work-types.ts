@@ -72,20 +72,10 @@ export interface EditJob {
   failure?: string;
 }
 
-export type StepEventKind =
-  | 'spawned'
-  | 'state_changed'
-  | 'pr_discovered'
-  | 'pr_state_changed'
-  | 'comment_pending'
-  | 'replies_posted'
-  | 'replies_approved'
-  | 'replies_rejected'
-  | 'review_comment_added'
-  | 'merged'
-  | 'resolved'
-  | 'failed'
-  | 'cancelled';
+// The step's own run bounds, which the job timeline can't give: a plan reconcile
+// bumps every surviving step's updatedAt to the same instant, so createdAt→updatedAt
+// reads as one bogus multi-day duration. Consumed by the inline session's terminal chip.
+export type StepEventKind = 'spawned' | 'resolved' | 'failed' | 'merged';
 
 export interface StepEvent {
   id: string;

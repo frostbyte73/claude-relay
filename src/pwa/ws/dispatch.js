@@ -450,6 +450,10 @@ const broadcastHandlers = {
     import('../state/runs.js').then(({ runs }) => runs.applyWsAppend(msg.run));
   },
 
+  action_run_settled(msg) {
+    import('../state/library.js').then(({ library }) => library.invalidateScorecard(msg.action));
+  },
+
   launch_concurrency_changed(msg) {
     settings.applyLaunchConcurrency(msg.value);
   },

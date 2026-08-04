@@ -4,6 +4,9 @@
 // schema/base allowlist), and `skills` (non-Outpost skills discovered under
 // ~/.claude/skills, category 'custom' by convention). Zero DOM.
 
+import { formatCostUsd, formatDurationMs } from './runs.js';
+import { relPast } from '../utils/formatting.js';
+
 function catalogByName(state) {
   const map = new Map();
   for (const a of state.catalog ?? []) map.set(a.name, a);
@@ -75,6 +78,63 @@ export function allowlistRuleCount(allowlist) {
     + (allowlist.alwaysAllowBashPatterns?.length ?? 0)
     + (allowlist.alwaysAllowMcpPatterns?.length ?? 0)
     + (allowlist.alwaysAllowPathPatterns?.length ?? 0);
+}
+
+const OUTCOME_TONE = {
+  accepted: 'ok',
+  merged: 'ok',
+  revised: 'warn',
+  submitted: 'info',
+  failed: 'hot',
+  gave_up: 'hot',
+  abandoned: 'idle',
+  interrupted: 'idle',
+};
+
+export function outcomeTone(outcome) {
+  return OUTCOME_TONE[outcome] ?? 'info';
+}
+
+function pct(v) {
+  return typeof v === 'number' ? `${Math.round(v * 100)}%` : '—';
+}
+
+// Headline numbers for the detail pane. A null rate renders '—', never 0% — an
+// action nothing has ruled on yet has no score, which is not the same as a bad one.
+export function scorecardTiles(sc) {
+  if (!sc) return [];
+  return [
+    { key: 'runs', label: 'Runs', value: String(sc.runs), tone: 'info' },
+    { key: 'first-try', label: 'First try', value: pct(sc.firstTryRate), tone: sc.firstTryRate === null ? 'idle' : 'ok' },
+    {
+      key: 'revisions',
+      label: 'Avg revisions',
+      value: typeof sc.avgRevisions === 'number' ? sc.avgRevisions.toFixed(1) : '—',
+      tone: (sc.avgRevisions ?? 0) > 0.5 ? 'warn' : 'info',
+    },
+    {
+      key: 'failures',
+      label: 'Failures',
+      value: String((sc.outcomes?.failed ?? 0) + (sc.outcomes?.gave_up ?? 0)),
+      tone: (sc.outcomes?.failed ?? 0) + (sc.outcomes?.gave_up ?? 0) > 0 ? 'hot' : 'info',
+    },
+    { key: 'denials', label: 'Denials', value: String(sc.denials?.total ?? 0), tone: (sc.denials?.total ?? 0) > 0 ? 'warn' : 'info' },
+    { key: 'cost', label: 'Cost / run', value: formatCostUsd(sc.cost?.avgUsd ?? null), tone: 'info' },
+  ];
+}
+
+export function scorecardRows(sc, now = Date.now()) {
+  return (sc?.recent ?? []).map((r) => ({
+    id: r.id,
+    round: r.round,
+    attempt: r.attempt,
+    outcome: r.outcome ?? 'submitted',
+    tone: outcomeTone(r.outcome ?? 'submitted'),
+    durationText: typeof r.durationMs === 'number' ? formatDurationMs(r.durationMs) : '—',
+    costText: formatCostUsd(r.costUsd ?? null),
+    whenText: relPast(r.startedAt, now),
+    jobId: r.jobId,
+  }));
 }
 
 // Strips a leading `---\n...\n---\n` YAML frontmatter block before

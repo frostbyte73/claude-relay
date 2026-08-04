@@ -5,15 +5,20 @@ import {
   existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync,
   rmSync, unlinkSync, writeFileSync,
 } from 'node:fs';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { actionDirFor, ACTION_CATEGORIES } from '../actions/registry.js';
+import { buildScorecard } from '../actions/scorecard.js';
 import type { ActionsStore } from '../storage/actions-store.js';
+import type { ActionRunsStore } from '../storage/action-runs-store.js';
+import type { ActionDenial, DenialsStore } from '../storage/denials-store.js';
+import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { DaemonConfig } from '../config.js';
 import { ensureActionsInstalled, bundledRepoDir } from '../setup-actions.js';
-import { readJsonBody } from './util.js';
+import { parseWindowMs, readJsonBody } from './util.js';
 
 export interface ActionsRoutesDeps {
   outpostActionsDir: string;
@@ -23,10 +28,15 @@ export interface ActionsRoutesDeps {
   config: DaemonConfig;
   actionRegistry: ActionRegistry;
   actionsStore: ActionsStore;
+  actionRunsStore: ActionRunsStore;
+  denialsStore: DenialsStore;
+  actionRunLedger: ActionRunLedger;
   manager: SessionManager;
   engine: WorkEngine;
   notifyAll: (message: unknown) => void;
 }
+
+const DEFAULT_SCORECARD_WINDOW = '30d';
 
 // Hook-facing handlers the daemon wires into HookServer/MCP after this factory
 // runs. The action-edit + denial state they close over lives here so the whole
@@ -47,7 +57,8 @@ export interface ActionsRoutesHandlers {
 export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): ActionsRoutesHandlers {
   const {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
-    actionRegistry, actionsStore, manager, engine, notifyAll,
+    actionRegistry, actionsStore, actionRunsStore, denialsStore, actionRunLedger,
+    manager, engine, notifyAll,
   } = deps;
 
   // ── local helpers ──────────────────────────────────────────────────────
@@ -195,19 +206,6 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // Records every tool call that action sessions had blocked by allowlist-miss.
   // The PWA surfaces these as one-click "Add to allowlist" suggestions so the
   // user can see what the action tried that they overlooked.
-  interface ActionDenial {
-    id: string;
-    actionName: string;
-    sessionId: string;
-    toolName: string;
-    toolInput: unknown;
-    suggested: { kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string };
-    at: number;
-    count: number;  // bumped when an identical denial recurs
-  }
-  const DENIALS_PER_ACTION = 50;
-  const denialsByAction = new Map<string, ActionDenial[]>();
-
   function suggestRule(toolName: string, toolInput: unknown): ActionDenial['suggested'] {
     if (toolName === 'Bash') {
       const cmd = (toolInput as { command?: string })?.command ?? '';
@@ -242,26 +240,23 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     return { kind: 'tool', value: toolName };
   }
 
+  // Score the rejected draft and open the redraft replacing it. Feedback arriving
+  // before any proposal was posted isn't a rejection — the same drafting round just
+  // got a new brief, so leave its run open.
+  function redraft(sessionId: string, hadProposal: boolean): void {
+    if (!hadProposal) return;
+    actionRunLedger.closeExternal(sessionId, 'submitted');
+    actionRunLedger.verdictExternal(sessionId, 'revised');
+    actionRunLedger.openExternal({ action: 'meta.build-action', round: 'redraft', sessionId });
+  }
+
   const recordActionDenial: ActionsRoutesHandlers['recordActionDenial'] = ({ actionName, sessionId, toolName, toolInput }) => {
-    const list = denialsByAction.get(actionName) ?? [];
     const suggested = suggestRule(toolName, toolInput);
-    // Collapse repeats: same suggested rule for the same tool = bump count.
-    const existing = list.find((d) => d.toolName === toolName && d.suggested.kind === suggested.kind && d.suggested.value === suggested.value);
-    if (existing) {
-      existing.count += 1;
-      existing.at = Date.now();
-    } else {
-      list.unshift({
-        id: randomUUID(),
-        actionName, sessionId, toolName, toolInput,
-        suggested,
-        at: Date.now(),
-        count: 1,
-      });
-      if (list.length > DENIALS_PER_ACTION) list.length = DENIALS_PER_ACTION;
-    }
-    denialsByAction.set(actionName, list);
-    console.log(`[deny] ${actionName} ${toolName} → suggest ${suggested.kind}:${suggested.value} (count ${existing?.count ?? 1})`);
+    const denial = denialsStore.record({
+      actionName, sessionId, toolName, toolInput, suggested,
+      runId: actionRunLedger.noteDenial(sessionId),
+    });
+    console.log(`[deny] ${actionName} ${toolName} → suggest ${suggested.kind}:${suggested.value} (count ${denial.count})`);
     try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
   };
 
@@ -335,12 +330,33 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       startedAt: e.startedAt,
       proposal: e.proposal,
     }));
-    const denials: Record<string, ActionDenial[]> = {};
-    for (const [name, list] of denialsByAction) denials[name] = list;
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ actions, catalog, skills, edits, denials }));
+    res.end(JSON.stringify({ actions, catalog, skills, edits, denials: denialsStore.all() }));
   });
+
+  function handleScorecard(req: IncomingMessage, res: ServerResponse): void {
+    const path = (req.url ?? '').split('?')[0]!;
+    const m = path.match(/^\/api\/actions\/([^/]+)\/scorecard$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const name = decodeURIComponent(m[1]!);
+    const url = new URL(req.url ?? '', 'http://internal');
+    const windowMs = parseWindowMs(url.searchParams.get('window') ?? DEFAULT_SCORECARD_WINDOW);
+    const now = Date.now();
+    const scorecard = buildScorecard(
+      name,
+      actionRunsStore.listByAction(name),
+      denialsStore.list(name),
+      { now, ...(windowMs !== undefined ? { windowMs } : {}) },
+    );
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ scorecard }));
+  }
+
+  // An action with no recorded runs answers 200 with a zeroed card, not 404 — a
+  // freshly-created action should render "no runs yet", not an error.
+  server.route('GET', '/api/actions/:name/scorecard', handleScorecard);
 
   // Dismiss a single denial entry (after the user adds the rule, or just ignores it).
   server.route('DELETE', '/api/actions/:name/denials/:denialId', async (req, res) => {
@@ -348,11 +364,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const name = decodeURIComponent(m[1]!);
     const denialId = decodeURIComponent(m[2]!);
-    const list = denialsByAction.get(name);
-    if (list) {
-      const next = list.filter((d) => d.id !== denialId);
-      if (next.length === 0) denialsByAction.delete(name);
-      else denialsByAction.set(name, next);
+    if (denialsStore.dismiss(name, denialId)) {
       try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
     }
     res.statusCode = 204;
@@ -364,7 +376,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials(?:\?|$)/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const name = decodeURIComponent(m[1]!);
-    if (denialsByAction.delete(name)) {
+    if (denialsStore.clear(name)) {
       try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
     }
     res.statusCode = 204;
@@ -403,6 +415,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     manager.spawnDetached(sessionId, outpostActionsDir, actionEditEnv(sessionId, envelopePath, null), 'default');
     manager.tagKind(sessionId, 'action-edit');
     engine.bindAction(sessionId, 'meta.build-action');
+    actionRunLedger.openExternal({ action: 'meta.build-action', round: 'draft', sessionId });
     engine.stampActionSession(sessionId, 'meta.build-action', proposedName ? `New action: ${proposedName}` : 'New action');
     manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-action' } });
     const edit: ActionEdit = {
@@ -437,10 +450,12 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     // forward the message to the same session, clear any prior proposal, and reuse it.
     const existing = actionEdits.get(key);
     if (existing) {
+      const hadProposal = !!existing.proposal;
       existing.feedback = feedback;
       existing.status = 'editing';
       existing.proposal = undefined;
       setEdit(key, existing);
+      redraft(existing.sessionId, hadProposal);
       const followup = feedback
         ? `Replacement feedback from the user:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (skill_md_before may be stale if you already applied a draft) and post a new proposal.`
         : 'Replan with no new feedback — refresh the proposal.';
@@ -466,6 +481,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     manager.spawnDetached(sessionId, dir, actionEditEnv(sessionId, envelopePath, name), 'default');
     manager.tagKind(sessionId, 'action-edit');
     engine.bindAction(sessionId, 'meta.build-action');
+    actionRunLedger.openExternal({ action: 'meta.build-action', round: 'draft', sessionId });
     engine.stampActionSession(sessionId, 'meta.build-action', `Edit action: ${name}`);
     manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-action' } });
     setEdit(key, {
@@ -515,6 +531,8 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     }
     edit.status = 'applying';
     setEdit(key, edit);
+    actionRunLedger.closeExternal(edit.sessionId, 'submitted');
+    actionRunLedger.verdictExternal(edit.sessionId, 'accepted');
     void manager.close(edit.sessionId).catch(() => { /* tolerate */ });
     // Re-symlink into ~/.claude/skills, then reload the registry so the new action
     // reaches the catalog in the same actions_changed broadcast clearEdit fires —
@@ -538,10 +556,12 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const payload = await readJsonBody<{ feedback?: string }>(req);
     const feedback = (payload?.feedback ?? '').trim();
     if (!feedback) { res.statusCode = 400; res.end('feedback required'); return; }
+    const hadProposal = !!edit.proposal;
     edit.feedback = feedback;
     edit.status = 'editing';
     edit.proposal = undefined;
     setEdit(key, edit);
+    redraft(edit.sessionId, hadProposal);
     const cwd = edit.actionName ? join(outpostActionsDir, edit.actionName) : outpostActionsDir;
     const followup = `Replacement feedback from the user:\n\n${feedback}\n\nDraft a new proposal that addresses this, then POST it again.`;
     manager.sendOrResume(
@@ -561,6 +581,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const located = findEditBySession(sessionId);
     if (located) {
       void manager.close(located.edit.sessionId).catch(() => { /* tolerate */ });
+      actionRunLedger.closeExternal(located.edit.sessionId, 'abandoned');
       clearEdit(located.key);
     }
     res.statusCode = 204; res.end();
@@ -629,7 +650,9 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
 
   function dropEditForSession(sessionId: string): void {
     const located = findEditBySession(sessionId);
-    if (located) clearEdit(located.key);
+    if (!located) return;
+    actionRunLedger.closeExternal(sessionId, 'abandoned');
+    clearEdit(located.key);
   }
 
   return { recordActionDenial, onActionProposalHandler, dropEditForSession };

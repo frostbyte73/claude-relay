@@ -19,6 +19,8 @@ const stepPath = (id, stepId) => `${jobPath(id)}/steps/${encodeURIComponent(step
 export const workApi = {
   listJobs()                       { return request('/jobs'); },
   getJob(id)                       { return request(jobPath(id)); },
+  // Whole timeline from the spill log; job.events itself is capped at the last 50.
+  getJobEvents(id, limit = 1000)   { return request(`${jobPath(id)}/events?limit=${encodeURIComponent(limit)}`); },
   createJob(body)                  { return request('/jobs', { method: 'POST', body: JSON.stringify(body) }); },
   promoteFromSession(sessionId)    { return request(`/jobs/from-session/${encodeURIComponent(sessionId)}`, { method: 'POST', body: '{}' }); },
   approve(id, body)                { return request(`${jobPath(id)}/approve`, { method: 'POST', body: JSON.stringify(body) }); },

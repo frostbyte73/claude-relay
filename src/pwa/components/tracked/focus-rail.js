@@ -9,6 +9,7 @@ import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { focusAction, sessionsOnJob } from '../../vm/tracked.js';
 import { renderActivityStream } from '../work/activity-stream.js';
+import { workApi } from '../../net/work.js';
 import { emptyState } from '../shell/placeholder.js';
 import { openSession } from '../../app-bridge.js';
 
@@ -171,12 +172,14 @@ export function renderContext(mount) {
         nav.select('sessions', sessionId);
       });
     });
-    mount.querySelector('[data-action="full-audit"]')?.addEventListener('click', (e) => {
+    mount.querySelector('[data-action="full-audit"]')?.addEventListener('click', async (e) => {
       const full = mount.querySelector('.focus-activity-full');
       const btn = e.currentTarget;
       const opening = full.hasAttribute('hidden');
       if (opening) {
-        full.innerHTML = renderActivityStream(job);
+        // job.events is the last 50; the spill log has the rest.
+        const events = await workApi.getJobEvents(job.id).then((r) => r?.events).catch(() => null);
+        full.innerHTML = renderActivityStream(events?.length ? { ...job, events } : job);
         full.hidden = false;
         mount.querySelector('.focus-activity-tail').hidden = true;
         btn.textContent = 'Hide audit log';

@@ -20,6 +20,8 @@ import type {
   ProposedStep,
   ReviewComment,
   Step,
+  StepEvent,
+  StepEventKind,
   WorkspaceRef,
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
@@ -30,12 +32,14 @@ import type { Action, ExternalEvent, HandlerCtx } from '../steps/types.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
 import { shouldAutoFixCi, ciFailureSignature } from '../steps/open-pr.js';
+import { appendJobEvent } from '../storage/job-event-log.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import type { LaunchGovernor, LaunchState, LaunchPriority } from './launch-governor.js';
 
 const MAX_EVENTS_PER_JOB = 50;
+const MAX_STEP_EVENTS = 40;
 
 // How long a step session must stay completely silent after ending its turn before the
 // "never submitted" failure lands. Sized for the quiet stretch between a parent yielding
@@ -946,7 +950,7 @@ export class WorkEngine {
       didResolve = true;
       const next: Step = { ...s, state: 'resolved', updatedAt: this.ctx.now() };
       if (payload?.output && next.type === 'action') next.output = payload.output;
-      return next;
+      return this.appendStepEvent(next, 'resolved', 'session');
     });
     if (didResolve) {
       this.mutate(jobId, (j) => this.appendEvent(j, {
@@ -1013,7 +1017,10 @@ export class WorkEngine {
       // reviewed:true so owesStepReview skips it — a hold has no output worth an
       // orchestrator reflection, and we don't want a Claude session spawned between
       // the wait and the step it's gating. The gated step's own settle still reviews.
-      return { ...s, state: 'resolved', resumeAt: undefined, output, reviewed: true, updatedAt: this.ctx.now() };
+      return this.appendStepEvent(
+        { ...s, state: 'resolved', resumeAt: undefined, output, reviewed: true, updatedAt: this.ctx.now() },
+        'resolved', by === 'user' ? 'user' : 'orchestrator',
+      );
     });
     if (!resolved) return;
     this.mutate(jobId, (j) => this.appendEvent(j, {
@@ -1198,7 +1205,7 @@ export class WorkEngine {
   }
 
   onStepFailed(jobId: string, stepId: string, reason: string): void {
-    this.mutateStep(jobId, stepId, (s) => ({ ...s, failure: { reason, at: this.ctx.now() } }));
+    this.mutateStep(jobId, stepId, (s) => this.appendStepEvent({ ...s, failure: { reason, at: this.ctx.now() } }, 'failed', 'session'));
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_failed', who: 'session', stepId, body: `${this.stepLabel(jobId, stepId)} — ${reason}`,
     }));
@@ -1272,7 +1279,7 @@ export class WorkEngine {
 
   onMergeApproved(jobId: string, stepId: string): void {
     this.mutateStep(jobId, stepId, (s) => s.type === 'open-pr'
-      ? ({ ...s, state: 'merged', prState: 'merged', failure: undefined, updatedAt: this.ctx.now() } as OpenPrStep)
+      ? this.appendStepEvent({ ...s, state: 'merged', prState: 'merged', failure: undefined, updatedAt: this.ctx.now() } as OpenPrStep, 'merged', 'user')
       : s);
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_merged', who: 'user', stepId, body: this.stepLabel(jobId, stepId),
@@ -1290,6 +1297,7 @@ export class WorkEngine {
     const after = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     // Emit a step_merged event when the watcher transitions an open-pr step into merged.
     if (before && after && before.state !== 'merged' && after.state === 'merged') {
+      this.mutateStep(jobId, stepId, (s) => this.appendStepEvent(s, 'merged', 'pr-watcher'));
       this.mutate(jobId, (j) => this.appendEvent(j, {
         kind: 'step_merged', who: 'pr-watcher', stepId, body: this.stepLabel(jobId, stepId),
       }));
@@ -2401,7 +2409,7 @@ export class WorkEngine {
         this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
         this.bindAction(sessionId, actionName);
         this.stampActionSession(sessionId, actionName, s.title || 'Step');
-        this.mutateStep(jobId, stepId, (st) => ({ ...st, sessionId }) as Step);
+        this.mutateStep(jobId, stepId, (st) => this.appendStepEvent({ ...st, sessionId } as Step, 'spawned', 'orchestrator'));
         this.mutate(jobId, (j) => this.appendEvent(j, {
           kind: 'step_started', who: 'orchestrator', stepId, body: this.stepLabel(jobId, stepId),
         }));
@@ -2429,6 +2437,12 @@ export class WorkEngine {
     });
   }
 
+  private appendStepEvent(s: Step, kind: StepEventKind, who: StepEvent['who']): Step {
+    const events = [...(s.events ?? []), { id: this.ctx.newId(), at: this.ctx.now(), kind, who }];
+    while (events.length > MAX_STEP_EVENTS) events.shift();
+    return { ...s, events };
+  }
+
   private mutateOpenPrStep(jobId: string, stepId: string, fn: (s: OpenPrStep) => OpenPrStep): void {
     this.opts.queue.mutate(jobId, (j) => {
       const steps = j.steps.map((s) => s.id === stepId && s.type === 'open-pr' ? fn(s) : s);
@@ -2437,8 +2451,9 @@ export class WorkEngine {
   }
 
   private appendEvent(j: JobRecord, evt: { kind: JobEventKind; who: JobEvent['who']; stepId?: string; body?: string }): JobRecord {
-    const events = [...(j.events ?? [])];
-    events.push({ id: this.ctx.newId(), at: this.ctx.now(), ...evt });
+    const event: JobEvent = { id: this.ctx.newId(), at: this.ctx.now(), ...evt };
+    appendJobEvent(this.ctx.jobsDir, j.id, event);
+    const events = [...(j.events ?? []), event];
     while (events.length > MAX_EVENTS_PER_JOB) events.shift();
     return { ...j, events };
   }

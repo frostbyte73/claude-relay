@@ -50,6 +50,9 @@ import { homeOrKnownCwd } from './git/known-cwd.js';
 import { PreferencesStore } from './storage/preferences-store.js';
 import { registerPreferencesRoutes } from './routes/preferences.js';
 import { RunsStore } from './storage/runs-store.js';
+import { ActionRunsStore } from './storage/action-runs-store.js';
+import { DenialsStore } from './storage/denials-store.js';
+import { ActionRunLedger } from './work/action-run-ledger.js';
 import { UsageLedger } from './integrations/usage-ledger.js';
 import { createRunsCapture, type ScheduleRunContext } from './storage/runs-capture.js';
 import { registerRunsRoutes } from './routes/runs.js';
@@ -364,6 +367,15 @@ async function main() {
   });
   const runsStore = new RunsStore(join(RUNTIME_DIR, 'runs.jsonl'));
   const usageLedger = new UsageLedger(join(RUNTIME_DIR, 'usage-ledger.json'));
+  const actionRunsStore = new ActionRunsStore(join(RUNTIME_DIR, 'action-runs.jsonl'));
+  const denialsStore = new DenialsStore(join(RUNTIME_DIR, 'denials.json'));
+  const actionRunLedger = new ActionRunLedger({
+    store: actionRunsStore,
+    isHumanGate: (name) => !!actionRegistry.getAction(name)?.frontmatter.outpost.human_gate,
+    onSettled: (action) => {
+      try { notifyAll({ type: 'action_run_settled', action }); } catch { /* during startup */ }
+    },
+  });
   const runsCapture = createRunsCapture({
     runsStore,
     usageLedger,
@@ -514,6 +526,9 @@ async function main() {
       latestStatuslineBySession.set(sessionId, msg);
       manager.broadcast(sessionId, msg);
       runsCapture.onStatusline(sessionId, msg);
+      if (typeof payload.cost?.total_cost_usd === 'number') {
+        actionRunLedger.noteSessionCost(sessionId, payload.cost.total_cost_usd);
+      }
     },
     onStopHook: async (body) => {
       let payload: { session_id?: string };
@@ -828,7 +843,7 @@ async function main() {
   });
   registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher });
   registerProjectsRoutes(server, { sessionStore, projectRegistry });
-  registerJobsRoutes(server, { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager });
+  registerJobsRoutes(server, { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager, jobsDir: join(RUNTIME_DIR, 'jobs') });
   registerPushRoutes(server, { pushStore, pushSender, userPrsWatcher });
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
@@ -899,7 +914,8 @@ async function main() {
 
   const actionRoutes = registerActionsRoutes(server, {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
-    actionRegistry, actionsStore, manager, engine, notifyAll,
+    actionRegistry, actionsStore, actionRunsStore, denialsStore, actionRunLedger,
+    manager, engine, notifyAll,
   });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
@@ -1156,6 +1172,12 @@ async function main() {
     console.log(`[daemon] listening on https://${config.host ?? tsEnv.hostname}:${config.httpsPort} (${config.bindAddress ?? tsEnv.ipv4})`);
   }
   console.log(`[daemon] hook server on http://127.0.0.1:${HOOK_PORT} (loopback only)`);
+
+  // Must precede anything that can mutate a job (the scheduler's first fire,
+  // reconcileInterruptedSteps below) or those rounds settle before the ledger is
+  // watching and their runs stay dangling.
+  actionRunLedger.attach(jobQueue);
+  actionRunLedger.reconcileAtBoot(jobQueue.list());
 
   seedBuiltinSchedules(schedulesStore, homedir());
   scheduler.start();

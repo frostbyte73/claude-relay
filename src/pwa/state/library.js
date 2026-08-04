@@ -1,15 +1,17 @@
 import { createStore } from './create-store.js';
 import { actionsApi } from '../net/actions.js';
 
-// Skills-library detail state: the permission-groups catalog (static-ish,
-// loaded once) and a per-skill journal-entries cache (loaded lazily per
-// selection, since fetching all 40+ actions' journals up front is wasted work).
+// Skills-library detail state: the permission-groups catalog (static-ish, loaded
+// once) plus per-skill journal-entry and scorecard caches (loaded lazily per
+// selection, since fetching all 40+ actions' up front is wasted work).
 
 const store = createStore({
   permissionGroups: [],
   permissionGroupsLoaded: false,
   journalByAction: new Map(),
   journalLoading: new Set(),
+  scorecardByAction: new Map(),
+  scorecardLoading: new Set(),
 });
 
 export const library = {
@@ -47,6 +49,34 @@ export const library = {
         return { ...cur, journalLoading };
       });
     }
+  },
+
+  async loadScorecard(name, { force = false } = {}) {
+    if (!name) return;
+    const s = store.get();
+    if (s.scorecardLoading.has(name)) return;
+    if (!force && s.scorecardByAction.has(name)) return;
+    store.set((cur) => ({ ...cur, scorecardLoading: new Set(cur.scorecardLoading).add(name) }));
+    let card = null;
+    try {
+      card = (await actionsApi.scorecard(name))?.scorecard ?? null;
+    } catch {
+      // Detail view falls back to "no runs recorded yet" on failure.
+    }
+    store.set((cur) => {
+      const scorecardByAction = new Map(cur.scorecardByAction);
+      if (card) scorecardByAction.set(name, card);
+      const scorecardLoading = new Set(cur.scorecardLoading);
+      scorecardLoading.delete(name);
+      return { ...cur, scorecardByAction, scorecardLoading };
+    });
+  },
+
+  // A round settled for this action — refresh only if we already had a card, so a
+  // background run doesn't fetch cards for panes nobody is looking at.
+  invalidateScorecard(name) {
+    if (!name || !store.get().scorecardByAction.has(name)) return;
+    void library.loadScorecard(name, { force: true });
   },
 };
 

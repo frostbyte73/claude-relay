@@ -34,5 +34,8 @@ export const actionsApi = {
   journal(name, limit) {
     return request(`/api/actions/${encodeURIComponent(name)}/journal${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`);
   },
+  scorecard(name, window = '30d') {
+    return request(`/api/actions/${encodeURIComponent(name)}/scorecard?window=${encodeURIComponent(window)}`);
+  },
   permissionGroups() { return request('/api/permission-groups'); },
 };

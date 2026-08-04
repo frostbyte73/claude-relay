@@ -285,6 +285,60 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   color: var(--text-dim);
 }
 
+.lib-score-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.lib-score-tile {
+  flex: 1 1 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  background: var(--bg-elev-2);
+}
+.lib-score-v {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.lib-score-v.ok   { color: var(--ok); }
+.lib-score-v.warn { color: var(--warn); }
+.lib-score-v.hot  { color: var(--danger); }
+.lib-score-v.idle { color: var(--text-dim); }
+.lib-score-k {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.lib-score-rows { display: flex; flex-direction: column; gap: 2px; }
+.lib-score-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lib-score-row:hover { background: var(--bg-elev-2); }
+.lib-score-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lib-score-row-sub {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-runs-note { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
 .lib-runs-list { display: flex; flex-direction: column; gap: 2px; }
 .lib-run-item {
   display: grid;
