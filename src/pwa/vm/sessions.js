@@ -8,17 +8,18 @@
 import { partitionSessions } from '../session-filter.js';
 import { formatDuration } from '../utils/formatting.js';
 
-// One definition of "skill session" shared by the Skill tab and the per-card
-// skill badge: sessions running a slash skill (derived skillLabel) plus the
-// backend-tagged skill/action edit kinds. Free-form is the complement.
-function isSkillSession(item) {
-  return item.skillLabel != null || item.kind === 'skill-edit' || item.kind === 'action-edit';
+// "Action" = a session Outpost spawned to run a locked-down action on the user's
+// behalf (orchestrator, step, or action/skill edit), stamped server-side as
+// sessionClass:'action'. A plain interactive session is the complement. The
+// backend edit kinds are folded in for older sessions predating sessionClass.
+function isActionSession(item) {
+  return item.sessionClass === 'action' || item.kind === 'skill-edit' || item.kind === 'action-edit';
 }
 
 function matchesTab(item, tab) {
   if (tab === 'active') return item.runState === 'foreground' || item.runState === 'background';
-  if (tab === 'skill') return isSkillSession(item);
-  if (tab === 'free-form') return (!item.kind || item.kind === 'normal') && item.skillLabel == null;
+  if (tab === 'action') return isActionSession(item);
+  if (tab === 'session') return !isActionSession(item);
   return true;
 }
 
@@ -45,7 +46,6 @@ export function sessionGroups({
   subagentCountBySession = new Map(),
   approvalSessionIds = new Set(),
   previewBySession = new Map(),
-  skillLabelBySession = new Map(),
 } = {}) {
   const flat = [];
   for (const p of projects) {
@@ -59,6 +59,8 @@ export function sessionGroups({
         lastModified: s.lastModified,
         archived: !!s.archived,
         kind: s.kind ?? 'normal',
+        sessionClass: s.sessionClass ?? 'session',
+        actionLabel: s.actionLabel ?? null,
         worktreePath: s.worktreePath,
         worktreeBranch: s.worktreeBranch,
         // Live slice wins (this tab has direct WS signals); otherwise fall
@@ -70,7 +72,6 @@ export function sessionGroups({
         subagentCount: subagentCountBySession.get(s.id) ?? 0,
         hasApproval: approvalSessionIds.has(s.id),
         preview: previewBySession.get(s.id) ?? null,
-        skillLabel: skillLabelBySession.get(s.id) ?? null,
       });
     }
   }
@@ -91,13 +92,10 @@ export function sessionGroups({
   return { running, idle, recent };
 }
 
-// Skill badge + last-turn preview, derived from a live transcript slice.
-// Shared by the list column's card preview and the session header's badge —
-// both need the same "what skill is this session running" heuristic (the
-// first user turn starting with `/`), so it lives here rather than being
-// forked per caller. See list.js's module doc for the known limitation: this
-// only works for sessions this browser session has already loaded a
-// transcript for.
+// First user turn's slash command, if any (e.g. "/oncall"). The sessions-list
+// badge no longer uses this — it reads the server-stamped actionLabel — but the
+// desktop + mobile session headers still fall back to it as a title when a
+// session's derived title is just its id prefix.
 export function deriveSkillLabel(transcript) {
   const firstUser = (transcript ?? []).find((m) => m.role === 'user' && typeof m.text === 'string' && m.text.trim());
   if (!firstUser) return null;
@@ -105,6 +103,9 @@ export function deriveSkillLabel(transcript) {
   return trimmed.startsWith('/') ? trimmed.split(/\s/)[0] : null;
 }
 
+// Last-turn preview, derived from whatever transcript slice this browser session
+// has already loaded (see list.js's module doc for the "only for opened sessions"
+// limitation).
 export function deriveLastTurnPreview(transcript) {
   const t = transcript ?? [];
   for (let i = t.length - 1; i >= 0; i -= 1) {

@@ -403,6 +403,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     manager.spawnDetached(sessionId, outpostActionsDir, actionEditEnv(sessionId, envelopePath, null), 'default');
     manager.tagKind(sessionId, 'action-edit');
     engine.bindAction(sessionId, 'meta.build-action');
+    engine.stampActionSession(sessionId, 'meta.build-action', proposedName ? `New action: ${proposedName}` : 'New action');
     manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-action' } });
     const edit: ActionEdit = {
       // Pre-populate actionName so the pending-new card shows the user's chosen
@@ -465,6 +466,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     manager.spawnDetached(sessionId, dir, actionEditEnv(sessionId, envelopePath, name), 'default');
     manager.tagKind(sessionId, 'action-edit');
     engine.bindAction(sessionId, 'meta.build-action');
+    engine.stampActionSession(sessionId, 'meta.build-action', `Edit action: ${name}`);
     manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-action' } });
     setEdit(key, {
       actionName: name,

@@ -5,13 +5,11 @@
 // (sessions-list.html is authoritative).
 //
 // Known limitation (documented, not silently papered over): the 2-line
-// last-turn preview and the `/skill-name` badge are only derivable for
-// sessions that already have a live slice in state/sessions.js — i.e. ones
-// opened at least once this browser session. Sessions the client has never
-// loaded a transcript for render without a preview line and a generic
-// "session" badge. Making this work for every session (including ones never
-// opened) needs the backend to persist a transcript-tail summary, which is
-// out of this surface's scope (see CLAUDE.md's route-factory convention).
+// last-turn preview is only derivable for sessions that already have a live
+// slice in state/sessions.js — i.e. ones opened at least once this browser
+// session. Sessions the client has never loaded a transcript for render without
+// a preview line. (The action/session badge is NOT subject to this — it's
+// stamped server-side onto the session record, so it's always present.)
 
 import { sessions } from '../../state/sessions.js';
 import { approvals } from '../../state/approvals.js';
@@ -19,20 +17,21 @@ import { subagents } from '../../state/subagents.js';
 import { keymap } from '../../state/keymap.js';
 import { formatCombo } from '../../utils/hotkey.js';
 import { nav } from '../../state/nav.js';
-import { sessionGroups, deriveSkillLabel, deriveLastTurnPreview, fmtElapsedDuration } from '../../vm/sessions.js';
+import { sessionGroups, deriveLastTurnPreview, fmtElapsedDuration } from '../../vm/sessions.js';
 import { escapeHtml } from '../../util.js';
 import { relPast } from '../../utils/formatting.js';
 import { openPalette } from '../palette/index.js';
 import { startSession } from '../../session-launch.js';
 
 const TABS = [
-  { key: 'active', label: 'Active' },
   { key: 'all', label: 'All' },
-  { key: 'skill', label: 'Skill' },
-  { key: 'free-form', label: 'Free-form' },
+  { key: 'active', label: 'Active' },
+  { key: 'session', label: 'Session' },
+  { key: 'action', label: 'Action' },
 ];
 
 const TAB_KEY = 'op:sessions:tab';
+const TAB_KEYS = new Set(TABS.map((t) => t.key));
 
 function idleFor(lastModified) {
   const ms = Date.now() - (lastModified ?? Date.now());
@@ -73,24 +72,21 @@ function approvalSessionIds() {
   return new Set((approvals.get().pending ?? []).map((a) => a.sessionId).filter(Boolean));
 }
 
-// Best-effort skill badge + last-turn preview, derived from whatever transcript
-// this browser session has already loaded for a live slice (see module doc).
-function liveMetaBySession() {
-  const skillLabelBySession = new Map();
-  const previewBySession = new Map();
+// Best-effort last-turn preview, derived from whatever transcript this browser
+// session has already loaded for a live slice (see module doc).
+function previewBySession() {
+  const map = new Map();
   for (const [id, slice] of sessions.get().sessionsById) {
-    const skill = deriveSkillLabel(slice.transcript);
-    if (skill) skillLabelBySession.set(id, skill);
     const preview = deriveLastTurnPreview(slice.transcript);
-    if (preview) previewBySession.set(id, preview);
+    if (preview) map.set(id, preview);
   }
-  return { skillLabelBySession, previewBySession };
+  return map;
 }
 
 function cardHtml(item, { isActive, runningMs }) {
-  const skillBadge = item.skillLabel
-    ? `<span class="o-pill code sess-skill">${escapeHtml(item.skillLabel)}</span>`
-    : `<span class="o-pill code sess-skill free">session</span>`;
+  const isAction = item.sessionClass === 'action';
+  const badgeText = isAction ? (item.actionLabel || 'action') : 'session';
+  const skillBadge = `<span class="o-pill code sess-skill${isAction ? '' : ' free'}">${escapeHtml(badgeText)}</span>`;
   const running = item.runState === 'foreground' || item.runState === 'background';
   const iconState = running ? 'busy' : 'idle';
   let timeLabel;
@@ -132,7 +128,7 @@ function sectionHtml(label, items, selected, runningSince) {
 
 export function renderList(mount) {
   mount.classList.add('sess-list');
-  let tab = (() => { try { return localStorage.getItem(TAB_KEY) ?? 'all'; } catch { return 'all'; } })();
+  let tab = (() => { try { const t = localStorage.getItem(TAB_KEY); return t && TAB_KEYS.has(t) ? t : 'all'; } catch { return 'all'; } })();
   let filter = '';
   const runningSince = new Map();
   const itemsById = new Map();
@@ -202,8 +198,7 @@ export function renderList(mount) {
     const sessionsById = sessions.get().sessionsById;
     const subCounts = subagentCountBySession();
     const approvalIds = approvalSessionIds();
-    const { skillLabelBySession, previewBySession } = liveMetaBySession();
-    const common = { projects, sessionsById, subagentCountBySession: subCounts, approvalSessionIds: approvalIds, previewBySession, skillLabelBySession };
+    const common = { projects, sessionsById, subagentCountBySession: subCounts, approvalSessionIds: approvalIds, previewBySession: previewBySession() };
 
     // Unfiltered pass drives the header count and the running-duration tracker
     // (background/idle sessions still need their clock ticking even while a

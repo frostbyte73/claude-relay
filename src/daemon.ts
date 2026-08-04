@@ -240,7 +240,7 @@ async function main() {
   const projectsRoot = config.projectsRoot;
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
   const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
-  const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry, worktreeManager });
+  const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry, worktreeManager, sessionMetaDir: join(RUNTIME_DIR, 'session-meta') });
   console.log(`[daemon] projects root: ${projectsRoot}`);
 
   function findSessionTitle(id: string): string | undefined {
@@ -329,6 +329,7 @@ async function main() {
     modes,
     journalStore,
     actionRegistry,
+    writeActionMeta: (id, meta) => sessionStore.writeActionMeta(id, meta),
   });
   const preferencesStore = new PreferencesStore(join(RUNTIME_DIR, 'preferences.json'));
   const runsStore = new RunsStore(join(RUNTIME_DIR, 'runs.jsonl'));

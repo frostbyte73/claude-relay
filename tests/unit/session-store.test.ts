@@ -73,6 +73,37 @@ describe('SessionStore', () => {
     expect(cmd.title).toBe('Ship gamekit by tomorrow morning');
   });
 
+  it('stamps action sessions from the session-meta sidecar (title + class override the transcript)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sstest-action-root-'));
+    const proj = join(root, '-test-action');
+    const metaDir = mkdtempSync(join(tmpdir(), 'sstest-action-meta-'));
+    mkdirSync(proj);
+    const tmp = tmpdir();
+    // Orchestrator sessions kick off with a bare `/meta.orchestrate <uuid>` turn, so the
+    // transcript-derived title would be the raw UUID. The sidecar must win.
+    writeFileSync(
+      join(proj, 'sess-orch.jsonl'),
+      JSON.stringify({ type: 'user', cwd: tmp, message: { content: '<command-name>/meta.orchestrate</command-name><command-args>3a630f00-01f6-4e18</command-args>' } }) + '\n',
+    );
+    // A plain interactive session with no sidecar stays sessionClass-less.
+    writeFileSync(
+      join(proj, 'sess-plain.jsonl'),
+      JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'poke around the repo' } }) + '\n',
+    );
+    const store = new SessionStore({ root, sessionMetaDir: metaDir });
+    store.writeActionMeta('sess-orch', { action: 'meta.orchestrate', title: 'Ship the login flow' });
+
+    const sessions = store.listProjects()[0]!.sessions;
+    const orch = sessions.find((s) => s.id === 'sess-orch')!;
+    expect(orch.title).toBe('Ship the login flow');
+    expect(orch.sessionClass).toBe('action');
+    expect(orch.actionLabel).toBe('meta.orchestrate');
+
+    const plain = sessions.find((s) => s.id === 'sess-plain')!;
+    expect(plain.sessionClass).toBeUndefined();
+    expect(plain.title).toContain('Poke around');
+  });
+
   it('carries structured Task* tool_use fields and surfaces their tool_result', () => {
     // The PWA's todos panel is rebuilt from the disk transcript on reload, so session-store
     // has to preserve enough of each Task* tool call to do that: name, input, tool_use_id,

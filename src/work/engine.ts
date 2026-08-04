@@ -112,6 +112,10 @@ export interface WorkEngineOpts {
   modes?: ApprovalModeStore;
   journalStore?: JournalStore;
   actionRegistry?: ActionRegistry;
+  // Persists a durable {action, title} marker for a spawned action session so the PWA
+  // sessions list can label + title it without loading the transcript. Wired to
+  // SessionStore.writeActionMeta in the daemon.
+  writeActionMeta?: (sessionId: string, meta: { action: string; title: string }) => void;
 }
 
 type SessionRole =
@@ -177,6 +181,15 @@ export class WorkEngine {
   bindAction(sessionId: string, actionName: string): void {
     if (!this.opts.actionsStore) return;
     this.actionBySession.set(sessionId, actionName);
+  }
+
+  // Durably marks a freshly-spawned session as an action (name + readable title) for
+  // the PWA sessions list. Unlike bindAction (in-memory, for the permission hook), this
+  // persists — so a finished orchestrator/step/edit session still reads as an action
+  // with a readable title after a daemon restart. Public so the actions route can stamp
+  // the action-builder edit sessions it spawns directly.
+  stampActionSession(sessionId: string, action: string, title: string): void {
+    this.opts.writeActionMeta?.(sessionId, { action, title });
   }
 
   // A Stop hook fired for `sessionId`. Returns true iff this Stop is owed to a round that
@@ -1842,6 +1855,7 @@ export class WorkEngine {
     this.opts.sessionManager.spawnDetached(sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default');
     this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
     this.bindAction(sessionId, actionName);
+    this.stampActionSession(sessionId, actionName, this.opts.queue.get(jobId)?.title || 'Job');
     this.mutate(jobId, (j) => this.appendEvent(
       { ...j, orchestratorSessionId: sessionId, orchestratorAction: actionName, state: 'planning' },
       { kind: 'orchestrator_started', who: 'orchestrator', body: mode === 'replan' ? 'replan' : mode === 'step-review' ? 'step-review' : 'initial' },
@@ -1994,6 +2008,7 @@ export class WorkEngine {
     }, 'default');
     this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
     this.bindAction(sessionId, actionName);
+    this.stampActionSession(sessionId, actionName, s.title || 'Step');
     this.mutateStep(jobId, stepId, (st) => ({ ...st, sessionId }) as Step);
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_started',

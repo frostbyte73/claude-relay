@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { LineParser } from './stream-json.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
@@ -18,6 +18,13 @@ export interface SessionInfo {
   // Projects view filter them out. Tracked in-memory on SessionManager; lost on
   // daemon restart (acceptable — these are short-lived sessions).
   kind?: SessionKind;
+  // Set from the durable session-meta sidecar for any session Outpost spawned to
+  // run an action on the user's behalf (orchestrator, step, or action/skill edit).
+  // 'action' vs a plain interactive 'session' drives the sessions-list tabs + badge.
+  sessionClass?: 'action' | 'session';
+  // The action a `sessionClass: 'action'` session runs (e.g. `meta.orchestrate`,
+  // `code.implement`, `meta.build-action`), surfaced as the list card's badge.
+  actionLabel?: string;
   // Live proc state, annotated by GET /api/sessions from SessionManager.
   runState?: 'foreground' | 'background' | 'idle';
 }
@@ -456,16 +463,43 @@ export class SessionStore {
   private readonly root: string;
   private readonly registry: ProjectRegistry | undefined;
   private readonly worktreeManager: WorktreeManager | undefined;
+  private readonly sessionMetaDir: string | undefined;
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
   // JSONL is append-only, so size unchanged ⇒ cached timestamp still valid.
   private lastMsgTsCache = new Map<string, { size: number; ts: number | null }>();
   // Never invalidated within a daemon lifetime — restart picks up new git inits.
   private gitRepoCache = new Map<string, boolean>();
 
-  constructor(opts: { root: string; registry?: ProjectRegistry; worktreeManager?: WorktreeManager }) {
+  constructor(opts: { root: string; registry?: ProjectRegistry; worktreeManager?: WorktreeManager; sessionMetaDir?: string }) {
     this.root = opts.root;
     this.registry = opts.registry;
     this.worktreeManager = opts.worktreeManager;
+    this.sessionMetaDir = opts.sessionMetaDir;
+  }
+
+  // Durable per-session marker written when Outpost spawns an action session
+  // (orchestrator, step, or action/skill edit): the action name + a readable title.
+  // Lets the sessions list label + title action sessions without their transcript,
+  // and survives daemon restarts (unlike the in-memory action binding). Keyed by
+  // session id, so it's independent of the ~/.claude/projects/* dir encoding.
+  writeActionMeta(sessionId: string, meta: { action: string; title: string }): void {
+    if (!this.sessionMetaDir || !/^[\w-]+$/.test(sessionId)) return;
+    try {
+      mkdirSync(this.sessionMetaDir, { recursive: true, mode: 0o700 });
+      const path = join(this.sessionMetaDir, `${sessionId}.json`);
+      const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+      writeFileSync(tmp, JSON.stringify(meta), { mode: 0o600 });
+      renameSync(tmp, path);
+    } catch { /* best-effort — the session just renders as a plain interactive one */ }
+  }
+
+  private readActionMeta(id: string): { action: string; title: string } | null {
+    if (!this.sessionMetaDir || !/^[\w-]+$/.test(id)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(join(this.sessionMetaDir, `${id}.json`), 'utf8')) as { action?: unknown; title?: unknown };
+      if (typeof parsed?.action !== 'string') return null;
+      return { action: parsed.action, title: typeof parsed.title === 'string' ? parsed.title : '' };
+    } catch { return null; }
   }
 
   private isGitRepo(cwd: string): boolean {
@@ -801,6 +835,7 @@ export class SessionStore {
     try {
       unlinkSync(path);
       try { unlinkSync(join(found.projectDir, `${id}.title`)); } catch { /* no sidecar */ }
+      if (this.sessionMetaDir) { try { unlinkSync(join(this.sessionMetaDir, `${id}.json`)); } catch { /* no sidecar */ } }
       return true;
     } catch {
       return false;
@@ -812,19 +847,26 @@ export class SessionStore {
       const stat = statSync(path);
       const id = path.split('/').pop()!.replace(/\.jsonl$/, '');
       const lastModified = this.lastActivityMs(path, stat.size, stat.mtimeMs);
+      const meta = this.readActionMeta(id);
       // Persisted sidecar so titles don't shift as new content streams in; delete to force regeneration.
       const titlePath = path.replace(/\.jsonl$/, '.title');
       let cached: string | undefined;
       try { cached = readFileSync(titlePath, 'utf8').trim(); } catch { /* no sidecar */ }
-      if (cached) return { id, title: cached, lastModified, path };
-
-      const { summary, firstUserMsg } = scanTitleSources(path);
-      const rawTitle = summary ?? firstUserMsg;
-      const title = rawTitle ? cleanTitle(rawTitle) : 'Untitled session';
-      // Don't cache "Untitled session" for a brand-new session that hasn't been written to disk yet.
-      if (rawTitle) {
-        try { writeFileSync(titlePath, title); } catch { /* best-effort cache */ }
+      let title: string;
+      if (cached) {
+        title = cached;
+      } else {
+        const { summary, firstUserMsg } = scanTitleSources(path);
+        const rawTitle = summary ?? firstUserMsg;
+        title = rawTitle ? cleanTitle(rawTitle) : 'Untitled session';
+        // Don't cache "Untitled session" for a brand-new session that hasn't been written to disk yet.
+        if (rawTitle) {
+          try { writeFileSync(titlePath, title); } catch { /* best-effort cache */ }
+        }
       }
+      // An action session's stamped title/label supersedes the transcript-derived one
+      // (whose first turn is a bare `/action <uuid>` slash command → a UUID or "Untitled").
+      if (meta) return { id, title: meta.title || title, lastModified, path, sessionClass: 'action', actionLabel: meta.action };
       return { id, title, lastModified, path };
     } catch {
       return null;
