@@ -12,6 +12,8 @@ const store = createStore({
   journalLoading: new Set(),
   scorecardByAction: new Map(),
   scorecardLoading: new Set(),
+  revisionsByAction: new Map(),
+  revisionsLoading: new Set(),
 });
 
 export const library = {
@@ -77,6 +79,32 @@ export const library = {
   invalidateScorecard(name) {
     if (!name || !store.get().scorecardByAction.has(name)) return;
     void library.loadScorecard(name, { force: true });
+  },
+
+  async loadRevisions(name, { force = false } = {}) {
+    if (!name) return;
+    const s = store.get();
+    if (s.revisionsLoading.has(name)) return;
+    if (!force && s.revisionsByAction.has(name)) return;
+    store.set((cur) => ({ ...cur, revisionsLoading: new Set(cur.revisionsLoading).add(name) }));
+    let events = null;
+    try {
+      events = (await actionsApi.revisions(name))?.events ?? [];
+    } catch {
+      // Detail view falls back to "no recorded revisions yet" on failure.
+    }
+    store.set((cur) => {
+      const revisionsByAction = new Map(cur.revisionsByAction);
+      if (events) revisionsByAction.set(name, events);
+      const revisionsLoading = new Set(cur.revisionsLoading);
+      revisionsLoading.delete(name);
+      return { ...cur, revisionsByAction, revisionsLoading };
+    });
+  },
+
+  invalidateRevisions(name) {
+    if (!name || !store.get().revisionsByAction.has(name)) return;
+    void library.loadRevisions(name, { force: true });
   },
 };
 

@@ -18,6 +18,15 @@ interface Persisted {
   actions?: Record<string, Partial<ActionConfig>>;
 }
 
+type RuleKey = keyof AllowlistConfig;
+
+function keyForKind(kind: 'tool' | 'bash' | 'mcp' | 'path'): RuleKey {
+  return kind === 'tool' ? 'alwaysAllow'
+    : kind === 'bash' ? 'alwaysAllowBashPatterns'
+    : kind === 'mcp' ? 'alwaysAllowMcpPatterns'
+    : 'alwaysAllowPathPatterns';
+}
+
 function atomicWrite(path: string, data: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
@@ -58,10 +67,7 @@ export class ActionsStore {
   addRule(name: string, kind: 'tool' | 'bash' | 'mcp' | 'path', value: string): boolean {
     const cur = this.byName.get(name) ?? defaultConfig();
     const al = cur.allowlist;
-    const key = kind === 'tool' ? 'alwaysAllow'
-      : kind === 'bash' ? 'alwaysAllowBashPatterns'
-      : kind === 'mcp' ? 'alwaysAllowMcpPatterns'
-      : 'alwaysAllowPathPatterns';
+    const key = keyForKind(kind);
     const list = (al[key] ?? []) as string[];
     if (list.includes(value)) return false;
     if (kind === 'bash' || kind === 'mcp') new RegExp(value);
@@ -74,6 +80,18 @@ export class ActionsStore {
       allowlist: { ...al, [key]: [...list, value] },
     };
     this.byName.set(name, next);
+    this.persist();
+    return true;
+  }
+
+  removeRule(name: string, kind: 'tool' | 'bash' | 'mcp' | 'path', value: string): boolean {
+    const cur = this.byName.get(name);
+    if (!cur) return false;
+    const key = keyForKind(kind);
+    const list = (cur.allowlist[key] ?? []) as string[];
+    const next = list.filter((v) => v !== value);
+    if (next.length === list.length) return false;
+    this.byName.set(name, { allowlist: { ...cur.allowlist, [key]: next } });
     this.persist();
     return true;
   }

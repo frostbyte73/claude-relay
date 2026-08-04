@@ -72,6 +72,7 @@ src/
     scheduler.ts, schedules-store.ts, guards.ts, routing.ts, types.ts, wiring.ts
   storage/               # persisted stores
     {journal,project-registry,actions,runs}-store.ts, runs-capture.ts, stop-hook-tracker.ts, recurrence-tracker.ts
+    action-{revisions,edits}-store.ts  # SKILL.md version history + revert; durable half of the in-flight edit map
   actions/, steps/, jobs/  # action registry + step handlers + job lifecycle
 
   pwa/                   # static client (plain ES modules, no bundler)
@@ -161,7 +162,8 @@ Legitimate remaining work (previously stale items pruned):
 
 - **Orchestrator split.** `Orchestrator` in `src/work/orchestrator.ts` is ~1300 lines with methods that call each other via `this.mutate`/`this.appendEvent`. Splitting into plan/execution/pr/edits helper modules needs class-surgery — deferred.
 - **Linear-write retry queue.** `orchestrator.ts` awaits `linearWriter.setState` and re-queues on next tick if it fails — fine because the call is rare and idempotent, but a backgrounded retry queue would let dispatch continue without blocking on Linear.
-- **Action-scoped allowlist rules can't be revoked from Settings.** `DELETE /api/allowlist/rules/:id` handles global/project grants; action-scoped rules answer 409 pointing at the action editor, because removal needs an `ActionsStore.removeRule()` persistence method that doesn't exist yet.
+- **Action-scoped allowlist rules can't be revoked from Settings.** `DELETE /api/allowlist/rules/:id` handles global/project grants; action-scoped rules still answer 409 pointing at the action editor. `ActionsStore.removeRule()` now exists (revision revert uses it), so wiring it into that route is a small follow-up rather than a missing primitive.
+- **Restoring a deleted action from its history.** `DELETE /api/actions/:name` records a `deleted` event and keeps the final `SKILL.md` body, but a deleted action leaves the catalog, so its history has no entry point in the UI and nothing can restore it.
 - **e2e coverage gaps from the redesign.** `tests/e2e/expandable-projects.spec.ts` and half of `project-list.spec.ts` still target pre-redesign selectors (`.project-section`, `#add-project`) — add-project/new-session now live in the ⌘K palette. There's also no e2e coverage yet for the new desktop shell (`.o-topbar`/`.o-sidebar`/`.o-frame`) or the mobile shell's tab bar.
 
 ## Conventions

@@ -53,4 +53,24 @@ describe('ActionsStore', () => {
     expect(s.deleteAction('foo')).toBe(false);
     expect(s.get('foo').allowlist.alwaysAllow).toEqual([]);
   });
+
+  it('removeRule drops an exact value and persists', () => {
+    const path = tmpPath();
+    const s1 = new ActionsStore(path);
+    s1.addRule('foo', 'bash', '^ls ');
+    s1.addRule('foo', 'bash', '^rg ');
+    expect(s1.removeRule('foo', 'bash', '^ls ')).toBe(true);
+
+    const s2 = new ActionsStore(path);
+    expect(s2.get('foo').allowlist.alwaysAllowBashPatterns).toEqual(['^rg ']);
+  });
+
+  it('removeRule reports false for absent values, unknown actions and the wrong kind', () => {
+    const s = new ActionsStore(tmpPath());
+    s.addRule('foo', 'tool', 'Read');
+    expect(s.removeRule('foo', 'tool', 'Write')).toBe(false);
+    expect(s.removeRule('nope', 'tool', 'Read')).toBe(false);
+    expect(s.removeRule('foo', 'bash', 'Read')).toBe(false);
+    expect(s.get('foo').allowlist.alwaysAllow).toEqual(['Read']);
+  });
 });

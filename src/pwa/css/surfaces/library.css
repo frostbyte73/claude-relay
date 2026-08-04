@@ -393,6 +393,60 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
 }
 
 /* ── Mobile ───────────────────────────────────────────────────────────── */
+/* ── Revision history ────────────────────────────────────────────────── */
+.lib-rev-row {
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.lib-rev-row:first-of-type { border-top: 0; padding-top: 0; }
+.lib-rev-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lib-rev-author { font-size: 12px; color: var(--text-mute); }
+.lib-rev-when {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.lib-rev-revert { margin-left: auto; }
+.lib-rev-note { font-size: 12px; color: var(--text-mute); margin-top: 6px; }
+.lib-rev-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-mute);
+  margin-top: 6px;
+}
+.lib-rev-pruned { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+.lib-rev-diff { margin-top: 6px; }
+.lib-rev-diff summary { font-size: 12px; color: var(--accent); cursor: pointer; }
+.lib-rev-lines {
+  margin-top: 8px;
+  padding: 8px 0;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-control);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+}
+.lib-rev-line {
+  padding: 0 10px;
+  white-space: pre-wrap;
+  color: var(--text-mute);
+}
+.lib-rev-line.add { background: var(--ok-soft); color: var(--ok); }
+.lib-rev-line.del { background: var(--danger-soft); color: var(--danger); }
+.lib-rev-line.hunk { color: var(--text-dim); }
+.lib-rev-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
+
 /* The shell's list-tab header already shows "Skills" — hide the in-body
    duplicate (same treatment as Sessions/Schedules). Mobile scrolls the whole
    .m-screen-root, so the rows don't own an inner scrollbox there. */

@@ -137,6 +137,77 @@ export function scorecardRows(sc, now = Date.now()) {
   }));
 }
 
+const REVISION_TONE = {
+  applied: 'info',
+  proposed: 'info',
+  created: 'idle',
+  rejected: 'idle',
+  reverted: 'warn',
+  drifted: 'warn',
+  deleted: 'hot',
+};
+
+const REVISION_LABEL = {
+  applied: 'applied',
+  proposed: 'proposed',
+  created: 'first recorded',
+  rejected: 'rejected',
+  reverted: 'reverted',
+  drifted: 'changed on disk',
+  deleted: 'deleted',
+};
+
+const AUTHOR_LABEL = {
+  user: 'you',
+  improver: 'improver',
+  external: 'edited outside Outpost',
+  system: 'system',
+};
+
+function bytesText(n) {
+  if (typeof n !== 'number') return '';
+  return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} kB`;
+}
+
+// One row per recorded event on an action — the applied revisions and the proposals that
+// never landed, in one list. `canRevert` is the server's call: it knows whether the body
+// is still retained.
+export function revisionRows(events, now = Date.now()) {
+  return (events ?? []).map((e) => ({
+    id: e.id,
+    kind: e.kind,
+    kindLabel: REVISION_LABEL[e.kind] ?? e.kind,
+    tone: REVISION_TONE[e.kind] ?? 'info',
+    authorLabel: AUTHOR_LABEL[e.author] ?? e.author ?? '',
+    whenText: relPast(e.at, now),
+    rationale: e.rationale ?? '',
+    feedback: e.feedback ?? '',
+    ruleAdds: e.allowlistAdds ?? [],
+    ruleRemovals: e.allowlistRemoved ?? [],
+    diff: e.diff ?? '',
+    hasBody: !!e.hasBody,
+    canRevert: !!e.canRevert,
+    bytesText: bytesText(e.bodyBytes),
+  }));
+}
+
+// Classifies unified-diff lines for rendering. Deliberately not a parser — src/git/diff-parser.js
+// is TypeScript and the PWA ships unbundled, so it can't be imported here.
+export function revisionDiffLines(diffText) {
+  if (!diffText) return [];
+  const lines = String(diffText).split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.map((text) => {
+    if (text.startsWith('@@')) return { cls: 'hunk', text };
+    if (text.startsWith('diff --git ') || text.startsWith('--- ') || text.startsWith('+++ ')) {
+      return { cls: 'meta', text };
+    }
+    if (text.startsWith('+')) return { cls: 'add', text };
+    if (text.startsWith('-')) return { cls: 'del', text };
+    return { cls: 'ctx', text };
+  });
+}
+
 // Strips a leading `---\n...\n---\n` YAML frontmatter block before
 // markdown-rendering a SKILL.md body (name/description are already surfaced
 // by the header — same transform as the legacy work/actions-list.js editor).

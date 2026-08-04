@@ -37,5 +37,14 @@ export const actionsApi = {
   scorecard(name, window = '30d') {
     return request(`/api/actions/${encodeURIComponent(name)}/scorecard?window=${encodeURIComponent(window)}`);
   },
+  revisions(name) {
+    return request(`/api/actions/${encodeURIComponent(name)}/revisions`);
+  },
+  revertRevision(name, eventId) {
+    return request(
+      `/api/actions/${encodeURIComponent(name)}/revisions/${encodeURIComponent(eventId)}/revert`,
+      { method: 'POST', body: '{}' },
+    );
+  },
   permissionGroups() { return request('/api/permission-groups'); },
 };

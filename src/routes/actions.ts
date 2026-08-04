@@ -13,6 +13,11 @@ import { buildScorecard } from '../actions/scorecard.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRunsStore } from '../storage/action-runs-store.js';
 import type { ActionDenial, DenialsStore } from '../storage/denials-store.js';
+import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
+import {
+  forgetEdit, loadPersistedEdits, persistEdit,
+  type ActionEdit, type ActionProposal,
+} from '../storage/action-edits-store.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
@@ -31,6 +36,7 @@ export interface ActionsRoutesDeps {
   actionRunsStore: ActionRunsStore;
   denialsStore: DenialsStore;
   actionRunLedger: ActionRunLedger;
+  actionRevisionsStore: ActionRevisionsStore;
   manager: SessionManager;
   engine: WorkEngine;
   notifyAll: (message: unknown) => void;
@@ -58,7 +64,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   const {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, actionRunsStore, denialsStore, actionRunLedger,
-    manager, engine, notifyAll,
+    actionRevisionsStore, manager, engine, notifyAll,
   } = deps;
 
   // ── local helpers ──────────────────────────────────────────────────────
@@ -167,21 +173,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // ── action-edit propose/verify/apply state ───────────────────────────
   // Keyed by action name (for edits) or by the placeholder `new:<sessionId>`
   // for "new action" flows where the name isn't chosen until the skill picks one.
-  interface ActionProposal {
-    summary: string;
-    skillMdBefore: string;
-    skillMdAfter: string;
-    allowlistAdds: Array<{ kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string }>;
-    postedAt: number;
-  }
-  interface ActionEdit {
-    actionName: string | null;  // null until the skill picks one (new-action flow)
-    sessionId: string;
-    status: 'editing' | 'review' | 'applying';
-    startedAt: number;
-    feedback: string;  // initial feedback that started this session
-    proposal?: ActionProposal;
-  }
+  const actionEditsDir = join(RUNTIME_DIR, 'action-edits');
   const actionEdits = new Map<string, ActionEdit>();
   function editKey(actionName: string | null, sessionId: string): string {
     return actionName ? `a:${actionName}` : `new:${sessionId}`;
@@ -194,12 +186,18 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   }
   function setEdit(key: string, edit: ActionEdit): void {
     actionEdits.set(key, edit);
+    persistEdit(actionEditsDir, edit);
     try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
   }
   function clearEdit(key: string): void {
+    const edit = actionEdits.get(key);
     if (actionEdits.delete(key)) {
+      if (edit) forgetEdit(actionEditsDir, edit.sessionId);
       try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
     }
+  }
+  for (const edit of loadPersistedEdits(actionEditsDir)) {
+    actionEdits.set(editKey(edit.actionName, edit.sessionId), edit);
   }
 
   // ── Runtime denial tracking ───────────────────────────────────────────
@@ -248,6 +246,22 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     actionRunLedger.closeExternal(sessionId, 'submitted');
     actionRunLedger.verdictExternal(sessionId, 'revised');
     actionRunLedger.openExternal({ action: 'meta.build-action', round: 'redraft', sessionId });
+  }
+
+  // A discarded draft is a rejection. The ledger already counts it; this keeps the text that
+  // was declined and the reason, which is what tells the improver a taken suggestion from a
+  // sent-back one. Must run before the caller clears edit.proposal.
+  function noteRejected(edit: ActionEdit, feedback: string, author: ActionAuthor = 'user'): void {
+    if (!edit.proposal || !edit.actionName) return;
+    actionRevisionsStore.record({
+      action: edit.actionName,
+      kind: 'rejected',
+      author,
+      body: edit.proposal.skillMdAfter,
+      rationale: edit.proposal.summary,
+      feedback,
+      sessionId: edit.sessionId,
+    });
   }
 
   const recordActionDenial: ActionsRoutesHandlers['recordActionDenial'] = ({ actionName, sessionId, toolName, toolInput }) => {
@@ -303,6 +317,20 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       postedAt: Date.now(),
     };
     setEdit(key, edit);
+    // Recorded even though nothing has been applied yet: a proposal the user then rejects is
+    // exactly the signal the improver needs about its own suggestions. Skipped while the
+    // new-action flow is still unnamed — there's no action to file it under.
+    if (edit.actionName) {
+      actionRevisionsStore.record({
+        action: edit.actionName,
+        kind: 'proposed',
+        author: 'user',
+        body: payload.skillMdAfter,
+        rationale: edit.proposal.summary,
+        allowlistAdds: edit.proposal.allowlistAdds,
+        sessionId: edit.sessionId,
+      });
+    }
     console.log(`[work] action-proposal posted for ${edit.actionName ?? '<new>'} (${payload.skillMdAfter.length}b skill_md, ${edit.proposal.allowlistAdds.length} rules)`);
   };
 
@@ -451,6 +479,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const existing = actionEdits.get(key);
     if (existing) {
       const hadProposal = !!existing.proposal;
+      noteRejected(existing, feedback);
       existing.feedback = feedback;
       existing.status = 'editing';
       existing.proposal = undefined;
@@ -511,9 +540,28 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     let dir: string;
     try { ({ dir } = actionDirFor(outpostActionsDir, name)); }
     catch (e) { res.statusCode = 400; res.end(`invalid action name: ${(e as Error).message}`); return; }
+    const payload = await readJsonBody<{ actor?: string }>(req);
+    // Provenance, not authentication — the PWA server is already trusted on the tailnet.
+    // The improver passes actor:'improver' so its edits are distinguishable in the history.
+    const author: ActionAuthor = payload?.actor === 'improver' ? 'improver' : 'user';
     try {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'SKILL.md'), proposal.skillMdAfter);
+      // Rules land before the write so the revision can record exactly which ones were new:
+      // addRule answers false for a duplicate, and only genuinely-new rules are safe for a
+      // later revert to remove.
+      const allowlistAdds: ActionProposal['allowlistAdds'] = [];
+      for (const rule of proposal.allowlistAdds ?? []) {
+        try { if (actionsStore.addRule(name, rule.kind, rule.value)) allowlistAdds.push(rule); }
+        catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
+      }
+      actionRevisionsStore.applyWrite({
+        action: name,
+        dir,
+        body: proposal.skillMdAfter,
+        author,
+        allowlistAdds,
+        rationale: proposal.summary,
+        sessionId: edit.sessionId,
+      });
       // The proposal only carries SKILL.md, but the registry requires input/output
       // schemas to load an action. Seed permissive defaults for a brand-new action;
       // never clobber an existing action's schemas on edit.
@@ -521,10 +569,6 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       for (const f of ['input.schema.json', 'output.schema.json']) {
         const p = join(dir, f);
         if (!existsSync(p)) writeFileSync(p, defaultSchema);
-      }
-      for (const rule of proposal.allowlistAdds ?? []) {
-        try { actionsStore.addRule(name, rule.kind, rule.value); }
-        catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
       }
     } catch (e) {
       res.statusCode = 500; res.end(`apply failed: ${(e as Error).message}`); return;
@@ -557,6 +601,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const feedback = (payload?.feedback ?? '').trim();
     if (!feedback) { res.statusCode = 400; res.end('feedback required'); return; }
     const hadProposal = !!edit.proposal;
+    noteRejected(edit, feedback);
     edit.feedback = feedback;
     edit.status = 'editing';
     edit.proposal = undefined;
@@ -580,6 +625,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     if (!sessionId) { res.statusCode = 400; res.end('missing sessionId'); return; }
     const located = findEditBySession(sessionId);
     if (located) {
+      noteRejected(located.edit, '');
       void manager.close(located.edit.sessionId).catch(() => { /* tolerate */ });
       actionRunLedger.closeExternal(located.edit.sessionId, 'abandoned');
       clearEdit(located.key);
@@ -634,6 +680,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     try { ({ dir } = actionDirFor(outpostActionsDir, name)); }
     catch (e) { res.statusCode = 400; res.end(`invalid action name: ${(e as Error).message}`); return; }
     const link = join(homedir(), '.claude', 'skills', name);
+    actionRevisionsStore.noteDeleted(name, dir);
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* tolerate */ }
     try {
       const st = lstatSync(link);
@@ -651,6 +698,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   function dropEditForSession(sessionId: string): void {
     const located = findEditBySession(sessionId);
     if (!located) return;
+    noteRejected(located.edit, '', 'system');
     actionRunLedger.closeExternal(sessionId, 'abandoned');
     clearEdit(located.key);
   }

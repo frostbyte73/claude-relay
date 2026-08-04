@@ -44,6 +44,7 @@ import { registerProjectsRoutes } from './routes/projects.js';
 import { registerPushRoutes } from './routes/push.js';
 import { registerMetaRoutes } from './routes/meta.js';
 import { registerActionsRoutes } from './routes/actions.js';
+import { registerActionRevisionsRoutes } from './routes/action-revisions.js';
 import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
 import { runScript } from './schedules/script-runner.js';
 import { homeOrKnownCwd } from './git/known-cwd.js';
@@ -52,6 +53,7 @@ import { registerPreferencesRoutes } from './routes/preferences.js';
 import { RunsStore } from './storage/runs-store.js';
 import { ActionRunsStore } from './storage/action-runs-store.js';
 import { DenialsStore } from './storage/denials-store.js';
+import { ActionRevisionsStore } from './storage/action-revisions-store.js';
 import { ActionRunLedger } from './work/action-run-ledger.js';
 import { UsageLedger } from './integrations/usage-ledger.js';
 import { createRunsCapture, type ScheduleRunContext } from './storage/runs-capture.js';
@@ -369,6 +371,7 @@ async function main() {
   const usageLedger = new UsageLedger(join(RUNTIME_DIR, 'usage-ledger.json'));
   const actionRunsStore = new ActionRunsStore(join(RUNTIME_DIR, 'action-runs.jsonl'));
   const denialsStore = new DenialsStore(join(RUNTIME_DIR, 'denials.json'));
+  const actionRevisionsStore = new ActionRevisionsStore(join(RUNTIME_DIR, 'action-revisions'));
   const actionRunLedger = new ActionRunLedger({
     store: actionRunsStore,
     isHumanGate: (name) => !!actionRegistry.getAction(name)?.frontmatter.outpost.human_gate,
@@ -915,10 +918,18 @@ async function main() {
   const actionRoutes = registerActionsRoutes(server, {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, actionRunsStore, denialsStore, actionRunLedger,
-    manager, engine, notifyAll,
+    actionRevisionsStore, manager, engine, notifyAll,
   });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
+
+  registerActionRevisionsRoutes(server, {
+    outpostActionsDir, actionsStore, revisionsStore: actionRevisionsStore, notifyAll,
+    reloadActions: () => {
+      try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
+      try { actionRegistry.load(); } catch (e) { console.warn(`[action-revert] registry reload failed: ${(e as Error).message}`); }
+    },
+  });
 
   // Same shape meta.orchestrate's envelope carries (WorkEngine.buildActionCatalog),
   // reproduced here rather than exposed off WorkEngine — the schedule builder only

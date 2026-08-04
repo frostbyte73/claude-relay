@@ -18,6 +18,7 @@ import { openPalette } from '../palette/index.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { renderComposeForm } from './compose.js';
 import { scorecardSectionHtml, wireScorecard } from './scorecard-card.js';
+import { revisionsSectionHtml, wireRevisions } from './revisions-card.js';
 import { mountInlineSession } from '../work/inline-session.js';
 
 export function renderDetail(mount, deps) {
@@ -114,6 +115,7 @@ export function renderDetail(mount, deps) {
     wire(view, item);
     wireDenials(view, item, state);
     wireScorecard(view);
+    wireRevisions(view, item);
   };
 
   paint();
@@ -121,6 +123,7 @@ export function renderDetail(mount, deps) {
   if (selection && !selection.startsWith('new:')) {
     library.loadJournal(selection);
     library.loadScorecard(selection);
+    library.loadRevisions(selection);
   }
   if (!actions.get().loaded && !actions.get().loading) actions.load();
 
@@ -170,6 +173,7 @@ function skillHtml(item, libState, state, edit) {
     <div class="lib-sections">
       ${permissionsSectionHtml(item, libState)}
       ${scorecardSectionHtml(item, libState)}
+      ${revisionsSectionHtml(item, libState)}
       ${journalSectionHtml(item, libState)}
     </div>
   `;
@@ -226,6 +230,9 @@ function wireEditCard(view, edit) {
     e.target.disabled = true;
     try {
       const res = await actionsApi.approveProposal(edit.sessionId);
+      // The apply recorded a revision; drop the cached history so the detail pane we're
+      // about to land on shows it rather than the pre-apply list.
+      library.invalidateRevisions(res?.actionName ?? edit.actionName);
       // Move the selection off the `new:<sessionId>` sentinel onto the freshly
       // installed action so the detail shows the real thing, not "Skill not found".
       if (res?.actionName) nav.select('skills', res.actionName);
