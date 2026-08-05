@@ -190,6 +190,93 @@ export interface ActionStep extends StepBase {
   gateApproved?: boolean;
 }
 
+export interface Dispatch {
+  id: string;
+  action: string;
+  brief: string;
+  inputs?: Record<string, unknown>;
+  workspace?: WorkspaceRef;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  sessionId?: string;
+  output?: string;
+  failure?: string;
+  attempts: number;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+export type WatchedEvent = 'pr-comments' | 'ci' | 'review-state' | 'pr-state';
+
+export type InboxItem =
+  | { id: string; at: number; kind: 'user-message'; body: string }
+  | { id: string; at: number; kind: 'dispatch-done'; dispatchId: string }
+  | { id: string; at: number; kind: 'external'; source: 'pr-watcher'; summary: string; events: WatchedEvent[] }
+  | { id: string; at: number; kind: 'gate-resolved'; approved: boolean; feedback?: string }
+  | { id: string; at: number; kind: 'timer' }
+  | { id: string; at: number; kind: 'policy-rejection'; reason: string };
+
+export interface WaitSpec {
+  reason: string;
+  events?: Array<WatchedEvent | 'dispatches'>;
+  untilAllDispatchesDone?: boolean;
+  resumeAt?: number;
+}
+
+export type NextMove =
+  | { kind: 'self-round'; action?: string; note?: string }
+  | { kind: 'dispatch'; dispatches: Array<{ action: string; brief: string; inputs?: Record<string, unknown>; workspace?: WorkspaceRef }> }
+  | { kind: 'wait'; wait: WaitSpec }
+  | { kind: 'gate'; draft: string; question: string }
+  | { kind: 'resolve'; output: string }
+  | { kind: 'fail'; reason: string };
+
+export interface GateRequest {
+  draft: string;
+  question: string;
+  requestedAt: number;
+  // The move this gate holds. Executed verbatim on approval WITHOUT re-validating —
+  // otherwise a force-gated write would be re-gated forever.
+  deferredMove: NextMove;
+}
+
+export interface PrFacts {
+  prUrl?: string;
+  prState?: 'open' | 'merged' | 'closed';
+  ciState?: 'pending' | 'success' | 'failure';
+  ciChecks?: CiCheck[];
+  reviewState?: 'approved' | 'changes_requested' | 'review_required';
+  mergeable?: 'mergeable' | 'conflicting' | 'unknown';
+  comments?: PrComment[];
+  threadHash?: string;
+}
+
+export interface OrchestratedStep extends StepBase {
+  type: 'orchestrated';
+  controller: string;
+  workspace: WorkspaceRef;
+  goal: string;
+  inputs?: Record<string, unknown>;
+  phase?: string;
+  memo?: string;
+  artifacts?: Record<string, string>;
+  dispatches: Dispatch[];
+  inbox: InboxItem[];
+  // The batch most recently handed to the controller. Persisted rather than passed as an
+  // argument so a cold resume can still show the controller what woke it.
+  lastDelivered?: InboxItem[];
+  waitingOn?: WaitSpec;
+  roundsSpent: number;
+  consecutiveSelfRounds: number;
+  pr?: PrFacts;
+  gate?: GateRequest;
+  gateApproved?: boolean;
+  gateFeedback?: string[];
+  iterations?: IterationRecord[];
+  reviewComments?: ReviewComment[];
+  draftedReplies?: DraftedReply[];
+  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
+}
+
 export type Step = OpenPrStep | ActionStep;
 
 export type JobEventKind =
