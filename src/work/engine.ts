@@ -1471,7 +1471,7 @@ export class WorkEngine {
       if (patch.goal !== undefined) (fields as Partial<OpenPrStep>).goal = patch.goal;
       if (patch.approach !== undefined) (fields as Partial<OpenPrStep>).approach = patch.approach;
       if (patch.risks !== undefined) (fields as Partial<OpenPrStep>).risks = patch.risks;
-    } else {
+    } else if (step.type === 'action') {
       if (patch.action !== undefined) {
         if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(patch.action)) {
           throw new Error(`unknown action ${JSON.stringify(patch.action)} — not in registry`);
@@ -1480,6 +1480,9 @@ export class WorkEngine {
       }
       if (patch.goal !== undefined) (fields as Partial<ActionStep>).goal = patch.goal;
       if (patch.inputs !== undefined) (fields as Partial<ActionStep>).inputs = patch.inputs;
+    } else {
+      if (patch.goal !== undefined) (fields as Partial<OrchestratedStep>).goal = patch.goal;
+      if (patch.inputs !== undefined) (fields as Partial<OrchestratedStep>).inputs = patch.inputs;
     }
 
     this.mutate(jobId, (jj) => this.appendEvent(
@@ -2597,6 +2600,11 @@ function stepToProposed(s: Step): ProposedStep {
       base.goal = s.goal;
       if (s.inputs !== undefined) base.inputs = s.inputs;
       if (s.forwardOutput !== undefined) base.forwardOutput = s.forwardOutput;
+      break;
+    case 'orchestrated':
+      base.controller = s.controller;
+      base.goal = s.goal;
+      if (s.inputs !== undefined) base.inputs = s.inputs;
       break;
   }
   return base as unknown as ProposedStep;

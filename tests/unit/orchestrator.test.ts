@@ -914,3 +914,44 @@ describe('Orchestrator — workspace validation', () => {
     });
   });
 });
+
+describe('Orchestrator — orchestrated steps through the plan-rejection round-trip', () => {
+  const orchestratedProposal: ProposedStep = {
+    type: 'orchestrated', title: 'shepherd the PR', description: 'd', controller: 'code.orchestrate-pr',
+    goal: 'ship the fix', inputs: { prUrl: 'https://example.com/pr/1' },
+    dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+  };
+
+  it('stepToProposed round-trips controller/goal/inputs into the rejected iteration snapshot', () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    engine.onPlanReady(job.id, 'initial', [orchestratedProposal]);
+    expect(queue.get(job.id)!.steps[0]).toMatchObject({ type: 'orchestrated', controller: 'code.orchestrate-pr' });
+
+    engine.onPlanRejected(job.id, 'not quite');
+
+    const iters = queue.get(job.id)?.plan?.iterationsRejected ?? [];
+    expect(iters).toHaveLength(1);
+    const snapshot = iters[0]!.steps[0] as unknown as Record<string, unknown>;
+    expect(snapshot).toMatchObject({
+      type: 'orchestrated', controller: 'code.orchestrate-pr', goal: 'ship the fix',
+      inputs: { prUrl: 'https://example.com/pr/1' },
+    });
+    // The rejection also wipes the live plan — the snapshot above is the only surviving record.
+    expect(queue.get(job.id)!.steps).toHaveLength(0);
+  });
+
+  it('editStepManually never writes an action field onto an orchestrated step', () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    engine.onPlanReady(job.id, 'initial', [orchestratedProposal]);
+    const stepId = queue.get(job.id)!.steps[0]!.id;
+
+    expect(engine.editStepManually(job.id, stepId, { action: 'code.implement', goal: 'new goal' })).toBe(true);
+
+    const step = queue.get(job.id)!.steps[0]! as unknown as Record<string, unknown>;
+    expect(step.action).toBeUndefined();
+    expect(step.goal).toBe('new goal');
+    expect(step.controller).toBe('code.orchestrate-pr');
+  });
+});
