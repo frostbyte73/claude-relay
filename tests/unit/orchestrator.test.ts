@@ -133,9 +133,11 @@ describe('Orchestrator.rehydrateSessionBindings', () => {
     second.engine.rehydrateSessionBindings();
 
     expect(second.engine.actionForSession(orchestratorSessionId)).toBe('meta.orchestrate');
-    // materialize() now starts open-pr steps in 'speccing' (spec/plan flow), so the
-    // rebound action is code.spec rather than the old hard-coded 'implementing' default.
-    expect(second.engine.actionForSession('step-sess-1')).toBe('code.spec');
+    // Loading migrates the persisted open-pr step into an orchestrated step (see
+    // src/storage/jobs-migrate.ts), whose session rebinds to its controller — the
+    // controller then picks which action's hat to wear per round via submit_step_progress,
+    // rather than the engine deriving an action from open-pr round state.
+    expect(second.engine.actionForSession('step-sess-1')).toBe('code.orchestrate-pr');
   });
 });
 

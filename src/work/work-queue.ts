@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { join } from 'node:path';
 import type { JobRecord } from './work-types.js';
 import { deleteJobEventLog } from '../storage/job-event-log.js';
+import { migrateJob } from '../storage/jobs-migrate.js';
 
 export type QueueEvent =
   | { kind: 'upsert'; jobId: string; job: JobRecord }
@@ -102,7 +103,9 @@ export class JobQueue {
         if (!job?.id) continue;
         if (changed) this.writeJobFile(job);
         this.migrateEnvelopeDir(job.id);
-        this.index.set(job.id, job);
+        // Runs on every boot, in memory only, until a normal write naturally
+        // rewrites the record — never persisted directly by the migration itself.
+        this.index.set(job.id, migrateJob(job));
       } catch { /* corrupted — skip */ }
     }
   }
