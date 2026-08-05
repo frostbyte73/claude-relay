@@ -351,6 +351,15 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
                       brief: { type: 'string', description: 'All the context this child gets. It sees nothing else.' },
                       inputs: { type: 'object' },
                       workspace: { type: 'object' },
+                      retryOf: {
+                        type: 'string',
+                        description:
+                          'Only when re-running a dispatch that FAILED for a transient reason — an MCP server '
+                          + 'that was not authenticated, a network blip, an infra hiccup. Set it to that '
+                          + "dispatch's id. Required to repeat an identical (action, brief); without it a "
+                          + 'duplicate is rejected. If the child failed because it misunderstood the brief, '
+                          + 'do not retry — write a better brief.',
+                      },
                     },
                   },
                 },

@@ -59,18 +59,30 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
 
   if (move.kind === 'dispatch') {
     if (move.dispatches.length === 0) return { kind: 'reject', reason: 'dispatch with no entries' };
-    const seen = new Map<string, { status: string; attempts: number }>();
-    for (const d of step.dispatches) seen.set(briefKey(d.action, d.brief), d);
+    const byKey = new Map(step.dispatches.map((d) => [briefKey(d.action, d.brief), d]));
+    const byId = new Map(step.dispatches.map((d) => [d.id, d]));
     for (const d of move.dispatches) {
       if (!info.sideEffects(d.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(d.action)}` };
       }
-      const prior = seen.get(briefKey(d.action, d.brief));
-      if (prior) {
-        if (prior.attempts >= MAX_DISPATCH_ATTEMPTS) {
-          return { kind: 'reject', reason: `${d.action} already attempted ${prior.attempts}× with this brief` };
+      if (d.retryOf) {
+        const target = byId.get(d.retryOf);
+        if (!target) return { kind: 'reject', reason: `retryOf ${JSON.stringify(d.retryOf)} names no dispatch on this step` };
+        if (target.status !== 'failed') {
+          return { kind: 'reject', reason: `retryOf must name a failed dispatch; ${d.retryOf} is ${target.status}` };
         }
-        return { kind: 'reject', reason: `already dispatched ${d.action} with this brief — change the brief or move on` };
+        if (target.attempts >= MAX_DISPATCH_ATTEMPTS) {
+          return { kind: 'reject', reason: `${d.action} already attempted ${target.attempts}× — change the approach or give up` };
+        }
+        continue;
+      }
+      if (byKey.has(briefKey(d.action, d.brief))) {
+        return {
+          kind: 'reject',
+          reason: `already dispatched ${d.action} with this brief. If it failed for a transient reason `
+            + '(an MCP server not authenticated, a network blip, infra), re-dispatch with retryOf set to that '
+            + "dispatch's id. Otherwise change the brief — repeating it verbatim will fail the same way.",
+        };
       }
     }
     const gated = move.dispatches.find((d) => needsGate(d.action, info));

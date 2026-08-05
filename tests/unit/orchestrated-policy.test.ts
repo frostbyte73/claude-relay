@@ -115,6 +115,64 @@ describe('validateNext', () => {
   });
 });
 
+describe('validateNext — dispatch retries', () => {
+  const same = { action: 'code.review-diff', brief: 'same' };
+
+  it('still rejects a bare duplicate, and names retryOf in the reason', () => {
+    const prior = dispatch({ id: 'd1', ...same, status: 'failed', attempts: 1 });
+    const v = validateNext(step({ dispatches: [prior] }), { kind: 'dispatch', dispatches: [same] }, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/retryOf/);
+  });
+
+  it('allows an identical brief when retryOf names a failed dispatch under the cap', () => {
+    const prior = dispatch({ id: 'd1', ...same, status: 'failed', attempts: 1 });
+    const v = validateNext(
+      step({ dispatches: [prior] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }] },
+      info,
+    );
+    expect(v.kind).toBe('allow');
+  });
+
+  it('refuses to retry a dispatch that did not fail', () => {
+    const prior = dispatch({ id: 'd1', ...same, status: 'done', attempts: 1 });
+    const v = validateNext(
+      step({ dispatches: [prior] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }] },
+      info,
+    );
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/failed/i);
+  });
+
+  it('refuses once the attempt cap is reached — this is what stops a retry loop', () => {
+    const prior = dispatch({ id: 'd1', ...same, status: 'failed', attempts: MAX_DISPATCH_ATTEMPTS });
+    const v = validateNext(
+      step({ dispatches: [prior] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }] },
+      info,
+    );
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/attempt/i);
+  });
+
+  it('refuses a retryOf naming an unknown dispatch', () => {
+    const v = validateNext(step(), { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'nope' }] }, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+  });
+
+  it('accepts a retryOf whose brief differs from the failed dispatch it names', () => {
+    const prior = dispatch({ id: 'd1', action: 'code.review-diff', brief: 'first try', status: 'failed', attempts: 1 });
+    const v = validateNext(
+      step({ dispatches: [prior] }),
+      { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'improved brief', retryOf: 'd1' }] },
+      info,
+    );
+    expect(v.kind).toBe('allow');
+  });
+});
+
 describe('briefKey', () => {
   it('is stable and distinguishes briefs', () => {
     expect(briefKey('a', 'one')).toBe(briefKey('a', 'one'));

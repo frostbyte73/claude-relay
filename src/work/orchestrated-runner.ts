@@ -115,15 +115,20 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
       return;
 
     case 'dispatch': {
-      const created: Dispatch[] = move.dispatches.map((d) => ({
-        id: host.newId(),
-        action: d.action,
-        brief: d.brief,
-        ...(d.inputs ? { inputs: d.inputs } : {}),
-        ...(d.workspace ? { workspace: d.workspace } : {}),
-        status: 'queued',
-        attempts: 1,
-      }));
+      const priorDispatches = host.getStep(jobId, stepId)!.dispatches;
+      const created: Dispatch[] = move.dispatches.map((d) => {
+        const prior = d.retryOf ? priorDispatches.find((x) => x.id === d.retryOf) : undefined;
+        return {
+          id: host.newId(),
+          action: d.action,
+          brief: d.brief,
+          ...(d.inputs ? { inputs: d.inputs } : {}),
+          ...(d.workspace ? { workspace: d.workspace } : {}),
+          ...(d.retryOf ? { retryOf: d.retryOf } : {}),
+          status: 'queued',
+          attempts: (prior?.attempts ?? 0) + 1,
+        };
+      });
       host.mutateStep(jobId, stepId, (s) => ({
         ...s,
         dispatches: [...s.dispatches, ...created],

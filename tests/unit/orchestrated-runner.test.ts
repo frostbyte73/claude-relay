@@ -85,6 +85,17 @@ describe('applyMove', () => {
     expect(get().consecutiveSelfRounds).toBe(0);
   });
 
+  it('a retry inherits the prior dispatch attempt count plus one', () => {
+    const prior = { id: 'd1', action: 'code.review-diff', brief: 'b', status: 'failed' as const, attempts: 1 };
+    const { h, get } = host(step({ dispatches: [prior] }));
+    applyMove(h, 'j1', 's1', {
+      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'b', retryOf: 'd1' }] },
+    });
+    const created = get().dispatches.find((d) => d.id !== 'd1')!;
+    expect(created.attempts).toBe(2);
+    expect(created.retryOf).toBe('d1');
+  });
+
   it('parks on an explicit gate, holding the move that follows it', () => {
     const { h, get } = host(step());
     applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: '# Spec', question: 'ok?' } });

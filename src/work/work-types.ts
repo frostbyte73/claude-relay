@@ -203,6 +203,9 @@ export interface Dispatch {
   attempts: number;
   startedAt?: number;
   finishedAt?: number;
+  // Id of the prior dispatch this one retries. Set only when the controller named it
+  // explicitly via retryOf — the sole way an identical (action, brief) is allowed through.
+  retryOf?: string;
 }
 
 export type WatchedEvent = 'pr-comments' | 'ci' | 'review-state' | 'pr-state';
@@ -224,7 +227,7 @@ export interface WaitSpec {
 
 export type NextMove =
   | { kind: 'self-round'; action?: string; note?: string }
-  | { kind: 'dispatch'; dispatches: Array<{ action: string; brief: string; inputs?: Record<string, unknown>; workspace?: WorkspaceRef }> }
+  | { kind: 'dispatch'; dispatches: Array<{ action: string; brief: string; inputs?: Record<string, unknown>; workspace?: WorkspaceRef; retryOf?: string }> }
   | { kind: 'wait'; wait: WaitSpec }
   | { kind: 'gate'; draft: string; question: string }
   | { kind: 'resolve'; output: string }
