@@ -144,7 +144,7 @@ export function renderList(mount) {
 function rowHtml(item) {
   return `
     <div class="o-row lib-skill-row" data-name="${escapeHtml(item.name)}" role="button" tabindex="0">
-      <span class="o-row-icon lib-cat-dot lib-cat-${escapeHtml(item.category)}" aria-hidden="true">●</span>
+      <span class="o-row-icon lib-cat-dot" data-cat="${escapeHtml(item.category)}" aria-hidden="true">●</span>
       <div class="o-row-title lib-skill-name">${escapeHtml(item.name)}</div>
     </div>
   `;
@@ -157,10 +157,10 @@ function pendingRowHtml(edit) {
   // feed + proposal card live there, so there's no reason to jump into the session.
   return `
     <div class="o-row lib-skill-row lib-skill-row-pending" data-sel="new:${escapeHtml(edit.sessionId)}" role="button" tabindex="0">
-      <span class="o-row-icon lib-cat-dot lib-cat-meta" aria-hidden="true">◌</span>
+      <span class="o-row-icon lib-cat-dot" aria-hidden="true">◌</span>
       <div class="o-row-title lib-skill-hdr">
         <span class="lib-skill-name">${escapeHtml(name)}</span>
-        <span class="o-pill lib-cat-pill lib-cat-meta">${edit.proposal ? 'review' : 'drafting'}</span>
+        <span class="o-pill lib-cat-pill">${edit.proposal ? 'review' : 'drafting'}</span>
       </div>
     </div>
   `;

@@ -101,22 +101,11 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
 }
 .lib-new-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* Category color coding — shared between list-row pills/dots and the detail
-   header badge. Distinct from primitives.css's o-pill tones (those are
-   status/verdict semantics; these are a fixed category taxonomy). */
-.lib-cat-dot.lib-cat-read,  .lib-cat-pill.lib-cat-read  { color: var(--accent); }
-.lib-cat-pill.lib-cat-read  { background: var(--accent-soft); }
-.lib-cat-dot.lib-cat-write, .lib-cat-pill.lib-cat-write { color: var(--warn); }
-.lib-cat-pill.lib-cat-write { background: var(--warn-soft); }
-.lib-cat-dot.lib-cat-code,  .lib-cat-pill.lib-cat-code  { color: var(--accent-2); }
-.lib-cat-pill.lib-cat-code  { background: var(--accent-2-soft); }
-.lib-cat-dot.lib-cat-human, .lib-cat-pill.lib-cat-human { color: var(--ok); }
-.lib-cat-pill.lib-cat-human { background: var(--ok-soft); }
-.lib-cat-dot.lib-cat-meta,  .lib-cat-pill.lib-cat-meta  { color: var(--text-mute); }
-.lib-cat-pill.lib-cat-meta  { background: var(--bg-elev-2); }
-.lib-cat-dot.lib-cat-custom,.lib-cat-pill.lib-cat-custom{ color: var(--text-dim); }
-.lib-cat-pill.lib-cat-custom{ background: var(--bg-elev-2); }
-.lib-cat-pill { font-family: var(--font-mono); }
+/* Category color coding — list-row dots and the detail header badge both tint
+   from the shared --cat-fg/--cat-bg palette in primitives.css, which the plan's
+   type chips read too. Set `data-cat` alongside these classes. */
+.lib-cat-dot  { color: var(--cat-fg, var(--text-mute)); }
+.lib-cat-pill { color: var(--cat-fg, var(--text-mute)); background: var(--cat-bg, var(--bg-elev-2)); font-family: var(--font-mono); }
 
 /* ── Detail pane ──────────────────────────────────────────────────────── */
 .lib-detail {

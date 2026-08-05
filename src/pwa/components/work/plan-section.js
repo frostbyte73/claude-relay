@@ -9,16 +9,19 @@
 
 import { work } from '../../state/work.js';
 import { renderFinding } from './finding.js';
+import { actionCategory, actionDisplayName } from './action-icon.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
-function typeMonoFor(stepOrProposed) {
-  if (stepOrProposed?.type === 'open-pr') return 'PR';
-  if (stepOrProposed?.type === 'action') {
-    const n = String(stepOrProposed.action ?? '').replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase();
-    return n || 'AC';
+// The type chip carries the action's own name (the category prefix is dropped —
+// the tint says which category it is, keyed on the same palette as the Library's
+// skills list so both surfaces read as one taxonomy).
+function typeChip(s) {
+  if (s?.type === 'action' && s.action) {
+    return `<span class="type-mono" data-cat="${escapeHtml(actionCategory(s.action))}">${escapeHtml(actionDisplayName(s.action))}</span>`;
   }
-  return stepOrProposed?.type ?? '··';
+  if (s?.type === 'open-pr') return `<span class="type-mono" data-cat="code">open-pr</span>`;
+  return `<span class="type-mono">${escapeHtml(s?.type ?? '··')}</span>`;
 }
 
 function diffKindFor(p, current) {
@@ -55,7 +58,7 @@ export function renderReconciliation(j) {
     return `
       <div class="diff-row">
         <div class="diff-glyph" data-kind="${kind}">${escapeHtml(glyph)}</div>
-        <div class="type-mono" data-type="${escapeHtml(p.type)}">${escapeHtml(typeMonoFor(p))}</div>
+        ${typeChip(p)}
         <div>
           <div class="step-title">${escapeHtml(p.title ?? p.goal ?? '')}</div>
           <div class="delta"><span class="key">${escapeHtml(key)}</span> · ${escapeHtml(delta)}</div>
@@ -70,7 +73,7 @@ export function renderReconciliation(j) {
     return `
       <div class="diff-row">
         <div class="diff-glyph" data-kind="cancel">✗ cancel</div>
-        <div class="type-mono" data-type="${escapeHtml(s.type)}">${escapeHtml(typeMonoFor(s))}</div>
+        ${typeChip(s)}
         <div>
           <div class="step-title"><span class="strike">${escapeHtml(s.title)}</span></div>
           <div class="delta"><span class="key">${escapeHtml(idx)}</span> · removed${running ? ' · running session will be retained (kill manually if desired)' : ''}</div>
@@ -109,7 +112,7 @@ function planIndexRow(s, i) {
   return `
     <div class="plan-row">
       <span class="plan-row-idx">${String(i + 1).padStart(2, '0')}</span>
-      <span class="type-mono" data-type="${escapeHtml(s.type)}">${escapeHtml(typeMonoFor(s))}</span>
+      ${typeChip(s)}
       <span class="plan-row-title">${escapeHtml(s.title ?? s.goal ?? '')}</span>
     </div>
   `;

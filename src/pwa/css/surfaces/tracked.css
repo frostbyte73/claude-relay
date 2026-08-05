@@ -164,14 +164,23 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 
 /* ── Plan card: compact step index ────────────────────────────────────────
    One line per step (index / type chip / title) — the full step cards render
-   only in the timeline below. */
+   only in the timeline below. Chips carry action names, so their widths differ;
+   subgrid pulls the chip column to one width per plan and keeps the titles
+   aligned. The flex rule is the fallback where subgrid is missing. */
 .plan-index { padding: 4px 0; }
 .plan-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   padding: 7px 16px;
   min-width: 0;
+}
+@supports (grid-template-columns: subgrid) {
+  .plan-index { display: grid; grid-template-columns: auto auto minmax(0, 1fr); column-gap: 10px; }
+  /* The empty-state children (launch composer, orchestrator mount) span it too. */
+  .plan-index > * { grid-column: 1 / -1; }
+  .plan-row { display: grid; grid-template-columns: subgrid; }
+  .plan-row .type-mono { justify-self: start; }
 }
 .plan-row + .plan-row { border-top: 1px solid var(--line-soft); }
 .plan-row-idx {
@@ -1227,19 +1236,26 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 
 .step-list { padding: 4px 0; }
 
-/* Type chip — a nano machine tag (§3.2): mono, may be uppercase 0.1–0.14em.
-   Type identity is conveyed by the label text — colors are reserved for *status*. */
+/* Type chip — a machine tag (§3.2): mono, control-shaped. Holds the action's own
+   name, tinted by category from the shared --cat-fg/--cat-bg palette
+   (primitives.css) so a plan row and the Skills list agree on what a category
+   looks like. Category is a fixed taxonomy, not a status claim. */
 .type-mono {
   height: 22px;
   border: 1px solid var(--line);
   border-radius: var(--r-control);
   display: inline-flex; align-items: center; justify-content: center;
   padding: 0 8px;
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em;
   color: var(--text-mute);
   background: var(--bg);
   flex-shrink: 0;
   white-space: nowrap;
+}
+.type-mono[data-cat] {
+  color: var(--cat-fg, var(--text-mute));
+  background: var(--cat-bg, var(--bg));
+  border-color: transparent;
 }
 
 .step-title {
@@ -1267,8 +1283,14 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 .diff-glyph[data-kind="add"]    { color: var(--accent-2); }
 .diff-glyph[data-kind="cancel"] { color: var(--danger); }
 .is-reconciling .diff-row {
-  display: grid; grid-template-columns: 56px 36px 1fr; gap: 14px;
+  display: grid; grid-template-columns: 56px minmax(0, max-content) minmax(0, 1fr); gap: 14px;
   padding: 12px 18px; border-top: 1px solid var(--line-soft); align-items: center;
+}
+/* Same trick as .plan-index — one chip-column width for the whole diff. */
+@supports (grid-template-columns: subgrid) {
+  .is-reconciling .step-list { display: grid; grid-template-columns: 56px auto minmax(0, 1fr); column-gap: 14px; }
+  .is-reconciling .diff-row { grid-column: 1 / -1; grid-template-columns: subgrid; }
+  .is-reconciling .diff-row .type-mono { justify-self: start; }
 }
 .is-reconciling .diff-row .delta { margin-top: 6px; font-size: 12px; color: var(--text-mute); }
 .is-reconciling .diff-row .delta .key { font-family: var(--font-mono); color: var(--text-dim); }

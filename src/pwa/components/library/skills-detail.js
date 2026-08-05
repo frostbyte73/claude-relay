@@ -139,7 +139,7 @@ function wipShellHtml(edit) {
     <header class="lib-detail-hdr">
       <div class="lib-detail-title">
         <span class="lib-detail-name">${escapeHtml(name)}</span>
-        <span class="o-pill lib-cat-pill lib-cat-meta lib-wip-pill">${edit.proposal ? 'review' : 'drafting'}</span>
+        <span class="o-pill lib-cat-pill lib-wip-pill">${edit.proposal ? 'review' : 'drafting'}</span>
       </div>
     </header>
     <div class="lib-edit-feed-mount"></div>
@@ -152,7 +152,7 @@ function skillHtml(item, libState, state, edit) {
     <header class="lib-detail-hdr">
       <div class="lib-detail-title">
         <span class="lib-detail-name">${escapeHtml(item.name)}</span>
-        <span class="o-pill lib-cat-pill lib-cat-${escapeHtml(item.category)}">${escapeHtml(item.category)}</span>
+        <span class="o-pill lib-cat-pill" data-cat="${escapeHtml(item.category)}">${escapeHtml(item.category)}</span>
         <span class="o-pill code">runner: ${escapeHtml(item.runner)}</span>
       </div>
       <div class="lib-detail-actions">

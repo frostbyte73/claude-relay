@@ -20,3 +20,13 @@ export function actionDisplayName(name) {
   const i = String(name ?? '').indexOf('.');
   return i < 0 ? String(name ?? '') : String(name).slice(i + 1);
 }
+
+const CATEGORIES = new Set(Object.keys(ICONS));
+
+// The category half of an action name, normalized to the taxonomy the category
+// palette is keyed on (primitives.css's [data-cat] block).
+export function actionCategory(name) {
+  const i = String(name ?? '').indexOf('.');
+  const cat = i < 0 ? '' : String(name).slice(0, i);
+  return CATEGORIES.has(cat) ? cat : 'custom';
+}

@@ -26,7 +26,7 @@ export function renderComposeForm(mount, opts = {}) {
     <header class="lib-detail-hdr">
       <div class="lib-detail-title">
         <span class="lib-detail-name">${isEdit ? escapeHtml(name) : 'New action'}</span>
-        ${isEdit ? '<span class="o-pill lib-cat-pill lib-cat-meta">editing</span>' : ''}
+        ${isEdit ? '<span class="o-pill lib-cat-pill">editing</span>' : ''}
       </div>
     </header>
     <p class="lib-detail-desc">${isEdit

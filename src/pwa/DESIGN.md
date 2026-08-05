@@ -335,6 +335,11 @@ Hover/press: color transitions only, `--dur-1` (120ms). No scale/lift on buttons
   `--text-mute`. For refs, skill names, branch fragments.
 - **Count badge**: dim by default; `--warn` fill + `--bg` text **only** when the
   count is something the operator needs to act on (the sidebar hot count).
+- **Action-category chip**: mono `--r-control` chip holding the action's own name
+  (`read.investigate` → `investigate`), tinted from the `[data-cat]` palette in
+  `primitives.css` (`--cat-fg` / `--cat-bg`). Category is a fixed taxonomy that
+  means the same thing on every surface, so the Library's dots/badge and the
+  plan's step chips read from that one block — never re-map the colors locally.
 
 ### 7.3 Rows & lists
 
