@@ -49,5 +49,10 @@ export const workApi = {
   react(id, stepId, body)          { return request(`${stepPath(id, stepId)}/reactions`, { method: 'POST', body: JSON.stringify(body) }); },
   regenerateReply(id, stepId, body) { return request(`${stepPath(id, stepId)}/replies/regenerate`, { method: 'POST', body: JSON.stringify(body) }); },
   launchStep(id, stepId)           { return request(`${stepPath(id, stepId)}/launch`, { method: 'POST', body: '{}' }); },
+  messageStep(id, stepId, body)    { return request(`${stepPath(id, stepId)}/message`, { method: 'POST', body: JSON.stringify({ body }) }); },
+  resolveStepGate(id, stepId, approved, feedback) {
+    return request(`${stepPath(id, stepId)}/gate`, { method: 'POST', body: JSON.stringify({ approved, ...(feedback !== undefined ? { feedback } : {}) }) });
+  },
+  markStepResolved(id, stepId)     { return request(`${stepPath(id, stepId)}/mark-resolved`, { method: 'POST', body: '{}' }); },
   setJobPriority(id, highPriority) { return request(`${jobPath(id)}/priority`, { method: 'POST', body: JSON.stringify({ highPriority }) }); },
 };

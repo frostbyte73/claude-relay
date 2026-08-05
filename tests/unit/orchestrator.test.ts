@@ -1088,3 +1088,61 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     expect(updated.lastDelivered?.some((i) => i.kind === 'dispatch-done')).toBe(true);
   });
 });
+
+describe('WorkEngine.markStepResolved', () => {
+  function makeOrchestratedJob(queue: JobQueue, dispatches: OrchestratedStep['dispatches']) {
+    const stepId = randomUUID();
+    const step: OrchestratedStep = {
+      id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches, inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
+    };
+    const job: JobRecord = {
+      id: randomUUID(), source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    };
+    queue.upsert(job);
+    return { jobId: job.id, stepId };
+  }
+
+  it('cancels only queued dispatches, resolves the step, and appends a user-attributed event', () => {
+    const { engine, queue } = makeEngine();
+    const dispatches: OrchestratedStep['dispatches'] = [
+      { id: 'd1', action: 'code.review-diff', brief: 'b1', status: 'queued', attempts: 1 },
+      { id: 'd2', action: 'code.review-diff', brief: 'b2', status: 'running', attempts: 1, sessionId: 'sess-d2', startedAt: 1 },
+      { id: 'd3', action: 'code.review-diff', brief: 'b3', status: 'done', attempts: 1, output: 'ok', finishedAt: 1 },
+    ];
+    const { jobId, stepId } = makeOrchestratedJob(queue, dispatches);
+
+    engine.markStepResolved(jobId, stepId);
+
+    const step = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    expect(step.state).toBe('resolved');
+    expect(step.dispatches.map((d) => d.status)).toEqual(['cancelled', 'running', 'done']);
+    // A dispatch already running or already settled is left exactly as it was — killing a
+    // live session would discard real work, and a settled one has nothing left to cancel
+    // (its late completion can no longer resurrect the step; see the applyMove guard).
+    expect(step.dispatches[1]).toMatchObject({ status: 'running', sessionId: 'sess-d2' });
+    expect(step.dispatches[2]).toMatchObject({ status: 'done', output: 'ok' });
+    expect(step.events?.at(-1)).toMatchObject({ kind: 'resolved', who: 'user' });
+  });
+
+  it('is idempotent — a second call does not re-cancel dispatches or double-append the event', () => {
+    const { engine, queue } = makeEngine();
+    const dispatches: OrchestratedStep['dispatches'] = [
+      { id: 'd1', action: 'code.review-diff', brief: 'b1', status: 'queued', attempts: 1 },
+    ];
+    const { jobId, stepId } = makeOrchestratedJob(queue, dispatches);
+
+    engine.markStepResolved(jobId, stepId);
+    const eventsAfterFirst = (queue.get(jobId)!.steps[0] as OrchestratedStep).events?.length ?? 0;
+
+    engine.markStepResolved(jobId, stepId);
+    const step = queue.get(jobId)!.steps[0] as OrchestratedStep;
+
+    expect(step.state).toBe('resolved');
+    expect(step.dispatches[0]!.status).toBe('cancelled');
+    expect(step.events?.length ?? 0).toBe(eventsAfterFirst);
+  });
+});

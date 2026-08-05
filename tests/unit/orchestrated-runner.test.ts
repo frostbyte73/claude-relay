@@ -194,6 +194,28 @@ describe('applyMove', () => {
     applyMove(b.h, 'j1', 's1', { next: { kind: 'fail', reason: 'stuck' } });
     expect(b.h.failStep).toHaveBeenCalledWith('j1', 's1', 'stuck');
   });
+
+  // A controller's own submit_step_progress call can land after the step has already been
+  // force-resolved (mark-resolved) or has failed — the round it belongs to was still in
+  // flight when that happened. Without this guard, the reject branch above runs
+  // deliverImmediate, which sets state back to 'running' and resumes the controller,
+  // undoing the resolve/fail behind the user's back.
+  it('is a no-op on an already-resolved step: state, memo, and inbox are untouched, no resume', () => {
+    const { h, get } = host(step({ state: 'resolved' }));
+    applyMove(h, 'j1', 's1', { memo: 'late memo', next: { kind: 'self-round' } });
+    expect(get().state).toBe('resolved');
+    expect(get().memo).toBeUndefined();
+    expect(get().inbox).toEqual([]);
+    expect(h.resumeController).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op on an already-failed step', () => {
+    const { h, get } = host(step({ state: 'failed' }));
+    applyMove(h, 'j1', 's1', { next: { kind: 'wait', wait: { reason: 'ci', events: ['ci'] } } });
+    expect(get().state).toBe('failed');
+    expect(get().waitingOn).toBeUndefined();
+    expect(h.resumeController).not.toHaveBeenCalled();
+  });
 });
 
 describe('pushInbox / deliverInbox', () => {

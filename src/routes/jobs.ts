@@ -1,7 +1,7 @@
 import type { Server } from '../server.js';
 import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
-import type { JobRecord } from '../work/work-types.js';
+import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
 import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
@@ -22,6 +22,14 @@ export interface JobsRoutesDeps {
 
 const DEFAULT_EVENT_LIMIT = 500;
 const MAX_EVENT_LIMIT = 5000;
+
+// Every orchestrated-step route 404s the same way for a missing job/step or a step that
+// isn't type 'orchestrated' — message/gate/mark-resolved only make sense for a controller-
+// owned step.
+function orchestratedStep(jobQueue: JobQueue, jobId: string, stepId: string): OrchestratedStep | undefined {
+  const step = jobQueue.get(jobId)?.steps.find((s) => s.id === stepId);
+  return step?.type === 'orchestrated' ? step : undefined;
+}
 
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   const { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager, jobsDir } = deps;
@@ -386,6 +394,42 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
+  });
+
+  server.route('POST', '/api/work/jobs/:id/steps/:stepId/message', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/message$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const [, jobId, stepId] = m;
+    if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
+    const body = await readBody(req);
+    let payload: { body?: unknown };
+    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    if (typeof payload.body !== 'string' || !payload.body.trim()) { res.statusCode = 400; res.end('body (non-empty string) required'); return; }
+    engine.pushStepInbox(jobId!, stepId!, { kind: 'user-message', body: payload.body });
+    res.statusCode = 204; res.end();
+  });
+
+  server.route('POST', '/api/work/jobs/:id/steps/:stepId/gate', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/gate$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const [, jobId, stepId] = m;
+    if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
+    const body = await readBody(req);
+    let payload: { approved?: unknown; feedback?: unknown };
+    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    if (typeof payload.approved !== 'boolean') { res.statusCode = 400; res.end('approved (boolean) required'); return; }
+    if (payload.feedback !== undefined && typeof payload.feedback !== 'string') { res.statusCode = 400; res.end('feedback must be a string'); return; }
+    engine.resolveStepGate(jobId!, stepId!, payload.approved, payload.feedback);
+    res.statusCode = 204; res.end();
+  });
+
+  server.route('POST', '/api/work/jobs/:id/steps/:stepId/mark-resolved', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/mark-resolved$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const [, jobId, stepId] = m;
+    if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
+    engine.markStepResolved(jobId!, stepId!);
+    res.statusCode = 204; res.end();
   });
 
   server.route('POST', '/api/work/jobs/:id/tick', (req, res) => {

@@ -1386,6 +1386,33 @@ export class WorkEngine {
     resolveGate(this.orchestratedHost(), jobId, stepId, approved, feedback);
   }
 
+  // User force-closes a live orchestrated step rather than waiting for the controller to
+  // converge on its own move. A `queued` dispatch is cancelled outright — it never started.
+  // A `running` one is left alone (killing its session would discard real work already
+  // in flight); its eventual settleDispatch/submit_step_progress just updates a dispatch
+  // record nobody reads anymore, because applyMove now refuses to act on an already-resolved
+  // step — see the guard at the top of applyMove.
+  markStepResolved(jobId: string, stepId: string): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (!step || step.type !== 'orchestrated' || step.state === 'resolved') return;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'orchestrated') return s;
+      const next: OrchestratedStep = {
+        ...s,
+        state: 'resolved',
+        dispatches: s.dispatches.map((d) => d.status === 'queued'
+          ? { ...d, status: 'cancelled', finishedAt: this.ctx.now() }
+          : d),
+        updatedAt: this.ctx.now(),
+      };
+      return this.appendStepEvent(next, 'resolved', 'user');
+    });
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_resolved', who: 'user', stepId, body: `${this.stepLabel(jobId, stepId)} — marked resolved by user`,
+    }));
+    void this.tickOne(jobId);
+  }
+
   // Resumes the controller's own session for its next turn — either a fresh self-round
   // (optionally rebound to another action's skill/permissions) or a plain wake-up with
   // whatever the inbox just delivered. Mirrors dispatchActionResume's stale-Stop bookkeeping:

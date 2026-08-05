@@ -145,6 +145,9 @@ export const work = {
   // back (just `{launched}`) — the badge update rides the WS work_launch_changed refetch,
   // not a hand-mutate here.
   async launchStep(id, stepId)   { return workApi.launchStep(id, stepId); },
+  async messageStep(id, stepId, body) { return call(() => workApi.messageStep(id, stepId, body)); },
+  async resolveStepGate(id, stepId, approved, feedback) { return call(() => workApi.resolveStepGate(id, stepId, approved, feedback)); },
+  async markStepResolved(id, stepId) { return call(() => workApi.markStepResolved(id, stepId)); },
   async setPriority(id, highPriority) { return call(() => workApi.setJobPriority(id, highPriority)); },
   async syncJob(id) {
     store.set((s) => ({ ...s, syncingJobId: id, error: null }));

@@ -49,7 +49,11 @@ function recordProgress(s: OrchestratedStep, p: ProgressPayload): OrchestratedSt
 
 export function applyMove(host: OrchestratedHost, jobId: string, stepId: string, p: ProgressPayload): void {
   const step = host.getStep(jobId, stepId);
-  if (!step) return;
+  // A controller's turn can outlive the step: mark-resolved (or any other force-settle) can
+  // land while a round is in flight, and its submit_step_progress call arrives after. Without
+  // this guard, the reject branch below runs deliverImmediate — which sets state back to
+  // 'running' — and resumes the controller, resurrecting a step the user just closed out.
+  if (!step || step.state === 'resolved' || step.state === 'failed') return;
   host.mutateStep(jobId, stepId, (s) => recordProgress(s, p));
 
   const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo);
