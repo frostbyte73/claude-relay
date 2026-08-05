@@ -358,7 +358,9 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
                           + 'that was not authenticated, a network blip, an infra hiccup. Set it to that '
                           + "dispatch's id. Required to repeat an identical (action, brief); without it a "
                           + 'duplicate is rejected. If the child failed because it misunderstood the brief, '
-                          + 'do not retry — write a better brief.',
+                          + 'do not retry — write a better brief. Each dispatch gets a hard cap of retries; '
+                          + 'once reached, further retries of it are refused — do the work yourself in a '
+                          + 'self-round, or fail the step.',
                       },
                     },
                   },

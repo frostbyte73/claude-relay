@@ -96,6 +96,17 @@ describe('applyMove', () => {
     expect(created.retryOf).toBe('d1');
   });
 
+  it('a retry chain terminates at the cap — retrying the second failure creates no third dispatch', () => {
+    const d1 = { id: 'd1', action: 'code.review-diff', brief: 'b', status: 'failed' as const, attempts: 1 };
+    const d2 = { id: 'd2', action: 'code.review-diff', brief: 'b', retryOf: 'd1', status: 'failed' as const, attempts: 2 };
+    const { h, get } = host(step({ dispatches: [d1, d2] }));
+    applyMove(h, 'j1', 's1', {
+      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'b', retryOf: 'd2' }] },
+    });
+    expect(get().dispatches).toHaveLength(2);
+    expect(h.spawnDispatch).not.toHaveBeenCalled();
+  });
+
   it('parks on an explicit gate, holding the move that follows it', () => {
     const { h, get } = host(step());
     applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: '# Spec', question: 'ok?' } });

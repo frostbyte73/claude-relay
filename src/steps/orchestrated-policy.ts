@@ -61,6 +61,12 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
     if (move.dispatches.length === 0) return { kind: 'reject', reason: 'dispatch with no entries' };
     const byKey = new Map(step.dispatches.map((d) => [briefKey(d.action, d.brief), d]));
     const byId = new Map(step.dispatches.map((d) => [d.id, d]));
+    // A target that's already been named by a retry is no longer the most recent attempt —
+    // without this, a controller that always retries the same original dispatch never hits
+    // the cap check (which reads the NAMED target's frozen attempts, not the chain's length),
+    // and the retry loop this task exists to bound would run forever.
+    const alreadyRetried = new Set(step.dispatches.filter((d) => d.retryOf).map((d) => d.retryOf!));
+    const retriedInThisMove = new Set<string>();
     for (const d of move.dispatches) {
       if (!info.sideEffects(d.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(d.action)}` };
@@ -71,9 +77,16 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
         if (target.status !== 'failed') {
           return { kind: 'reject', reason: `retryOf must name a failed dispatch; ${d.retryOf} is ${target.status}` };
         }
+        if (alreadyRetried.has(d.retryOf) || retriedInThisMove.has(d.retryOf)) {
+          return {
+            kind: 'reject',
+            reason: `${d.retryOf} has already been retried — name the most recent attempt, not the original`,
+          };
+        }
         if (target.attempts >= MAX_DISPATCH_ATTEMPTS) {
           return { kind: 'reject', reason: `${d.action} already attempted ${target.attempts}× — change the approach or give up` };
         }
+        retriedInThisMove.add(d.retryOf);
         continue;
       }
       if (byKey.has(briefKey(d.action, d.brief))) {

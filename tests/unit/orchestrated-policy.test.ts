@@ -162,14 +162,50 @@ describe('validateNext — dispatch retries', () => {
     expect(v).toMatchObject({ kind: 'reject' });
   });
 
-  it('accepts a retryOf whose brief differs from the failed dispatch it names', () => {
-    const prior = dispatch({ id: 'd1', action: 'code.review-diff', brief: 'first try', status: 'failed', attempts: 1 });
+  it('refuses to retry an original that has already been retried — must name the most recent attempt', () => {
+    const original = dispatch({ id: 'd1', ...same, status: 'failed', attempts: 1 });
+    const retry = dispatch({ id: 'd2', ...same, retryOf: 'd1', status: 'failed', attempts: 2 });
     const v = validateNext(
-      step({ dispatches: [prior] }),
-      { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'improved brief', retryOf: 'd1' }] },
+      step({ dispatches: [original, retry] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }] },
       info,
     );
-    expect(v.kind).toBe('allow');
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/most recent attempt/i);
+  });
+
+  it('rejects two entries in the same move naming the same retryOf', () => {
+    const prior = dispatch({ id: 'd1', ...same, status: 'failed', attempts: 1 });
+    const v = validateNext(
+      step({ dispatches: [prior] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }, { ...same, retryOf: 'd1' }] },
+      info,
+    );
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/most recent attempt/i);
+  });
+
+  it('a full retry chain terminates at the cap: d1 fails, retry to d2, d2 fails, retrying d2 is rejected', () => {
+    const d1 = dispatch({ id: 'd1', ...same, status: 'failed', attempts: 1 });
+    const retryD1 = validateNext(step({ dispatches: [d1] }), { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }] }, info);
+    expect(retryD1.kind).toBe('allow');
+
+    const d2 = dispatch({ id: 'd2', ...same, retryOf: 'd1', status: 'failed', attempts: MAX_DISPATCH_ATTEMPTS });
+    const retryD2 = validateNext(
+      step({ dispatches: [d1, d2] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd2' }] },
+      info,
+    );
+    expect(retryD2).toMatchObject({ kind: 'reject' });
+    expect((retryD2 as { reason: string }).reason).toMatch(/attempt/i);
+
+    const retryD1Again = validateNext(
+      step({ dispatches: [d1, d2] }),
+      { kind: 'dispatch', dispatches: [{ ...same, retryOf: 'd1' }] },
+      info,
+    );
+    expect(retryD1Again).toMatchObject({ kind: 'reject' });
+    expect((retryD1Again as { reason: string }).reason).toMatch(/most recent attempt/i);
   });
 });
 
