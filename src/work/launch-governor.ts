@@ -124,6 +124,22 @@ export class LaunchGovernor {
     if (removed) this.emit();
   }
 
+  // Drops every parked launch scoped to one step — its own resume-round launch
+  // (`${jobId}#${stepId}`) and any dispatch children keyed `${jobId}#${stepId}#${dispatchId}`
+  // — without touching the job's other steps. `cancel(jobId)` is job-wide (abandon/delete/
+  // reset); a step-level force-settle (mark-resolved) needs this narrower scope.
+  cancelStep(jobId: string, stepId: string): void {
+    const scope = `${jobId}#${stepId}`;
+    let removed = false;
+    for (const key of this.parked.keys()) {
+      if (key === scope || key.startsWith(`${scope}#`)) {
+        this.parked.delete(key);
+        removed = true;
+      }
+    }
+    if (removed) this.emit();
+  }
+
   describe(key: string): LaunchState {
     for (const activeKey of this.active.values()) {
       if (activeKey === key) return { state: 'running' };

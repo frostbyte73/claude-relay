@@ -41,6 +41,13 @@ describe('validateNext', () => {
     }
   });
 
+  // `.failure` can land before `state` catches up to 'failed' — this must reject on its own,
+  // not just on `state === 'failed'` (see the matching OR in applyMove's early-return guard).
+  it('rejects any move once .failure is set, even if state has not caught up to failed yet', () => {
+    const v = validateNext(step({ state: 'running', failure: { reason: 'boom', at: 1 } }), { kind: 'self-round' }, info);
+    expect(v.kind).toBe('reject');
+  });
+
   it('rejects when the round budget is spent', () => {
     const v = validateNext(step({ roundsSpent: MAX_ROUNDS }), { kind: 'self-round' }, info);
     expect(v).toMatchObject({ kind: 'reject' });

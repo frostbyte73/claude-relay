@@ -1325,7 +1325,17 @@ export class WorkEngine {
       return;
     }
     if (opts.journal !== false) this.journalBlocker(jobId, stepId, reason);
-    this.mutateStep(jobId, stepId, (s) => this.appendStepEvent({ ...s, failure: { reason, at: this.ctx.now() } }, 'failed', 'session'));
+    this.mutateStep(jobId, stepId, (s) => {
+      const next: Step = { ...s, failure: { reason, at: this.ctx.now() } };
+      // open-pr/action steps use `.failure` alone as their terminal marker (their `state`
+      // enum has no `failed` member). orchestrated does have one — set it here so the two
+      // agree, rather than leaving `state` frozen at whatever it was mid-round. Without this,
+      // a step the engine treats as terminal (via `.failure`) still reads 'running'/'waiting',
+      // which is exactly the inconsistency applyMove/validateNext now guard against on both
+      // fields.
+      if (next.type === 'orchestrated') next.state = 'failed';
+      return this.appendStepEvent(next, 'failed', 'session');
+    });
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_failed', who: 'session', stepId, body: `${this.stepLabel(jobId, stepId)} — ${reason}`,
     }));
@@ -1395,11 +1405,21 @@ export class WorkEngine {
   markStepResolved(jobId: string, stepId: string): void {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (!step || step.type !== 'orchestrated' || step.state === 'resolved') return;
+    // A `queued` dispatch's parked launch survives the status flip below unless dropped here
+    // too — the governor doesn't read Dispatch.status, so a launch parked under token headroom
+    // would still fire later, flip the dispatch back to 'running', and spawn a real session for
+    // work the user just cancelled. Scoped to this step (not the job-wide `cancel()` used by
+    // abandon/delete/reset) so a sibling step's own parked launch is untouched.
+    this.opts.governor?.cancelStep(jobId, stepId);
     this.mutateStep(jobId, stepId, (s) => {
       if (s.type !== 'orchestrated') return s;
       const next: OrchestratedStep = {
         ...s,
         state: 'resolved',
+        // A step force-resolved after failing shouldn't still render as failed forever
+        // after — stateLabel/stateTone (step-card.js) and vm/tracked.js give `.failure`
+        // priority over `state`. Matches rerunLatest's retry path and the open-pr merge path.
+        failure: undefined,
         dispatches: s.dispatches.map((d) => d.status === 'queued'
           ? { ...d, status: 'cancelled', finishedAt: this.ctx.now() }
           : d),
@@ -1533,6 +1553,13 @@ export class WorkEngine {
       run: () => {
         const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
         if (!cur || cur.type !== 'orchestrated' || cur.cancelled) return false;
+        // The real backstop: re-read the dispatch's own status at fire time, not just the
+        // step's. `markStepResolved`'s governor.cancelStep() is what's supposed to keep this
+        // launch from ever firing after it flips a queued dispatch to 'cancelled' — this is
+        // the belt to that braces, in case a launch was parked under a key that cancellation
+        // missed (or predates it).
+        const target = cur.dispatches.find((d) => d.id === dispatch.id);
+        if (!target || target.status !== 'queued') return false;
         this.roleBySession.set(sessionId, { role: 'dispatch', jobId, stepId, dispatchId: dispatch.id });
         this.bindAction(sessionId, dispatch.action);
         this.stampActionSession(sessionId, dispatch.action, dispatch.action);

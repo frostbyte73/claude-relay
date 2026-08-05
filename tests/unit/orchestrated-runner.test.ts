@@ -209,10 +209,17 @@ describe('applyMove', () => {
     expect(h.resumeController).not.toHaveBeenCalled();
   });
 
-  it('is a no-op on an already-failed step', () => {
-    const { h, get } = host(step({ state: 'failed' }));
-    applyMove(h, 'j1', 's1', { next: { kind: 'wait', wait: { reason: 'ci', events: ['ci'] } } });
-    expect(get().state).toBe('failed');
+  // `state: 'failed'` is now something `WorkEngine.onStepFailed` actually produces (see
+  // engine.ts), so that branch is covered end-to-end by the orchestrator.test.ts case that
+  // drives it through onStepFailed. What's only reachable in this pure module is the gap
+  // that guard closes defensively: `.failure` landing before `state` has caught up to
+  // 'failed' — belt and braces, since not every path that sets `.failure` is guaranteed to
+  // update `state` in the same breath.
+  it('is a no-op once .failure is set, even if state has not caught up to failed yet', () => {
+    const { h, get } = host(step({ state: 'running', failure: { reason: 'boom', at: 1 } }));
+    applyMove(h, 'j1', 's1', { memo: 'late memo', next: { kind: 'wait', wait: { reason: 'ci', events: ['ci'] } } });
+    expect(get().state).toBe('running');
+    expect(get().memo).toBeUndefined();
     expect(get().waitingOn).toBeUndefined();
     expect(h.resumeController).not.toHaveBeenCalled();
   });

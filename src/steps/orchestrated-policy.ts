@@ -29,8 +29,10 @@ function needsGate(action: string, info: ActionInfo): boolean {
 }
 
 export function validateNext(step: OrchestratedStep, move: NextMove, info: ActionInfo): PolicyVerdict {
-  if (step.state === 'resolved' || step.state === 'failed') {
-    return { kind: 'reject', reason: `step is already ${step.state}` };
+  // `.failure` is checked alongside `state` — a failure that arrived without (yet) flipping
+  // `state` to 'failed' is still terminal; see the matching guard in applyMove.
+  if (step.state === 'resolved' || step.state === 'failed' || step.failure) {
+    return { kind: 'reject', reason: `step is already ${step.failure ? 'failed' : step.state}` };
   }
   if (move.kind === 'resolve' || move.kind === 'fail') return { kind: 'allow', move };
 

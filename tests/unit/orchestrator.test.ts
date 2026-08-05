@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
+import { LaunchGovernor } from '../../src/work/launch-governor.js';
 import { OUTPOST_MCP_TOOLS } from '../../src/mcp-server.js';
 import type { DraftedReply, Finding, JobRecord, OpenPrStep, OrchestratedStep, ProposedStep, Step } from '../../src/work/work-types.js';
 
@@ -1090,13 +1091,16 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
 });
 
 describe('WorkEngine.markStepResolved', () => {
-  function makeOrchestratedJob(queue: JobQueue, dispatches: OrchestratedStep['dispatches']) {
+  function makeOrchestratedJob(
+    queue: JobQueue, dispatches: OrchestratedStep['dispatches'], overrides: Partial<OrchestratedStep> = {},
+  ) {
     const stepId = randomUUID();
     const step: OrchestratedStep = {
       id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
       controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
       dispatches, inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
       state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
+      ...overrides,
     };
     const job: JobRecord = {
       id: randomUUID(), source: 'manual', title: 't', description: 'd', state: 'executing',
@@ -1128,21 +1132,114 @@ describe('WorkEngine.markStepResolved', () => {
     expect(step.events?.at(-1)).toMatchObject({ kind: 'resolved', who: 'user' });
   });
 
-  it('is idempotent — a second call does not re-cancel dispatches or double-append the event', () => {
+  it('is idempotent — a second call does not re-cancel dispatches, double-append the event, or leave `.failure` set', () => {
     const { engine, queue } = makeEngine();
     const dispatches: OrchestratedStep['dispatches'] = [
       { id: 'd1', action: 'code.review-diff', brief: 'b1', status: 'queued', attempts: 1 },
     ];
-    const { jobId, stepId } = makeOrchestratedJob(queue, dispatches);
+    // Seeded already-failed: force-resolving a step that failed must not leave it reading as
+    // failed forever after — step-card.js's stateLabel/stateTone and vm/tracked.js give
+    // `.failure` priority over `state`, mirroring rerunLatest's retry path and the open-pr
+    // merge path, both of which clear `.failure` on their own recovery.
+    const { jobId, stepId } = makeOrchestratedJob(queue, dispatches, { failure: { reason: 'boom', at: 1 } });
 
     engine.markStepResolved(jobId, stepId);
-    const eventsAfterFirst = (queue.get(jobId)!.steps[0] as OrchestratedStep).events?.length ?? 0;
+    const afterFirst = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    expect(afterFirst.failure).toBeUndefined();
+    const eventsAfterFirst = afterFirst.events?.length ?? 0;
 
     engine.markStepResolved(jobId, stepId);
     const step = queue.get(jobId)!.steps[0] as OrchestratedStep;
 
     expect(step.state).toBe('resolved');
+    expect(step.failure).toBeUndefined();
     expect(step.dispatches[0]!.status).toBe('cancelled');
     expect(step.events?.length ?? 0).toBe(eventsAfterFirst);
+  });
+});
+
+describe('WorkEngine.onStepFailed — orchestrated steps', () => {
+  it('sets state to failed (not just .failure), closing the reachable resurrection hazard', () => {
+    const { engine, queue } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const stepId = randomUUID();
+    const step: OrchestratedStep = {
+      id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
+    };
+    queue.mutate(job.id, (j) => ({ ...j, steps: [step] }));
+
+    engine.onStepFailed(job.id, stepId, 'boom');
+    const failed = queue.get(job.id)!.steps[0] as OrchestratedStep;
+    expect(failed.state).toBe('failed');
+    expect(failed.failure?.reason).toBe('boom');
+
+    // The reachable hazard: a controller's own submit_step_progress landing after the step
+    // failed (its round was still in flight) must not resurrect it. This is the actual
+    // production path onStepFailed feeds applyMove's guard through — not a hand-set fixture.
+    engine.onStepProgress(job.id, stepId, { memo: 'late memo', next: { kind: 'self-round' } });
+    const after = queue.get(job.id)!.steps[0] as OrchestratedStep;
+    expect(after.state).toBe('failed');
+    expect(after.memo).toBeUndefined();
+  });
+});
+
+describe('WorkEngine.markStepResolved — parked dispatch launches', () => {
+  it('drops a parked dispatch launch from the governor so it cannot fire after the step is resolved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-cancel-'));
+    const queue = new JobQueue(dir);
+    const sessionManager = {
+      spawnDetached() { /* no-op */ },
+      send() { /* no-op */ },
+      isWorking() { return false; },
+      sendOrResume() { /* no-op */ },
+    } as never;
+    const worktreeManager = { provision: async () => ({ path: null }) } as never;
+    const linearWriter = { setState: async () => undefined } as never;
+    const actionRegistry = {
+      getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+      listActions: () => [],
+    } as never;
+    // Zero concurrency forces every queued-priority launch to park instead of firing — a
+    // dispatch launch is 'queued' priority (see isReactiveAction), so this reliably reproduces
+    // "parked under token headroom", the real LaunchGovernor case markStepResolved must guard.
+    const governor = new LaunchGovernor({ getSnapshot: () => undefined, getConcurrency: () => 0 });
+    const engine = new WorkEngine({
+      queue, sessionManager, worktreeManager, linearWriter, actionRegistry, governor,
+      jobsDir: join(dir, 'jobs'), now: () => 1,
+    });
+
+    const stepId = randomUUID();
+    const step: OrchestratedStep = {
+      id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
+    };
+    const job: JobRecord = {
+      id: randomUUID(), source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    };
+    queue.upsert(job);
+
+    engine.onStepProgress(job.id, stepId, {
+      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'review it' }] },
+    });
+    // spawnDispatchSession is fire-and-forget from applyMove; flush the microtask chain its
+    // `await worktreeManager.provision(...)` needs before the parked launch exists to observe.
+    for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+
+    const dispatchId = (queue.get(job.id)!.steps[0] as OrchestratedStep).dispatches[0]!.id;
+    const key = `${job.id}#${stepId}#${dispatchId}`;
+    expect(governor.describe(key).state).toBe('queued');
+
+    engine.markStepResolved(job.id, stepId);
+
+    expect(governor.describe(key).state).toBe('idle');
+    expect(governor.forceFire(key)).toBe(false);
+    const dispatches = (queue.get(job.id)!.steps[0] as OrchestratedStep).dispatches;
+    expect(dispatches.find((d) => d.id === dispatchId)?.status).toBe('cancelled');
   });
 });
