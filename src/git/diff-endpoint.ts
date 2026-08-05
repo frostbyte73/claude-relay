@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WorktreeManager, WorktreeRecord, DiffMode } from './worktree-manager.js';
-import { runGitDiff, runGitDiffInCwd } from './worktree-manager.js';
+import { diffBaseFor, runGitDiff, runGitDiffInCwd } from './worktree-manager.js';
 import { parseUnifiedDiff, type DiffFile } from './diff-parser.js';
 
 const MAX_FILES = 50;
@@ -60,9 +60,8 @@ export function handleDiffRoute(
     if (m === 'worktree') {
       mergeUntrackedFiles(allFiles, rec.worktreePath);
     }
-    const baseBranch = rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
     return buildResponse(m, allFiles, {
-      baseRef: m === 'branch' ? baseBranch : 'HEAD',
+      baseRef: m === 'branch' ? diffBaseFor(rec) : 'HEAD',
       headRef: m === 'branch' ? rec.branch : 'WORKTREE',
     });
   }

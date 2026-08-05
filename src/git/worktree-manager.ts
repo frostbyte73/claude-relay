@@ -9,6 +9,10 @@ export interface WorktreeRecord {
   worktreePath: string;
   branch: string;
   baseBranch: string;
+  // Exact start point the branch was cut from — `baseBranch` when the local ref was current
+  // (or ahead), else `origin/<baseBranch>`. Diff + squash bases read this, not baseBranch,
+  // so a stale local base can't fold upstream commits into the step's diff.
+  baseRef?: string;
   createdAt: number;
   // Tombstone when archived: path/branch fields cleared; SessionStore reads this to mark `archived: true`.
   archivedAt?: number;
@@ -28,6 +32,7 @@ export interface WorktreeManagerOpts {
 const SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 // git-check-ref-format shape; leading dash would be parsed as a git flag.
 const BRANCH_NAME_RE = /^[A-Za-z0-9_./][A-Za-z0-9_./-]{0,128}$/;
+const FETCH_TIMEOUT_MS = 20_000;
 
 export class WorktreeManager {
   private records = new Map<string, WorktreeRecord>();
@@ -95,6 +100,7 @@ export class WorktreeManager {
     const branch = opts.branch ?? `outpost/${shortId}`;
     const worktreePath = join(this.root, opts.sessionId);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    const startRef = resolveStartRef(opts.projectCwd, opts.baseBranch);
 
     // If this branch is already checked out somewhere, decide whether to adopt it.
     // Primary working tree: park it on baseBranch if clean (so we can move the branch into
@@ -136,6 +142,7 @@ export class WorktreeManager {
           worktreePath,
           branch,
           baseBranch: opts.baseBranch,
+          baseRef: startRef,
           createdAt: Date.now(),
         };
         this.records.set(opts.sessionId, rec);
@@ -150,7 +157,7 @@ export class WorktreeManager {
     // `--` separator: belt-and-suspenders with the regexes above — git won't parse a leading-`-` path/branch as a flag.
     const args = branchExistsLocally
       ? ['-C', opts.projectCwd, 'worktree', 'add', '--', worktreePath, branch]
-      : ['-C', opts.projectCwd, 'worktree', 'add', '-b', branch, '--', worktreePath, opts.baseBranch];
+      : ['-C', opts.projectCwd, 'worktree', 'add', '-b', branch, '--', worktreePath, startRef];
     execFileSync('git', args, { stdio: 'pipe' });
     copyAllowlistedIgnored(opts.projectCwd, worktreePath);
     const rec: WorktreeRecord = {
@@ -159,6 +166,7 @@ export class WorktreeManager {
       worktreePath,
       branch,
       baseBranch: opts.baseBranch,
+      baseRef: startRef,
       createdAt: Date.now(),
     };
     this.records.set(opts.sessionId, rec);
@@ -186,8 +194,11 @@ export class WorktreeManager {
       const rec = await this.create({ sessionId: stepId, projectCwd: ref.repoCwd, baseBranch, branch: ref.branch });
       return { path: rec.worktreePath };
     }
-    // readonly: detached worktree at `ref.ref ?? HEAD`. No branch created.
-    const at = ref.ref ?? 'HEAD';
+    // readonly: detached worktree at an explicit `ref.ref`, else the freshly-resolved base.
+    // NOT `HEAD` — that's whatever branch the user's primary checkout happens to sit on
+    // (often an unrelated feature branch), so investigations would read a tree that answers
+    // a different question than "what does main do today".
+    const at = ref.ref ?? resolveStartRef(ref.repoCwd, resolveBaseBranch(ref.repoCwd));
     if (!BRANCH_NAME_RE.test(at)) throw new Error(`invalid ref: ${JSON.stringify(at)}`);
     const worktreePath = join(this.root, stepId);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -202,6 +213,7 @@ export class WorktreeManager {
       worktreePath,
       branch: '',
       baseBranch: '',
+      baseRef: at,
       createdAt: Date.now(),
     };
     this.records.set(stepId, rec);
@@ -335,10 +347,17 @@ export class WorktreeManager {
 
 export type DiffMode = 'branch' | 'worktree';
 
+// The ref the branch was actually cut from. Records written before baseRef existed fall back to
+// baseBranch, which is what they were branched from anyway.
+export function diffBaseFor(rec: Pick<WorktreeRecord, 'baseRef' | 'baseBranch'>): string {
+  if (rec.baseRef && rec.baseRef.length > 0) return rec.baseRef;
+  return rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
+}
+
 // Argv-only, no shell — branch regex + trailing `--` block argv-flag smuggling on refs/paths.
 export function runGitDiff(rec: WorktreeRecord, mode: DiffMode): string {
   if (!rec.worktreePath) throw new Error('cannot diff a tombstoned worktree record');
-  const baseBranch = rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
+  const baseBranch = diffBaseFor(rec);
   if (!BRANCH_NAME_RE.test(baseBranch)) throw new Error(`invalid baseBranch: ${JSON.stringify(baseBranch)}`);
   if (!BRANCH_NAME_RE.test(rec.branch)) throw new Error(`invalid branch: ${JSON.stringify(rec.branch)}`);
 
@@ -395,6 +414,57 @@ function readCurrentBranch(cwd: string): string | null {
     return out && out !== 'HEAD' ? out : null; // 'HEAD' == detached
 
   } catch { return null; }
+}
+
+// Fetch `origin/<base>` and decide what to actually branch from. Local wins only when it holds
+// commits origin doesn't (unpushed work you want to build on); otherwise origin wins, because a
+// checkout that hasn't been pulled in days would silently cut branches from a stale tree.
+// Prefer fast-forwarding the local ref so baseBranch stays an honest diff/PR base; when the base
+// is checked out somewhere git refuses that, and we hand back `origin/<base>` as the start point.
+function resolveStartRef(cwd: string, baseBranch: string): string {
+  fetchBase(cwd, baseBranch);
+  const remote = `origin/${baseBranch}`;
+  if (!refExists(cwd, remote)) return baseBranch;
+  if (!refExists(cwd, baseBranch)) return remote;
+  if (isAncestor(cwd, remote, baseBranch)) return baseBranch; // local ahead of (or equal to) origin
+  try {
+    // Moves the ref only — no working tree touched. Refused when baseBranch is checked out.
+    execFileSync('git', ['-C', cwd, 'fetch', '--quiet', 'origin', `${baseBranch}:${baseBranch}`], {
+      stdio: 'pipe',
+      timeout: FETCH_TIMEOUT_MS,
+    });
+    return baseBranch;
+  } catch {
+    return remote;
+  }
+}
+
+// Best-effort: an offline machine or a repo with no `origin` must not block provisioning.
+function fetchBase(cwd: string, baseBranch: string): void {
+  try {
+    execFileSync('git', ['-C', cwd, 'fetch', '--quiet', 'origin', baseBranch], {
+      stdio: 'pipe',
+      timeout: FETCH_TIMEOUT_MS,
+    });
+  } catch { /* stale remote-tracking ref is better than a failed step */ }
+}
+
+function refExists(cwd: string, ref: string): boolean {
+  try {
+    execFileSync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', ref], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch { return false; }
+}
+
+function isAncestor(cwd: string, maybeAncestor: string, descendant: string): boolean {
+  try {
+    execFileSync('git', ['-C', cwd, 'merge-base', '--is-ancestor', maybeAncestor, descendant], {
+      stdio: 'pipe',
+    });
+    return true;
+  } catch { return false; }
 }
 
 function resolveBaseBranch(cwd: string): string {

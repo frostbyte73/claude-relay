@@ -473,3 +473,120 @@ describe('runGitDiff', () => {
     }, 'branch')).toThrow(/invalid branch/);
   });
 });
+
+// origin-backed fixture: `local` is a clone whose main is behind origin by one commit, with a
+// stale remote-tracking ref (never fetched since origin moved) — the shape that had steps
+// branching 62 commits behind main.
+function makeClonePair(): { local: string; originTip: string; localTip: string } {
+  const bare = mkdtempSync(join(tmpdir(), 'wt-origin-'));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+  const seed = makeGitRepo();
+  execFileSync('git', ['-C', seed, 'remote', 'add', 'origin', bare]);
+  execFileSync('git', ['-C', seed, 'push', '-q', '-u', 'origin', 'main']);
+
+  const local = mkdtempSync(join(tmpdir(), 'wt-clone-'));
+  execFileSync('git', ['clone', '-q', bare, local]);
+  execFileSync('git', ['-C', local, 'config', 'user.email', 'test@example']);
+  execFileSync('git', ['-C', local, 'config', 'user.name', 'Test']);
+  const localTip = execFileSync('git', ['-C', local, 'rev-parse', 'main']).toString().trim();
+
+  // Advance origin from a different clone; `local` learns nothing until something fetches.
+  execFileSync('git', ['-C', seed, 'commit', '--allow-empty', '-q', '-m', 'upstream work']);
+  execFileSync('git', ['-C', seed, 'push', '-q', 'origin', 'main']);
+  const originTip = execFileSync('git', ['-C', seed, 'rev-parse', 'main']).toString().trim();
+
+  return { local, originTip, localTip };
+}
+
+function headOf(cwd: string): string {
+  return execFileSync('git', ['-C', cwd, 'rev-parse', 'HEAD']).toString().trim();
+}
+
+describe('WorktreeManager — base ref freshness', () => {
+  it('fast-forwards a stale local base and branches from it when the base is not checked out', async () => {
+    const { local, originTip, localTip } = makeClonePair();
+    execFileSync('git', ['-C', local, 'checkout', '-q', '-b', 'some-feature']);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-ff', projectCwd: local, baseBranch: 'main' });
+
+    expect(headOf(rec.worktreePath)).toBe(originTip);
+    expect(headOf(rec.worktreePath)).not.toBe(localTip);
+    // Local main caught up, so it stays an honest diff/PR base.
+    expect(execFileSync('git', ['-C', local, 'rev-parse', 'main']).toString().trim()).toBe(originTip);
+    expect(rec.baseRef).toBe('main');
+  });
+
+  it('branches from origin/<base> when the stale base is checked out and cannot be moved', async () => {
+    const { local, originTip, localTip } = makeClonePair(); // clone leaves main checked out
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-remote-base', projectCwd: local, baseBranch: 'main' });
+
+    expect(headOf(rec.worktreePath)).toBe(originTip);
+    // git refuses to move a checked-out ref, so the user's tree is untouched...
+    expect(execFileSync('git', ['-C', local, 'rev-parse', 'main']).toString().trim()).toBe(localTip);
+    // ...and the diff/squash base must follow what we actually branched from, not stale main.
+    expect(rec.baseRef).toBe('origin/main');
+    expect(runGitDiff(rec, 'branch')).toBe('');
+  });
+
+  it('keeps the local base when it is strictly ahead of origin (unpushed work to build on)', async () => {
+    const { local } = makeClonePair();
+    execFileSync('git', ['-C', local, 'fetch', '-q', 'origin']);
+    execFileSync('git', ['-C', local, 'merge', '-q', '--ff-only', 'origin/main']);
+    execFileSync('git', ['-C', local, 'commit', '--allow-empty', '-q', '-m', 'unpushed local work']);
+    const ahead = execFileSync('git', ['-C', local, 'rev-parse', 'main']).toString().trim();
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-ahead', projectCwd: local, baseBranch: 'main' });
+
+    expect(headOf(rec.worktreePath)).toBe(ahead);
+    expect(rec.baseRef).toBe('main');
+  });
+
+  it('prefers origin when the local base has diverged (unpushed commits but also behind)', async () => {
+    const { local, originTip } = makeClonePair();
+    execFileSync('git', ['-C', local, 'commit', '--allow-empty', '-q', '-m', 'local commit on a stale base']);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-diverged', projectCwd: local, baseBranch: 'main' });
+
+    expect(headOf(rec.worktreePath)).toBe(originTip);
+    expect(rec.baseRef).toBe('origin/main');
+  });
+
+  it('falls back to the local base in a repo with no origin', async () => {
+    const repo = makeGitRepo();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-no-origin', projectCwd: repo, baseBranch: 'main' });
+
+    expect(rec.baseRef).toBe('main');
+    expect(headOf(rec.worktreePath)).toBe(execFileSync('git', ['-C', repo, 'rev-parse', 'main']).toString().trim());
+  });
+
+  it('provisions a readonly workspace at the fresh base, not the primary checkout HEAD', async () => {
+    const { local, originTip } = makeClonePair();
+    // Primary parked on an unrelated feature branch — what investigations used to read.
+    execFileSync('git', ['-C', local, 'checkout', '-q', '-b', 'unrelated']);
+    execFileSync('git', ['-C', local, 'commit', '--allow-empty', '-q', '-m', 'unrelated work']);
+    const primaryHead = headOf(local);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-ro', { kind: 'readonly', repoCwd: local });
+
+    expect(path).toBeTruthy();
+    expect(headOf(path!)).toBe(originTip);
+    expect(headOf(path!)).not.toBe(primaryHead);
+  });
+
+  it('honors an explicit readonly ref instead of resolving the base', async () => {
+    const { local, localTip } = makeClonePair();
+    execFileSync('git', ['-C', local, 'branch', 'pinned', localTip]);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-pinned', { kind: 'readonly', repoCwd: local, ref: 'pinned' });
+
+    expect(headOf(path!)).toBe(localTip);
+  });
+});

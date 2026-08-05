@@ -411,6 +411,10 @@ export async function gitSquashMergeToBase(opts: SquashMergeToBaseOpts): Promise
 export interface FinalizeSquashToBranchOpts {
   worktreePath: string;
   baseBranch: string;
+  // What the branch was cut from, when that differs from the local baseBranch ref (stale local
+  // base that git refused to fast-forward). The squash rewinds to this; `--base` stays the
+  // branch name, since that's a ref on the remote.
+  baseRef?: string;
   newBranch: string;
   message: string;
 }
@@ -424,13 +428,17 @@ export async function gitFinalizeSquashToBranch(opts: FinalizeSquashToBranchOpts
   if (!BRANCH_NAME_RE.test(opts.baseBranch) || !BRANCH_NAME_RE.test(opts.newBranch)) {
     return { ok: false, stdout: '', stderr: 'invalid branch name', exitCode: 1 };
   }
+  const squashBase = opts.baseRef && opts.baseRef.length > 0 ? opts.baseRef : opts.baseBranch;
+  if (!BRANCH_NAME_RE.test(squashBase)) {
+    return { ok: false, stdout: '', stderr: 'invalid base ref', exitCode: 1 };
+  }
   // Require commit-clean: intent is "wrap up commits I already made", not snarf working tree.
   const dirty = await runGit(opts.worktreePath, ['status', '--porcelain']);
   if (dirty.ok && dirty.stdout.trim().length > 0) {
     return { ok: false, stdout: '', stderr: `worktree has uncommitted changes:\n${dirty.stdout}`, exitCode: 1 };
   }
   // reset --soft rewinds HEAD to base leaving every diff staged; one commit collapses it.
-  const reset = await runGit(opts.worktreePath, ['reset', '--soft', opts.baseBranch, '--']);
+  const reset = await runGit(opts.worktreePath, ['reset', '--soft', squashBase, '--']);
   if (!reset.ok) return reset;
   const commit = await runGit(opts.worktreePath, ['commit', '-m', opts.message]);
   if (!commit.ok) return commit;

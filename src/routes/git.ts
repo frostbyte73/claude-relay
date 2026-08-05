@@ -1,6 +1,7 @@
 import type { Server } from '../server.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
+import { diffBaseFor } from '../git/worktree-manager.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
 import {
@@ -326,7 +327,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       const exists = await gitRemoteBranchExists(rec.worktreePath, payload.newBranch);
       const result: GitCommandResult & { url?: string } = exists
         ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch })
-        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, newBranch: payload.newBranch, message });
+        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message });
       if (result.ok) {
         const ref = engine.openPrStepForSession(sessionId);
         const url = result.url;
