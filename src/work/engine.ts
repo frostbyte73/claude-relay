@@ -1419,7 +1419,15 @@ export class WorkEngine {
     if (this.opts.sessionManager.isWorking(sessionId)) {
       this.owedStaleStops.set(sessionId, (this.owedStaleStops.get(sessionId) ?? 0) + 1);
     }
-    const ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
+    let ws: { path: string | null };
+    try {
+      ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
+    } catch (e) {
+      const reason = (e as Error).message ?? String(e);
+      console.warn(`[work] worktree provision failed for step ${stepId}: ${reason}`);
+      this.onStepFailed(jobId, stepId, `workspace provision failed: ${reason}`, { journal: false });
+      return;
+    }
     const cwd = ws.path ?? this.orchestratorCwd();
     this.submitLaunch({
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: boundAction, label: boundAction,
@@ -1459,7 +1467,18 @@ export class WorkEngine {
     if (!j || !s || s.type !== 'orchestrated') return;
 
     const workspace = dispatch.workspace ?? s.workspace;
-    const ws = await this.opts.worktreeManager.provision(dispatch.id, workspace);
+    let ws: { path: string | null };
+    try {
+      ws = await this.opts.worktreeManager.provision(dispatch.id, workspace);
+    } catch (e) {
+      // Fail the dispatch, not the parent step — a bad repoCwd or git error on one fan-out
+      // child is the controller's to interpret via the next inbox delivery, same as any other
+      // dispatch failure (see settleDispatch).
+      const reason = (e as Error).message ?? String(e);
+      console.warn(`[work] worktree provision failed for dispatch ${dispatch.id}: ${reason}`);
+      this.settleDispatch(jobId, stepId, dispatch.id, 'failed', { failure: `workspace provision failed: ${reason}` });
+      return;
+    }
     const cwd = ws.path ?? this.orchestratorCwd();
 
     const envelope = {

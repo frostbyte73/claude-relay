@@ -1,5 +1,5 @@
 import { validateNext, type ActionInfo } from '../steps/orchestrated-policy.js';
-import { drainForDelivery, shouldDeliver } from '../steps/orchestrated-inbox.js';
+import { deliverImmediate, drainForDelivery, shouldDeliver } from '../steps/orchestrated-inbox.js';
 import type { Dispatch, InboxItem, NextMove, OrchestratedStep, WatchedEvent } from './work-types.js';
 
 export interface OrchestratedHost {
@@ -55,19 +55,16 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo);
 
   if (verdict.kind === 'reject') {
-    // One corrective turn. A controller that violates policy twice running is not
-    // going to recover on a third try.
-    const had = step.inbox.some((i) => i.kind === 'policy-rejection');
-    if (had) {
+    // One corrective turn. A controller that violates policy twice running (with no accepted
+    // move in between to earn forgiveness — see runMove) is not going to recover on a third try.
+    if (step.pendingPolicyStrike) {
       host.failStep(jobId, stepId, `controller violated policy twice: ${verdict.reason}`);
       return;
     }
-    // Corrective feedback on the SAME round, not a fresh one — push directly and resume
-    // rather than through pushInbox/deliverInbox, whose drainForDelivery resets
-    // consecutiveSelfRounds and would erase the "twice in a row" signal checked above.
-    host.mutateStep(jobId, stepId, (s) => ({
-      ...s, inbox: [...s.inbox, stamp(host, { kind: 'policy-rejection', reason: verdict.reason })],
-    }));
+    host.mutateStep(jobId, stepId, (s) => {
+      const item = stamp(host, { kind: 'policy-rejection', reason: verdict.reason });
+      return { ...deliverImmediate({ ...s, inbox: [...s.inbox, item] }, [item]), pendingPolicyStrike: true };
+    });
     host.resumeController(jobId, stepId, undefined, undefined);
     return;
   }
@@ -105,6 +102,9 @@ function openGate(
 }
 
 function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: NextMove): void {
+  // An accepted move is what earns forgiveness — clear before acting, whether this move was
+  // immediately allowed or is a force-gated move running now on the user's approval.
+  host.mutateStep(jobId, stepId, (s) => ({ ...s, pendingPolicyStrike: false }));
   switch (move.kind) {
     case 'self-round':
       host.mutateStep(jobId, stepId, (s) => ({
@@ -167,27 +167,29 @@ export function resolveGate(
   const step = host.getStep(jobId, stepId);
   if (!step || step.state !== 'gate_pending_approval') return;
   const deferred = step.gate?.deferredMove;
+  const item = stamp(host, { kind: 'gate-resolved', approved, ...(feedback ? { feedback } : {}) });
 
   host.mutateStep(jobId, stepId, (s) => ({
     ...s,
     gate: undefined,
-    state: 'running',
     ...(approved ? { gateApproved: true } : {}),
     ...(feedback ? { gateFeedback: [...(s.gateFeedback ?? []), feedback] } : {}),
-    inbox: [...s.inbox, stamp(host, { kind: 'gate-resolved', approved, ...(feedback ? { feedback } : {}) })],
+    inbox: [...s.inbox, item],
   }));
 
   if (approved && deferred) {
     // Executed verbatim, WITHOUT re-validating: re-running policy here would
-    // force-gate the same write again, forever.
+    // force-gate the same write again, forever. The gate-resolved marker isn't needed —
+    // the deferred move is about to run immediately, nothing to explain.
     host.mutateStep(jobId, stepId, (s) => ({ ...s, inbox: [] }));
     runMove(host, jobId, stepId, deferred);
     return;
   }
-  // A decline (or an approval with no deferred move) resumes the controller directly
-  // with its feedback still in `inbox` — not through deliverInbox, whose
-  // drainForDelivery would spend a round and reset consecutiveSelfRounds for what is
-  // feedback on the same round, not a fresh one.
+  // A decline (or an approval with no deferred move) is corrective feedback on the same
+  // round, not a fresh delivery cycle — deliverImmediate (not deliverInbox/drainForDelivery)
+  // so the resumed controller's envelope actually shows why, without spending the
+  // consecutive-self-round budget the way a real new event would.
+  host.mutateStep(jobId, stepId, (s) => deliverImmediate(s, [item]));
   host.resumeController(jobId, stepId, undefined, undefined);
 }
 

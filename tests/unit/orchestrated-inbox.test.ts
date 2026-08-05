@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  drainForDelivery, hasUserMessage, shouldDeliver, waitSatisfied,
+  deliverImmediate, drainForDelivery, hasUserMessage, shouldDeliver, waitSatisfied,
 } from '../../src/steps/orchestrated-inbox.js';
 import type { Dispatch, InboxItem, OrchestratedStep } from '../../src/work/work-types.js';
 
@@ -146,5 +146,26 @@ describe('drainForDelivery', () => {
       inbox: [item({ kind: 'dispatch-done', dispatchId: 'd1' } as Partial<InboxItem> & { kind: 'dispatch-done' })],
     });
     expect(drainForDelivery(s).step.consecutiveSelfRounds).toBe(0);
+  });
+});
+
+describe('deliverImmediate', () => {
+  it('moves only the named items into lastDelivered, leaving unrelated inbox items queued', () => {
+    const rejection = item({ kind: 'policy-rejection', reason: 'nope' } as Partial<InboxItem> & { kind: 'policy-rejection' });
+    const unrelated = item({ kind: 'timer' } as Partial<InboxItem> & { kind: 'timer' });
+    const s = step({
+      state: 'running', roundsSpent: 2, consecutiveSelfRounds: 3,
+      waitingOn: { reason: 'ci', events: ['ci'] },
+      inbox: [rejection, unrelated],
+    });
+    const next = deliverImmediate(s, [rejection]);
+    expect(next.inbox).toEqual([unrelated]);
+    expect(next.lastDelivered).toEqual([rejection]);
+    expect(next.waitingOn).toBeUndefined();
+    expect(next.state).toBe('running');
+    expect(next.roundsSpent).toBe(3);
+    // Corrective feedback on the same round, not a fresh one — must not reset the
+    // "N self-rounds in a row" counter the policy cap depends on.
+    expect(next.consecutiveSelfRounds).toBe(3);
   });
 });

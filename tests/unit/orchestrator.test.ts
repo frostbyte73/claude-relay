@@ -966,18 +966,12 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
   // touching that file.
   const SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 
-  it('provisions a dispatch with a real workspace using an id that satisfies SESSION_ID_RE', async () => {
-    // A `${stepId}-${dispatch.id}` compound key — two real 36-char randomUUID()s joined by a
-    // dash — is 73 characters and fails SESSION_ID_RE's 64-char cap, so WorktreeManager.provision
-    // throws for any dispatch whose workspace isn't {kind:'none'}. This regresses that: newId is
-    // deliberately left at its real-randomUUID() default (not the short counter other tests in
-    // this file use) so the compound-key bug can't hide behind an unrealistically short id.
+  // newId is deliberately left at its real-randomUUID() default (not the short counter other
+  // tests in this file use) so a compound-id regression (stepId-dispatch.id at 73 chars) can't
+  // hide behind an unrealistically short id — see the id-length assertions below.
+  function makeDispatchEngine(worktreeManager: unknown) {
     const dir = mkdtempSync(join(tmpdir(), 'orch-dispatch-'));
     const queue = new JobQueue(dir);
-    const provisionedIds: string[] = [];
-    const worktreeManager = {
-      provision: async (id: string) => { provisionedIds.push(id); return { path: dir }; },
-    } as never;
     const sessionManager = {
       spawnDetached() { /* no-op */ },
       send() { /* no-op */ },
@@ -986,12 +980,18 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     } as never;
     const linearWriter = { setState: async () => undefined } as never;
     // validateNext rejects a dispatch action it can't resolve side_effects for; a minimal
-    // registry stub is enough to let the move through the policy gate.
+    // registry stub is enough to let the move through the policy gate. listActions is also
+    // required — resumeControllerRound's buildActionCatalog() calls it unconditionally when
+    // the controller gets resumed (e.g. once a dispatch settles), and that call is fire-and-
+    // forget from spawnDispatchSession, so a missing method here becomes an unhandled rejection
+    // rather than a clean assertion failure.
     const actionRegistry = {
       getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+      listActions: () => [],
     } as never;
     const engine = new WorkEngine({
-      queue, sessionManager, worktreeManager, linearWriter, actionRegistry, jobsDir: join(dir, 'jobs'), now: () => 1,
+      queue, sessionManager, worktreeManager: worktreeManager as never, linearWriter, actionRegistry,
+      jobsDir: join(dir, 'jobs'), now: () => 1,
     });
 
     const stepId = randomUUID();
@@ -1002,12 +1002,33 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
       state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
     };
     const job: JobRecord = {
-      id: 'j1', source: 'manual', title: 't', description: 'd', state: 'executing',
+      id: randomUUID(), source: 'manual', title: 't', description: 'd', state: 'executing',
       steps: [step], createdAt: 1, updatedAt: 1,
     };
     queue.upsert(job);
+    return { engine, queue, jobId: job.id, stepId };
+  }
 
-    engine.onStepProgress('j1', stepId, {
+  // spawnDispatchSession is fire-and-forget from applyMove; flush the microtask chain its
+  // `await worktreeManager.provision(...)` (and any resulting resumeControllerRound) needs.
+  async function flush(times = 4): Promise<void> {
+    for (let i = 0; i < times; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it('provisions a dispatch with a real workspace using an id that satisfies SESSION_ID_RE', async () => {
+    // A `${stepId}-${dispatch.id}` compound key — two real 36-char randomUUID()s joined by a
+    // dash — is 73 characters and fails SESSION_ID_RE's 64-char cap, so WorktreeManager.provision
+    // throws for any dispatch whose workspace isn't {kind:'none'}. This regresses that.
+    const provisionedIds: string[] = [];
+    const worktreeManager = {
+      provision: async (id: string, workspace: { kind: string }) => {
+        provisionedIds.push(id);
+        return { path: workspace.kind === 'none' ? null : '/tmp/fake-worktree' };
+      },
+    };
+    const { engine, queue, jobId, stepId } = makeDispatchEngine(worktreeManager);
+
+    engine.onStepProgress(jobId, stepId, {
       next: {
         kind: 'dispatch',
         dispatches: [{
@@ -1016,12 +1037,9 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
         }],
       },
     });
-    // spawnDispatchSession is fire-and-forget from applyMove; flush the microtasks its
-    // `await worktreeManager.provision(...)` chain needs to settle.
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
+    await flush();
 
-    const updated = queue.get('j1')!.steps[0] as OrchestratedStep;
+    const updated = queue.get(jobId)!.steps[0] as OrchestratedStep;
     expect(updated.dispatches).toHaveLength(1);
     const dispatchId = updated.dispatches[0]!.id;
 
@@ -1035,5 +1053,38 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     // meant to prevent) while being exactly the dispatch's own id (not derived from it).
     expect(provisionedIds[0]).toBe(dispatchId);
     expect(provisionedIds[0]).not.toBe(stepId);
+  });
+
+  it('marks the dispatch failed (not the parent step) when provision() throws', async () => {
+    // Only the dispatch's own (non-`none`) workspace should hit the failing path — the
+    // controller's own resume-round provision call (its step workspace is `{kind:'none'}`)
+    // must keep succeeding, or this test would conflate a dispatch failure with a step failure.
+    const worktreeManager = {
+      provision: async (_id: string, workspace: { kind: string }) => {
+        if (workspace.kind === 'none') return { path: null };
+        throw new Error('git blew up');
+      },
+    };
+    const { engine, queue, jobId, stepId } = makeDispatchEngine(worktreeManager);
+
+    engine.onStepProgress(jobId, stepId, {
+      next: {
+        kind: 'dispatch',
+        dispatches: [{
+          action: 'code.review-diff', brief: 'review it',
+          workspace: { kind: 'readonly', repoCwd: '/tmp/fake-repo' },
+        }],
+      },
+    });
+    await flush();
+
+    const updated = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    expect(updated.failure).toBeUndefined();
+    expect(updated.dispatches).toHaveLength(1);
+    expect(updated.dispatches[0]!.status).toBe('failed');
+    expect(updated.dispatches[0]!.failure).toMatch(/git blew up/);
+    // The done marker reaches the controller (drained into lastDelivered, per deliverInbox),
+    // proving the controller gets to react rather than the failure vanishing silently.
+    expect(updated.lastDelivered?.some((i) => i.kind === 'dispatch-done')).toBe(true);
   });
 });

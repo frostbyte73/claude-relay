@@ -50,3 +50,23 @@ export function drainForDelivery(step: OrchestratedStep): { step: OrchestratedSt
     },
   };
 }
+
+// Delivers specific inbox items right now, out of band from the normal shouldDeliver/
+// drainForDelivery pull cycle — for corrective feedback on the controller's own just-attempted
+// move (a policy rejection, a declined gate), not a fresh async event. Moves only the named
+// items into `lastDelivered` (anything else already queued in `inbox` stays there for the next
+// natural delivery) and spends a round (MAX_ROUNDS is the backstop against an endless declined-
+// gate loop), but deliberately does NOT touch `consecutiveSelfRounds` — resetting it here would
+// let a controller dodge the "N self-rounds in a row" cap by tripping an unrelated rejection
+// between rounds.
+export function deliverImmediate(step: OrchestratedStep, items: InboxItem[]): OrchestratedStep {
+  const ids = new Set(items.map((i) => i.id));
+  return {
+    ...step,
+    inbox: step.inbox.filter((i) => !ids.has(i.id)),
+    lastDelivered: items,
+    waitingOn: undefined,
+    state: 'running',
+    roundsSpent: step.roundsSpent + 1,
+  };
+}

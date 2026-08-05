@@ -267,6 +267,10 @@ export interface OrchestratedStep extends StepBase {
   waitingOn?: WaitSpec;
   roundsSpent: number;
   consecutiveSelfRounds: number;
+  // Set when the controller's last move was a policy rejection it hasn't yet corrected.
+  // Cleared by any accepted move — an accepted move is what earns forgiveness. A second
+  // rejection while this is still set fails the step (validateNext's "twice in a row" cap).
+  pendingPolicyStrike?: boolean;
   pr?: PrFacts;
   gate?: GateRequest;
   gateApproved?: boolean;

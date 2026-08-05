@@ -112,21 +112,25 @@ describe('applyMove', () => {
     expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.fix-ci', undefined);
   });
 
-  it('hands a declined gate back to the controller as feedback', () => {
+  it('hands a declined gate back to the controller as delivered feedback, not a queued item', () => {
     const { h, get } = host(step());
     applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
     resolveGate(h, 'j1', 's1', false, 'not like that');
     expect(get().gateApproved).toBeUndefined();
     expect(get().gateFeedback).toEqual(['not like that']);
-    expect(get().inbox.some((i) => i.kind === 'gate-resolved')).toBe(true);
+    // Delivered immediately (deliverImmediate), not left sitting in inbox — the resumed
+    // controller's envelope reads `lastDelivered`, not `inbox`.
+    expect(get().inbox.some((i) => i.kind === 'gate-resolved')).toBe(false);
+    expect(get().lastDelivered?.some((i) => i.kind === 'gate-resolved')).toBe(true);
     expect(h.resumeController).toHaveBeenCalled();
   });
 
-  it('rejects a policy violation into the inbox instead of acting on it', () => {
+  it('delivers a policy rejection immediately instead of leaving it queued', () => {
     const { h, get } = host(step({ consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS }));
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round' } });
-    const rejection = get().inbox.find((i) => i.kind === 'policy-rejection');
-    expect(rejection).toBeDefined();
+    expect(get().inbox.find((i) => i.kind === 'policy-rejection')).toBeUndefined();
+    expect(get().lastDelivered?.find((i) => i.kind === 'policy-rejection')).toBeDefined();
+    expect(get().pendingPolicyStrike).toBe(true);
     expect(h.resumeController).toHaveBeenCalled();
   });
 
@@ -135,6 +139,28 @@ describe('applyMove', () => {
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round' } });
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round' } });
     expect(h.failStep).toHaveBeenCalledWith('j1', 's1', expect.stringMatching(/policy/i));
+  });
+
+  it('clears the policy strike on an accepted move, so a later violation gets one more correction', () => {
+    const { h } = host(step());
+    // Rejected for an unrelated reason (unknown action) — independent of consecutiveSelfRounds,
+    // so the accepted `wait` move in between can't accidentally clear the condition itself.
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.unknown-action' } });
+    applyMove(h, 'j1', 's1', { next: { kind: 'wait', wait: { reason: 'ci', events: ['ci'] } } });
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.unknown-action' } });
+    expect(h.failStep).not.toHaveBeenCalled();
+  });
+
+  it('a stale corrective item cannot satisfy a later, unrelated wait', () => {
+    const { h, get } = host(step({ consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS }));
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round' } }); // rejected, delivered immediately
+    applyMove(h, 'j1', 's1', { next: { kind: 'wait', wait: { reason: 'ci', events: ['ci'] } } }); // accepted, parks
+    expect(get().state).toBe('waiting');
+    expect(get().inbox).toEqual([]); // no stale rejection left lingering to falsely satisfy the wait
+
+    vi.mocked(h.resumeController).mockClear(); // clear the call from the earlier rejection delivery
+    pushInbox(h, 'j1', 's1', { kind: 'timer' }); // an unrelated event — must not wake the wait
+    expect(h.resumeController).not.toHaveBeenCalled();
   });
 
   it('routes resolve and fail to the host', () => {
