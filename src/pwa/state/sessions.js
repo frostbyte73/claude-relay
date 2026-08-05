@@ -214,6 +214,19 @@ export const sessions = {
     }));
   },
 
+  // Is this session's transcript on screen right now? Layout-agnostic on
+  // purpose: mountedCount covers every mount path (desktop sessions surface,
+  // mobile session view, a job step's inline session), so callers don't have to
+  // ask isDesktop() and then read the pointer that layout happens to own. The
+  // currentSessionId leg only covers mobile's async mount window, where view has
+  // already flipped to 'session' but mountMobileSessionView hasn't landed yet.
+  isVisible(id) {
+    if (!id) return false;
+    const s = store.get();
+    if (s.view === 'session' && s.currentSessionId === id) return true;
+    return (s.sessionsById.get(id)?.mountedCount ?? 0) > 0;
+  },
+
   setRunState(id, state) {
     if (!id || (state !== 'foreground' && state !== 'background' && state !== 'inactive')) return;
     store.set((s) =>

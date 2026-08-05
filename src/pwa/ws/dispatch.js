@@ -578,12 +578,12 @@ const broadcastHandlers = {
       deps.ensureAskInlineTile({ toolInput: msg.toolInput });
     }
     const view = sessions.get().view;
-    if (view === 'session' && msg.sessionId === sessions.get().currentSessionId) {
-      deps.renderSession();
-    } else {
-      if (view === 'list') deps.renderList();
-      deps.showApprovalToast(msg);
-    }
+    if (view === 'session' && msg.sessionId === sessions.get().currentSessionId) deps.renderSession();
+    else if (view === 'list') deps.renderList();
+    // The toast is the cross-session nudge — suppress it whenever the session's
+    // own transcript is already on screen (desktop's sessions surface renders the
+    // card inline off the approvals store, no mobile-shaped view flip involved).
+    if (!sessions.isVisible(msg.sessionId)) deps.showApprovalToast(msg);
   },
 
   // Fires for cross-device user decisions and for server-side timeouts.

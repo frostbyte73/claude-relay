@@ -16,12 +16,11 @@ import { sendOnNotifyWs, notifyWsReadyState } from '../state/notify-ws.js';
 import { sendOnSessionWs } from './session-view/session-ws.js';
 import { askApprovalCardHtml } from './ask-flow.js';
 import { confirmInSheet } from './sheet-utils.js';
-import { openAgentsSheet } from './agents-sheet/index.js';
+import { openAgentsForSession, openSession } from '../app-bridge.js';
 
 let _deps = {
   showStatusToast: () => {},
   renderSession: () => {},
-  openSession: () => {},
 };
 
 export function initApprovalsMobile(deps) {
@@ -276,13 +275,14 @@ export function showApprovalToast(a) {
   toast.onclick = () => {
     toast.remove();
     const sid = a.sessionId;
-    const isSubagent = !!a.agentId;
-    // Navigate to the session, then for subagent approvals also pop the
-    // agents sheet so the user lands directly on the pending feed.
-    const nav = _deps.openSession(sid);
-    if (isSubagent) {
+    // Navigate to the session, then for subagent approvals also pop the agents
+    // sheet so the user lands directly on the pending feed. Both go through the
+    // app bridge because each layout routes differently — mobile flips
+    // sessions.view, desktop selects the sessions surface via nav.
+    const nav = openSession({ id: sid });
+    if (a.agentId) {
       Promise.resolve(nav).finally(() => {
-        if (sessions.get().currentSessionId === sid && subagents.forSession(sid).byId.size > 0) openAgentsSheet();
+        if (subagents.forSession(sid).byId.size > 0) openAgentsForSession(sid);
       });
     }
   };

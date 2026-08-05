@@ -880,7 +880,6 @@ initMobileHeader({
 initApprovalsMobile({
   showStatusToast,
   renderSession,
-  openSession,
 });
 initAskFlow({ formatApprovalCountdown, decideApproval });
 initCwdPicker({
