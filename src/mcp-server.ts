@@ -301,6 +301,101 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_step_progress',
+    description:
+      'Report this orchestrated step\'s progress and declare your next move. Call exactly once at the '
+      + 'end of every turn. `memo` is your durable narrative — rewrite it each turn with what a future '
+      + 'you (after a compaction or a cold resume) would need to know; it is replayed in your envelope. '
+      + '`artifacts` are named markdown blobs merged into the step (spec, implPlan, review, ...). '
+      + '`next` is one of: {kind:"self-round",action?,note?} continue on your own session, optionally '
+      + 'rebound to another action\'s skill and permissions; {kind:"dispatch",dispatches:[{action,brief}]} '
+      + 'fan out to fresh sessions, each seeing only its brief; {kind:"wait",wait:{reason,events?,'
+      + 'untilAllDispatchesDone?,resumeAt?}} park until something happens; {kind:"gate",draft,question} '
+      + 'ask the user to approve; {kind:"resolve",output} finish; {kind:"fail",reason} give up. '
+      + 'External writes are gated by the daemon whether or not you ask.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'next'],
+      additionalProperties: false,
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        memo: { type: 'string', description: 'Your durable narrative. Rewritten each turn; replayed in your envelope.' },
+        phase: { type: 'string', description: 'Short label for where the step is, e.g. spec, implement, pr_open.' },
+        artifacts: {
+          type: 'object',
+          description: 'Named markdown blobs merged into the step (spec, implPlan, review, ...).',
+          additionalProperties: { type: 'string' },
+        },
+        next: {
+          description: 'Exactly one move.',
+          oneOf: [
+            {
+              type: 'object', required: ['kind'], additionalProperties: false,
+              properties: {
+                kind: { const: 'self-round' },
+                action: { type: 'string', description: "Catalog action whose skill and permissions to wear this turn." },
+                note: { type: 'string' },
+              },
+            },
+            {
+              type: 'object', required: ['kind', 'dispatches'], additionalProperties: false,
+              properties: {
+                kind: { const: 'dispatch' },
+                dispatches: {
+                  type: 'array', minItems: 1,
+                  items: {
+                    type: 'object', required: ['action', 'brief'], additionalProperties: false,
+                    properties: {
+                      action: { type: 'string' },
+                      brief: { type: 'string', description: 'All the context this child gets. It sees nothing else.' },
+                      inputs: { type: 'object' },
+                      workspace: { type: 'object' },
+                    },
+                  },
+                },
+              },
+            },
+            {
+              type: 'object', required: ['kind', 'wait'], additionalProperties: false,
+              properties: {
+                kind: { const: 'wait' },
+                wait: {
+                  type: 'object', required: ['reason'], additionalProperties: false,
+                  properties: {
+                    reason: { type: 'string', description: 'Shown to the user while parked.' },
+                    events: {
+                      type: 'array',
+                      items: { enum: ['pr-comments', 'ci', 'review-state', 'pr-state', 'dispatches'] },
+                    },
+                    untilAllDispatchesDone: { type: 'boolean' },
+                    resumeAt: { type: 'number', description: 'Epoch ms auto-resume.' },
+                  },
+                },
+              },
+            },
+            {
+              type: 'object', required: ['kind', 'draft', 'question'], additionalProperties: false,
+              properties: {
+                kind: { const: 'gate' },
+                draft: { type: 'string', description: 'Markdown the user is approving.' },
+                question: { type: 'string' },
+              },
+            },
+            {
+              type: 'object', required: ['kind', 'output'], additionalProperties: false,
+              properties: { kind: { const: 'resolve' }, output: { type: 'string' } },
+            },
+            {
+              type: 'object', required: ['kind', 'reason'], additionalProperties: false,
+              properties: { kind: { const: 'fail' }, reason: { type: 'string' } },
+            },
+          ],
+        },
+      },
+    },
+  },
+  {
     name: 'submit_action_proposal',
     description: 'Deliver an action proposal (new or revised SKILL.md + optional allowlist additions) to the daemon — posted by meta.build-action and meta.improve-actions alike. The user reviews it inline in the PWA. `skillMdAfter` is required unless `noChange` is true.',
     inputSchema: {

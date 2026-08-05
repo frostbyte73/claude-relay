@@ -7,6 +7,7 @@ import { gitSquashMergeToBase } from '../git/git-ops.js';
 import type { LinearWriter } from '../integrations/linear-writer.js';
 import type {
   ActionStep,
+  Dispatch,
   DraftedReply,
   EditJob,
   Finding,
@@ -29,7 +30,12 @@ import { augmentEnvelopeWithLessons, writeEnvelope, STEP_TYPE_CATALOG, type Orch
 import { workspaceError } from './workspace.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
+import { orchestratedHandler } from '../steps/orchestrated.js';
 import type { Action, ExternalEvent, HandlerCtx } from '../steps/types.js';
+import {
+  applyMove, deliverInbox, pushInbox, resolveGate,
+  type NewItem, type OrchestratedHost, type ProgressPayload,
+} from './orchestrated-runner.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
 import { shouldAutoFixCi, ciFailureSignature } from '../steps/open-pr.js';
@@ -163,7 +169,8 @@ export interface WorkEngineOpts {
 
 type SessionRole =
   | { role: 'orchestrator'; jobId: string }
-  | { role: 'step'; jobId: string; stepId: string };
+  | { role: 'step'; jobId: string; stepId: string }
+  | { role: 'dispatch'; jobId: string; stepId: string; dispatchId: string };
 
 export class WorkEngine {
   private readonly ctx: HandlerCtx;
@@ -294,7 +301,20 @@ export class WorkEngine {
   // legitimate for the state it's in.
   private unresolvedFailable(sessionId: string): { jobId: string; stepId: string } | undefined {
     const role = this.roleBySession.get(sessionId);
-    if (!role || role.role !== 'step') return undefined;
+    if (!role) return undefined;
+    if (role.role === 'dispatch') {
+      const j = this.opts.queue.get(role.jobId);
+      const step = j?.steps.find((s) => s.id === role.stepId);
+      if (step?.type !== 'orchestrated') return undefined;
+      const d = step.dispatches.find((x) => x.id === role.dispatchId);
+      if (!d || d.sessionId !== sessionId || d.status !== 'running') return undefined;
+      // Route to the dispatch, not the parent step: onStepFailed checks a dispatchId
+      // against every orchestrated step's dispatches before falling back to a plain
+      // step lookup (see findDispatch/settleDispatch) — the parent step must not fail
+      // just because one of its children hung.
+      return { jobId: role.jobId, stepId: role.dispatchId };
+    }
+    if (role.role !== 'step') return undefined;
     const j = this.opts.queue.get(role.jobId);
     if (!j) return undefined;
     const step = j.steps.find((s) => s.id === role.stepId);
@@ -312,6 +332,9 @@ export class WorkEngine {
     // (submit_write_draft → gate_pending_approval). That's a legitimate turn end, not a
     // hang — don't fail it. The commit/redraft turns run when the user acts.
     if (step.type === 'action' && step.state === 'gate_pending_approval') return undefined;
+    // A parked controller (waiting on an event, or on the user's gate decision) legitimately
+    // ends its turn without submitting again until deliverInbox/resolveStepGate resumes it.
+    if (step.type === 'orchestrated' && (step.state === 'waiting' || step.state === 'gate_pending_approval')) return undefined;
     if (step.state === 'resolved' || step.failure || step.cancelled) return undefined;
     return { jobId: role.jobId, stepId: role.stepId };
   }
@@ -525,6 +548,9 @@ export class WorkEngine {
         break;
       case 'resolve-wait':
         this.resolveWaitStep(a.jobId, a.stepId, 'timer');
+        break;
+      case 'deliver-inbox':
+        deliverInbox(this.orchestratedHost(), a.jobId, a.stepId);
         break;
       case 'request-merge-approval':
         // The UI inspects step state to surface the approve-merge gate. No-op here.
@@ -759,6 +785,11 @@ export class WorkEngine {
     if (j.orchestratorSessionId) sessionIds.add(j.orchestratorSessionId);
     for (const s of j.steps) {
       if (s.sessionId) sessionIds.add(s.sessionId);
+      // Dispatch children aren't in job.steps and don't carry a top-level sessionId —
+      // without this a job abandoned/deleted mid-dispatch would leak their live sessions.
+      if (s.type === 'orchestrated') {
+        for (const d of s.dispatches) if (d.sessionId) sessionIds.add(d.sessionId);
+      }
     }
     // Free any governor slots these live sessions hold. closeSessions SIGTERMs them, and a
     // SIGTERM fires no Stop hook — so release here rather than waiting on the async proc exit
@@ -983,10 +1014,45 @@ export class WorkEngine {
     }));
   }
 
+  // Dispatch children are never in job.steps — they live in an orchestrated step's
+  // `dispatches`, keyed by their own id (which a dispatch session is given as `stepId`;
+  // see spawnDispatchSession). Finds the orchestrated step that owns `dispatchId`, if any.
+  private findDispatchStepId(jobId: string, dispatchId: string): string | undefined {
+    const j = this.opts.queue.get(jobId);
+    const step = j?.steps.find((s) => s.type === 'orchestrated' && s.dispatches.some((d) => d.id === dispatchId));
+    return step?.id;
+  }
+
+  private settleDispatch(
+    jobId: string, stepId: string, dispatchId: string, status: 'done' | 'failed',
+    result: { output?: string; failure?: string },
+  ): void {
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'orchestrated') return s;
+      return {
+        ...s,
+        dispatches: s.dispatches.map((d) => d.id === dispatchId ? {
+          ...d, status, finishedAt: this.ctx.now(),
+          ...(result.output !== undefined ? { output: result.output } : {}),
+          ...(result.failure !== undefined ? { failure: result.failure } : {}),
+        } : d),
+      };
+    });
+    pushInbox(this.orchestratedHost(), jobId, stepId, { kind: 'dispatch-done', dispatchId });
+  }
+
   // User clicks "Resolve" on a step from the UI, or a session POSTs /work/step-resolved.
   // `payload.output` is captured as the step's stored output; agent steps with
   // `forwardOutput` will then thread it into downstream steps' `previousSteps`.
   onStepResolved(jobId: string, stepId: string, payload?: { output?: string }): void {
+    // A dispatch child submits through the same tool as any other action step, using its
+    // own dispatch id as `stepId` (see spawnDispatchSession's envelope). Route it to the
+    // dispatch record — its parent orchestrated step resolves only via a NextMove.resolve.
+    const parentStepId = this.findDispatchStepId(jobId, stepId);
+    if (parentStepId) {
+      this.settleDispatch(jobId, parentStepId, stepId, 'done', { output: payload?.output });
+      return;
+    }
     let didResolve = false;
     this.mutateStep(jobId, stepId, (s) => {
       if (s.type === 'open-pr') return s;  // open-pr resolves via PR merge, not user action
@@ -1251,6 +1317,13 @@ export class WorkEngine {
   // workspace that wouldn't provision say nothing about the skill, and would crowd real
   // lessons out of the bounded per-action journal.
   onStepFailed(jobId: string, stepId: string, reason: string, opts: { journal?: boolean } = {}): void {
+    // Same dispatch short-circuit as onStepResolved: a dispatch's failure is the
+    // controller's to interpret via the next inbox delivery, not an automatic step failure.
+    const parentStepId = this.findDispatchStepId(jobId, stepId);
+    if (parentStepId) {
+      this.settleDispatch(jobId, parentStepId, stepId, 'failed', { failure: reason });
+      return;
+    }
     if (opts.journal !== false) this.journalBlocker(jobId, stepId, reason);
     this.mutateStep(jobId, stepId, (s) => this.appendStepEvent({ ...s, failure: { reason, at: this.ctx.now() } }, 'failed', 'session'));
     this.mutate(jobId, (j) => this.appendEvent(j, {
@@ -1271,6 +1344,171 @@ export class WorkEngine {
     const action = actionNameForStep(s);
     if (journal.hasEntryForStep(action, jobId, stepId)) return;
     journal.append({ action, jobId, stepId, outcome: 'blocked', lesson: reason });
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // Orchestrated step control loop — the host binding for orchestrated-runner.ts.
+  // ─────────────────────────────────────────────────────────
+
+  private orchestratedHost(): OrchestratedHost {
+    return {
+      getStep: (jobId, stepId) => {
+        const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        return s?.type === 'orchestrated' ? s : undefined;
+      },
+      mutateStep: (jobId, stepId, fn) => this.opts.queue.mutate(jobId, (j) => ({
+        ...j,
+        steps: j.steps.map((s) => s.id === stepId && s.type === 'orchestrated' ? fn(s) : s),
+      })),
+      sessionWorking: (sid) => this.opts.sessionManager.isWorking(sid),
+      resumeController: (jobId, stepId, action, note) => void this.resumeControllerRound(jobId, stepId, action, note),
+      spawnDispatch: (jobId, stepId, d) => void this.spawnDispatchSession(jobId, stepId, d),
+      resolveStep: (jobId, stepId, output) => this.onStepResolved(jobId, stepId, { output }),
+      failStep: (jobId, stepId, reason) => this.onStepFailed(jobId, stepId, reason),
+      actionInfo: {
+        sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
+        humanGate: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.human_gate ?? false,
+      },
+      newId: () => this.ctx.newId(),
+      now: () => this.ctx.now(),
+    };
+  }
+
+  onStepProgress(jobId: string, stepId: string, p: ProgressPayload): void {
+    applyMove(this.orchestratedHost(), jobId, stepId, p);
+  }
+
+  pushStepInbox(jobId: string, stepId: string, item: NewItem): void {
+    pushInbox(this.orchestratedHost(), jobId, stepId, item);
+  }
+
+  resolveStepGate(jobId: string, stepId: string, approved: boolean, feedback?: string): void {
+    resolveGate(this.orchestratedHost(), jobId, stepId, approved, feedback);
+  }
+
+  // Resumes the controller's own session for its next turn — either a fresh self-round
+  // (optionally rebound to another action's skill/permissions) or a plain wake-up with
+  // whatever the inbox just delivered. Mirrors dispatchActionResume's stale-Stop bookkeeping:
+  // a resume fired while the controller's current turn is still open must not race that
+  // turn's own Stop hook into failing this (live) step.
+  private async resumeControllerRound(
+    jobId: string, stepId: string, action: string | undefined, note: string | undefined,
+  ): Promise<void> {
+    const j = this.opts.queue.get(jobId);
+    const s = j?.steps.find((x) => x.id === stepId);
+    if (!j || !s || s.type !== 'orchestrated') return;
+    const boundAction = action ?? s.controller;
+    const envelope = {
+      ...orchestratedHandler.buildEnvelope(s, j, this.ctx),
+      boundAction,
+      ...(note ? { boundNote: note } : {}),
+      // Persisted on the step by drainForDelivery, so a cold resume still shows what woke it.
+      ...(s.lastDelivered?.length ? { delivered: s.lastDelivered } : {}),
+      actionCatalog: this.buildActionCatalog(),
+    };
+    const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
+    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(boundAction) ?? []);
+
+    if (!s.sessionId) {
+      await this.spawnStepSession(jobId, stepId, envelopePath);
+      return;
+    }
+    const sessionId = s.sessionId;
+    // A trailing Stop from the round we're superseding must not fail this live step.
+    // Recorded synchronously — a queued launch may only fire once that Stop frees the slot.
+    if (this.opts.sessionManager.isWorking(sessionId)) {
+      this.owedStaleStops.set(sessionId, (this.owedStaleStops.get(sessionId) ?? 0) + 1);
+    }
+    const ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
+    const cwd = ws.path ?? this.orchestratorCwd();
+    this.submitLaunch({
+      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: boundAction, label: boundAction,
+      run: () => {
+        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        if (!cur || cur.type !== 'orchestrated' || cur.cancelled) return false;
+        this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
+        this.bindAction(sessionId, boundAction);
+        this.opts.sessionManager.sendOrResume(
+          sessionId,
+          cwd,
+          { type: 'user', message: { role: 'user', content: `/${boundAction}` } },
+          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'orchestrated' },
+        );
+        return true;
+      },
+    });
+  }
+
+  // Fans a dispatch out to a fresh child session. Modeled on spawnEditFixSession, with two
+  // differences: the worktree key is `dispatch.id` alone, not the parent step's own key — it
+  // comes from `ctx.newId()`, so it's globally unique (not just unique within the step), which
+  // is all the worktree store needs to keep a child from colliding with the controller's
+  // worktree; a `${stepId}-${dispatch.id}` compound key was tried first but is two 36-char
+  // UUIDs joined, which blows SESSION_ID_RE's 64-char cap and made provision() throw for any
+  // dispatch with a real (non-`none`) workspace. The parent linkage the compound key was
+  // carrying visually is already recorded structurally on the Dispatch record and in
+  // roleBySession. The envelope is written at its own path —
+  // jobs/<jobId>/steps/<dispatch.id>/envelope.json, never the controller's stable envelope —
+  // so a child can't clobber it. The dispatch's own id doubles as its `stepId` for
+  // envelope/submit purposes: submit_step_output/failed from this session lands on
+  // onStepResolved/onStepFailed with that id, which routes to settleDispatch instead of
+  // resolving/failing the parent (see findDispatchStepId).
+  private async spawnDispatchSession(jobId: string, stepId: string, dispatch: Dispatch): Promise<void> {
+    const j = this.opts.queue.get(jobId);
+    const s = j?.steps.find((x) => x.id === stepId);
+    if (!j || !s || s.type !== 'orchestrated') return;
+
+    const workspace = dispatch.workspace ?? s.workspace;
+    const ws = await this.opts.worktreeManager.provision(dispatch.id, workspace);
+    const cwd = ws.path ?? this.orchestratorCwd();
+
+    const envelope = {
+      kind: 'step',
+      jobId,
+      stepId: dispatch.id,
+      parentStepId: stepId,
+      type: 'action',
+      title: `${dispatch.action} (dispatch)`,
+      description: dispatch.brief,
+      action: dispatch.action,
+      goal: dispatch.brief,
+      ...(dispatch.inputs ? { inputs: dispatch.inputs } : {}),
+      job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
+      previousSteps: [],
+      workspace,
+      typePayload: {},
+    };
+    const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, dispatch.id, envelope);
+    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(dispatch.action) ?? []);
+
+    const sessionId = this.ctx.newId();
+    this.submitLaunch({
+      key: `${jobId}#${stepId}#${dispatch.id}`, jobId, stepId, sessionId, action: dispatch.action, label: dispatch.action,
+      run: () => {
+        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        if (!cur || cur.type !== 'orchestrated' || cur.cancelled) return false;
+        this.roleBySession.set(sessionId, { role: 'dispatch', jobId, stepId, dispatchId: dispatch.id });
+        this.bindAction(sessionId, dispatch.action);
+        this.stampActionSession(sessionId, dispatch.action, dispatch.action);
+        this.mutateStep(jobId, stepId, (st) => {
+          if (st.type !== 'orchestrated') return st;
+          return {
+            ...st,
+            dispatches: st.dispatches.map((d) => d.id === dispatch.id
+              ? { ...d, status: 'running', sessionId, startedAt: this.ctx.now() }
+              : d),
+          };
+        });
+        this.opts.sessionManager.spawnDetached(sessionId, cwd, {
+          OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatch.id, STEP_TYPE: 'action',
+        }, 'default');
+        this.opts.sessionManager.send(sessionId, {
+          type: 'user',
+          message: { role: 'user', content: `/${dispatch.action}` },
+        });
+        return true;
+      },
+    });
   }
 
   onStepRetry(jobId: string, stepId: string): void {

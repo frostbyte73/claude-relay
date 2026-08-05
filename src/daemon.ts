@@ -786,6 +786,15 @@ async function main() {
         engine.onStepFailed(a.jobId as string, a.stepId as string, a.reason as string);
         return { ok: true };
       },
+      submit_step_progress: async (a) => {
+        engine.onStepProgress(a.jobId as string, a.stepId as string, {
+          memo: a.memo as string | undefined,
+          phase: a.phase as string | undefined,
+          artifacts: a.artifacts as Record<string, string> | undefined,
+          next: a.next as never,
+        });
+        return { ok: true };
+      },
       submit_write_draft: async (a) => {
         engine.onWriteDraftReady(a.jobId as string, a.stepId as string, a.draft as string);
         return { ok: true };

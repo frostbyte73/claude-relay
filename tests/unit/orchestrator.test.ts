@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import { OUTPOST_MCP_TOOLS } from '../../src/mcp-server.js';
-import type { DraftedReply, Finding, OpenPrStep, ProposedStep, Step } from '../../src/work/work-types.js';
+import type { DraftedReply, Finding, JobRecord, OpenPrStep, OrchestratedStep, ProposedStep, Step } from '../../src/work/work-types.js';
 
 function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
   const queue = new JobQueue(dir);
@@ -955,5 +956,84 @@ describe('Orchestrator — orchestrated steps through the plan-rejection round-t
     expect(step.action).toBeUndefined();
     expect(step.goal).toBe('new goal');
     expect(step.controller).toBe('code.orchestrate-pr');
+  });
+});
+
+describe('WorkEngine — dispatch worktree provisioning', () => {
+  // Mirrors src/git/worktree-manager.ts's SESSION_ID_RE. Not exported (it's a defense-in-depth
+  // path-traversal/argv-smuggling check we must never loosen), so pinned here to catch a
+  // regression in the id spawnDispatchSession hands to WorktreeManager.provision without
+  // touching that file.
+  const SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
+
+  it('provisions a dispatch with a real workspace using an id that satisfies SESSION_ID_RE', async () => {
+    // A `${stepId}-${dispatch.id}` compound key — two real 36-char randomUUID()s joined by a
+    // dash — is 73 characters and fails SESSION_ID_RE's 64-char cap, so WorktreeManager.provision
+    // throws for any dispatch whose workspace isn't {kind:'none'}. This regresses that: newId is
+    // deliberately left at its real-randomUUID() default (not the short counter other tests in
+    // this file use) so the compound-key bug can't hide behind an unrealistically short id.
+    const dir = mkdtempSync(join(tmpdir(), 'orch-dispatch-'));
+    const queue = new JobQueue(dir);
+    const provisionedIds: string[] = [];
+    const worktreeManager = {
+      provision: async (id: string) => { provisionedIds.push(id); return { path: dir }; },
+    } as never;
+    const sessionManager = {
+      spawnDetached() { /* no-op */ },
+      send() { /* no-op */ },
+      isWorking() { return false; },
+      sendOrResume() { /* no-op */ },
+    } as never;
+    const linearWriter = { setState: async () => undefined } as never;
+    // validateNext rejects a dispatch action it can't resolve side_effects for; a minimal
+    // registry stub is enough to let the move through the policy gate.
+    const actionRegistry = {
+      getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+    } as never;
+    const engine = new WorkEngine({
+      queue, sessionManager, worktreeManager, linearWriter, actionRegistry, jobsDir: join(dir, 'jobs'), now: () => 1,
+    });
+
+    const stepId = randomUUID();
+    const step: OrchestratedStep = {
+      id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
+    };
+    const job: JobRecord = {
+      id: 'j1', source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    };
+    queue.upsert(job);
+
+    engine.onStepProgress('j1', stepId, {
+      next: {
+        kind: 'dispatch',
+        dispatches: [{
+          action: 'code.review-diff', brief: 'review it',
+          workspace: { kind: 'readonly', repoCwd: '/tmp/fake-repo' },
+        }],
+      },
+    });
+    // spawnDispatchSession is fire-and-forget from applyMove; flush the microtasks its
+    // `await worktreeManager.provision(...)` chain needs to settle.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const updated = queue.get('j1')!.steps[0] as OrchestratedStep;
+    expect(updated.dispatches).toHaveLength(1);
+    const dispatchId = updated.dispatches[0]!.id;
+
+    expect(provisionedIds).toHaveLength(1);
+    // The real invariant: whatever id spawnDispatchSession hands to provision() must satisfy
+    // WorktreeManager's own gate — a `${stepId}-${dispatch.id}` compound key fails this at 73
+    // chars, over the 64-char cap.
+    expect(provisionedIds[0]!.length).toBeLessThanOrEqual(64);
+    expect(provisionedIds[0]).toMatch(SESSION_ID_RE);
+    // And it must still be distinct from the parent step (the collision the compound key was
+    // meant to prevent) while being exactly the dispatch's own id (not derived from it).
+    expect(provisionedIds[0]).toBe(dispatchId);
+    expect(provisionedIds[0]).not.toBe(stepId);
   });
 });
