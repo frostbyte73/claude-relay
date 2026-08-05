@@ -9,6 +9,7 @@ export type Action =
   // engine.resumeWait() directly.
   | { kind: 'enter-wait'; jobId: string; stepId: string; durationSec?: number }
   | { kind: 'resolve-wait'; jobId: string; stepId: string; by: 'timer' }
+  | { kind: 'deliver-inbox'; jobId: string; stepId: string }
   | { kind: 'request-merge-approval'; jobId: string; stepId: string }
   | { kind: 'request-conflict-approval'; jobId: string; stepId: string }
   | { kind: 'start-ci-fix'; jobId: string; stepId: string }

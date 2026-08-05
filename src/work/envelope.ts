@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { JobRecord, PlanIteration, Step } from './work-types.js';
+import type { Dispatch, InboxItem, JobRecord, PlanIteration, PrFacts, Step, WorkspaceRef } from './work-types.js';
 import type { JournalEntry } from '../storage/journal-store.js';
 
 export interface StepTypeCatalogEntry {
@@ -30,6 +30,17 @@ export const STEP_TYPE_CATALOG: StepTypeCatalogEntry[] = [
     description: 'Spawn a named action (skill) for one-shot work — investigation, code review, ops, etc. Pick the action from the catalog passed alongside this entry. Set forwardOutput=true (default) when downstream steps should see this step\'s output; false for ops work that doesn\'t produce findings.',
     required: ['title', 'description', 'action', 'goal'],
     optional: ['workspace', 'forwardOutput', 'parallelGroup'],
+    workspace: `Defaults to {"kind":"none"} when omitted. ${WORKSPACE_SHAPE}`,
+  },
+  {
+    type: 'orchestrated',
+    description:
+      'A step owned by a controller action that decides its own next move as events arrive. '
+      + 'Use for long-lived, event-driven work: opening a PR and shepherding it to merge, reviewing '
+      + "someone else's PR. Pick `controller` from the action catalog entries whose kind is "
+      + 'step-orchestrator. The controller composes the other actions itself — do not plan its rounds.',
+    required: ['title', 'description', 'controller', 'goal'],
+    optional: ['inputs', 'workspace', 'parallelGroup'],
     workspace: `Defaults to {"kind":"none"} when omitted. ${WORKSPACE_SHAPE}`,
   },
 ];
@@ -127,4 +138,24 @@ export interface ActionEnvelope extends StepEnvelopeBase {
   typePayload: Record<string, never>;
 }
 
-export type StepEnvelope = OpenPrEnvelope | ActionEnvelope;
+export interface OrchestratedEnvelope extends StepEnvelopeBase {
+  type: 'orchestrated';
+  controller: string;
+  goal: string;
+  inputs?: Record<string, unknown>;
+  workspace: WorkspaceRef;
+  phase?: string;
+  memo?: string;
+  artifacts?: Record<string, string>;
+  roundsRemaining: number;
+  // Present when the daemon is resuming the controller with work it must act on.
+  delivered?: InboxItem[];
+  dispatches?: Array<Pick<Dispatch, 'id' | 'action' | 'brief' | 'status' | 'output' | 'failure'>>;
+  pr?: PrFacts;
+  // Set on a work turn: the controller is wearing this action's hat this turn.
+  boundAction?: string;
+  boundNote?: string;
+  actionCatalog?: ActionCatalogEntry[];
+}
+
+export type StepEnvelope = OpenPrEnvelope | ActionEnvelope | OrchestratedEnvelope;

@@ -15,6 +15,7 @@ import type {
   JobEventKind,
   JobRecord,
   OpenPrStep,
+  OrchestratedStep,
   PlanIteration,
   PrComment,
   ProposedStep,
@@ -94,6 +95,7 @@ export function actionNameForStep(s: Step): string {
     if (s.state === 'planning') return 'code.plan';
     return 'code.implement';
   }
+  if (s.type === 'orchestrated') return s.controller;
   return s.action;
 }
 
@@ -2551,6 +2553,15 @@ export class WorkEngine {
         const ws = p.workspace ?? { kind: 'none' as const };
         const { keepId: _, ...rest } = p;
         return { ...rest, id, workspace: ws, state: initialStateForType('action'), createdAt: now, updatedAt: now } as Step;
+      }
+      case 'orchestrated': {
+        const { keepId: _, ...rest } = p;
+        return {
+          ...rest, id, workspace: p.workspace ?? { kind: 'none' as const },
+          state: initialStateForType('orchestrated'),
+          dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+          createdAt: now, updatedAt: now,
+        } as OrchestratedStep;
       }
     }
   }

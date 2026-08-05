@@ -48,8 +48,9 @@ function roundOf(s: Step, opts: DeriveOpts): string | null {
     }
   }
   // A meta.wait hold parks in `waiting` and never binds a session, so it never
-  // opens a run — a builtin hold is not a run of anything.
-  if (s.state !== 'running') return null;
+  // opens a run — a builtin hold is not a run of anything. Orchestrated steps
+  // track their own round semantics elsewhere; nothing to derive here yet.
+  if (s.state !== 'running' || s.type !== 'action') return null;
   if (!opts.isHumanGate(s.action)) return 'run';
   if (s.gateApproved) return 'commit';
   return (s.gateFeedback ?? []).length > 0 ? 'redraft' : 'draft';

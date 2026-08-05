@@ -6,7 +6,7 @@ export type JobState =
   | 'failed'
   | 'abandoned';
 
-export type StepKind = 'open-pr' | 'action';
+export type StepKind = 'open-pr' | 'action' | 'orchestrated';
 
 export type WorkspaceRef =
   | { kind: 'none' }
@@ -277,7 +277,7 @@ export interface OrchestratedStep extends StepBase {
   state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
 }
 
-export type Step = OpenPrStep | ActionStep;
+export type Step = OpenPrStep | ActionStep | OrchestratedStep;
 
 export type JobEventKind =
   | 'created'
@@ -317,7 +317,8 @@ type ProposedFields<S extends Step> = Omit<
 
 export type ProposedStep =
   | ({ type: 'open-pr' } & ProposedFields<OpenPrStep>)
-  | ({ type: 'action' }  & ProposedFields<ActionStep>);
+  | ({ type: 'action' }  & ProposedFields<ActionStep>)
+  | ({ type: 'orchestrated' } & ProposedFields<OrchestratedStep>);
 
 export interface FindingEvidence {
   kind: string;         // 'datadog-logs' | 'repo-file' | 'linear-comment' | ...
