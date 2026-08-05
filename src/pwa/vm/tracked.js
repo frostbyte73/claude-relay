@@ -184,6 +184,10 @@ export function sessionsOnJob(job) {
     const running = !!s.sessionId && !s.failure && s.state !== 'resolved' && s.state !== 'merged';
     push(s.sessionId, label, running);
   }
-  if (job.orchestratorSessionId) push(job.orchestratorSessionId, 'orchestrator', job.state === 'planning');
+  // A step-review runs the orchestrator while the job stays `executing`, so the
+  // review gate counts as running too.
+  if (job.orchestratorSessionId) {
+    push(job.orchestratorSessionId, 'orchestrator', job.state === 'planning' || !!job.reviewingStepId);
+  }
   return out.reverse();
 }

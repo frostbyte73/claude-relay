@@ -55,8 +55,12 @@ function roundOf(s: Step, opts: DeriveOpts): string | null {
   return (s.gateFeedback ?? []).length > 0 ? 'redraft' : 'draft';
 }
 
+// An orchestrator round is in flight while the job is parked in `planning` (initial /
+// replan) or while a step-review holds the gate — a review runs on top of `executing`,
+// so the state alone can't see it.
 function orchestratorRound(j: JobRecord): string | null {
-  if (j.state !== 'planning' || !j.orchestratorSessionId) return null;
+  if (!j.orchestratorSessionId) return null;
+  if (j.state !== 'planning' && !j.reviewingStepId) return null;
   const started = [...(j.events ?? [])].reverse().find((e) => e.kind === 'orchestrator_started');
   return started?.body ?? 'initial';
 }

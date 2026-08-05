@@ -1426,6 +1426,9 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
    trail it, unboxed. The foot's card-era border/padding become a plain divider
    flush to the rail rather than an inset card footer. */
 .plan-section--live .plan-heading { margin-bottom: 16px; }
+/* Caption over the step-review feed — the timeline below it stays live, so this
+   is what distinguishes "orchestrator is reviewing step NN" from a replan. */
+.plan-review-note { margin-bottom: 6px; }
 .plan-section--live > .plan-findings,
 .plan-section--live > .orchestrator-inline-session-mount { margin-bottom: 16px; }
 .plan-section--live .plan-card-foot {

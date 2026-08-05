@@ -591,7 +591,8 @@ describe('Orchestrator applyOpenPrPatch — merge advances the plan', () => {
     // instead of dispatching the follow-up directly.
     const s2 = queue.get(job.id)!.steps.find((s) => s.id === followUp.id)!;
     expect(s2.sessionId).toBeUndefined();
-    expect(queue.get(job.id)!.state).toBe('planning');
+    expect(queue.get(job.id)!.reviewingStepId).toBe(prStep.id);
+    expect(queue.get(job.id)!.state).toBe('executing');   // a review is not a planning phase
     expect(spawned.length).toBe(spawnCountBefore + 1);          // step-review orchestrator spawned
     expect(spawned[spawned.length - 1]!.action).toBe('meta.orchestrate');
 
@@ -734,6 +735,7 @@ describe('WorkEngine per-step review', () => {
   } as ProposedStep);
   const envPath = (h: ReturnType<typeof makeEngine>, jobId: string) =>
     join(h.dir, 'jobs', jobId, 'orchestrator', 'envelope.json');
+  const flush = () => new Promise((r) => setTimeout(r, 0));
 
   it('runs a step-review orchestrator after a trailing investigation instead of marking done', async () => {
     const h = makeEngine();
@@ -742,7 +744,8 @@ describe('WorkEngine per-step review', () => {
     const stepId = h.queue.get(job.id)!.steps[0]!.id;
     h.engine.onStepResolved(job.id, stepId, { output: '{"findings":"bump timeouts"}' });
 
-    expect(h.queue.get(job.id)!.state).toBe('planning');                              // NOT 'done'
+    expect(h.queue.get(job.id)!.reviewingStepId).toBe(stepId);                        // review in flight
+    expect(h.queue.get(job.id)!.state).toBe('executing');                             // NOT 'done'
     const after = h.spawned.filter((s) => s.action === 'meta.orchestrate').length;
     expect(after).toBe(before + 1);                                                   // a review was spawned
     const env = JSON.parse(readFileSync(envPath(h, job.id), 'utf8'));
@@ -750,11 +753,45 @@ describe('WorkEngine per-step review', () => {
     expect(env.completedStepId).toBe(stepId);
   });
 
+  // Regression: the review used to park the job in `planning`, which the PWA reads as
+  // "no execution yet" — so the whole step timeline vanished every time a step finished.
+  // The gate is reviewingStepId now; `executing` has to survive the review, and the next
+  // step still must not dispatch behind the orchestrator's back.
+  it('holds the next step during a step-review without leaving `executing`', async () => {
+    const h = makeEngine();
+    const job = await executingJobWithSteps(h, [investigate('first'), investigate('second')]);
+    const [first, second] = h.queue.get(job.id)!.steps;
+    h.engine.onStepResolved(job.id, first!.id, {});
+    await flush();
+
+    expect(h.queue.get(job.id)!.state).toBe('executing');
+    expect(h.queue.get(job.id)!.reviewingStepId).toBe(first!.id);
+    expect(h.queue.get(job.id)!.steps[1]!.sessionId).toBeUndefined();  // held, not dispatched
+
+    h.engine.onOrchestratorContinue(job.id);
+    await flush();
+    expect(h.queue.get(job.id)!.reviewingStepId).toBeUndefined();
+    expect(h.queue.get(job.id)!.steps[1]!.sessionId).toBeDefined();
+    expect(second!.id).toBe(h.queue.get(job.id)!.steps[1]!.id);
+  });
+
+  it('drops a step-review gate whose session died with the daemon so the job can recover', async () => {
+    const h = makeEngine();
+    const job = await executingJobWithSteps(h, [investigate('first'), investigate('second')]);
+    const first = h.queue.get(job.id)!.steps[0]!;
+    h.engine.onStepResolved(job.id, first.id, {});
+    await flush();
+    expect(h.queue.get(job.id)!.reviewingStepId).toBe(first.id);
+
+    h.engine.reconcilePendingLaunches();
+    expect(h.queue.get(job.id)!.reviewingStepId).toBeUndefined();
+  });
+
   it('onOrchestratorContinue with no remaining steps marks the job done and flags the step reviewed', async () => {
     const h = makeEngine();
     const job = await executingJobWithSteps(h, [investigate('x')]);
     const stepId = h.queue.get(job.id)!.steps[0]!.id;
-    h.engine.onStepResolved(job.id, stepId, {});     // → step-review (state planning)
+    h.engine.onStepResolved(job.id, stepId, {});     // → step-review (job stays executing)
     h.engine.onOrchestratorContinue(job.id);         // → mark reviewed + advance
     expect(h.queue.get(job.id)!.state).toBe('done');
     expect(h.queue.get(job.id)!.steps[0]!.reviewed).toBe(true);
@@ -764,7 +801,7 @@ describe('WorkEngine per-step review', () => {
     const h = makeEngine();
     const job = await executingJobWithSteps(h, [investigate('x')]);
     const stepId = h.queue.get(job.id)!.steps[0]!.id;
-    h.engine.onStepResolved(job.id, stepId, {});     // → step-review (state planning)
+    h.engine.onStepResolved(job.id, stepId, {});     // → step-review (job stays executing)
     h.engine.onOrchestratorContinue(job.id);         // → mark reviewed + advance → done
     expect(h.queue.get(job.id)!.state).toBe('done');
     expect(h.queue.get(job.id)!.steps[0]!.reviewed).toBe(true);
@@ -774,7 +811,7 @@ describe('WorkEngine per-step review', () => {
     expect(h.queue.get(job.id)!.state).toBe('executing');
 
     h.engine.onStepResolved(job.id, stepId, { output: 'new findings' });
-    expect(h.queue.get(job.id)!.state).toBe('planning');   // step-review spawned again
+    expect(h.queue.get(job.id)!.reviewingStepId).toBe(stepId);   // step-review spawned again
     expect(h.queue.get(job.id)!.state).not.toBe('done');
   });
 
@@ -782,7 +819,7 @@ describe('WorkEngine per-step review', () => {
     const h = makeEngine();
     const job = await executingJobWithSteps(h, [investigate('x')]);
     const stepId = h.queue.get(job.id)!.steps[0]!.id;
-    h.engine.onStepResolved(job.id, stepId, {});     // → step-review (state planning)
+    h.engine.onStepResolved(job.id, stepId, {});     // → step-review (job stays executing)
 
     // Orchestrator revises instead of continuing: keep the investigate step, append a follow-up.
     const keep: ProposedStep = { ...investigate('x'), keepId: stepId };

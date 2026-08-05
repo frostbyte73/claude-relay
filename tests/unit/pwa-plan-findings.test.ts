@@ -106,6 +106,21 @@ describe('renderPlanSection merges plan + steps', () => {
     expect(html).not.toContain('>Steps<');
   });
 
+  // Regression: a step-review used to park the job in `planning`, so every completed
+  // step swapped the whole timeline for the pre-execution plan card. The review now
+  // rides on `executing` and only adds its own feed + caption above the timeline.
+  it('keeps the timeline while the orchestrator reviews a completed step', () => {
+    const html = renderPlanSection({
+      ...executing,
+      orchestratorSessionId: 'orch-1',
+      reviewingStepId: 's1',
+    }, { timelineHtml: '<div class="tl-rail">TL</div>', editing: false });
+    expect(html).toContain('plan-section--live');
+    expect(html).toContain('<div class="tl-rail">TL</div>');
+    expect(html).not.toContain('plan-index');
+    expect(html).toContain('Reviewing step 01 before continuing');
+  });
+
   it('surfaces the Edit-plan toggle in the header while executing', () => {
     const idle = renderPlanSection(executing, { timelineHtml: '<div class="tl-rail"></div>', editing: false });
     expect(idle).toContain('data-job-action="toggle-edit-plan"');

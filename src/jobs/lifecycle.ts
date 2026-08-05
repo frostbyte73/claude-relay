@@ -23,6 +23,7 @@ function allStepsResolved(j: JobRecord): boolean {
 // halt the job (mark-failed) instead, so we never review over a failed plan.
 export function owesStepReview(j: JobRecord): string | null {
   if (j.state !== 'executing') return null;
+  if (j.reviewingStepId) return null;  // one already in flight
   if (j.steps.some((s) => !s.cancelled && s.failure)) return null;
   const steps = j.steps;
   let i = 0;

@@ -257,11 +257,19 @@ describe('deriveRunEvents — orchestrator', () => {
     ]);
   });
 
-  it('closes as accepted when a step-review continues instead of replanning', () => {
+  // A step-review never parks the job in `planning` — it holds reviewingStepId on top of
+  // `executing`, so that flag is what opens and closes the round here.
+  it('opens and closes a step-review round off reviewingStepId, not the job state', () => {
+    const executing = planning({ state: 'executing' });
     const reviewing = planning({
+      state: 'executing',
+      reviewingStepId: 's1',
       events: [{ id: 'e1', at: 1, kind: 'orchestrator_started', who: 'orchestrator', body: 'step-review' }],
     });
-    expect(deriveRunEvents(reviewing, planning({ state: 'executing' }), OPTS)).toEqual([
+    expect(deriveRunEvents(executing, reviewing, OPTS)).toEqual([
+      { t: 'open', key: { jobId: 'j1' }, action: 'meta.orchestrate', round: 'step-review', sessionId: 'orch1', at: NOW },
+    ]);
+    expect(deriveRunEvents(reviewing, executing, OPTS)).toEqual([
       { t: 'close', key: { jobId: 'j1' }, outcome: 'accepted', at: NOW },
     ]);
   });

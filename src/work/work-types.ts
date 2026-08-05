@@ -292,6 +292,13 @@ export interface JobRecord {
     feedback: string;
     proposedAt: number;
   };
+  // Set while a mid-execution step-review orchestrator session is in flight; the value is
+  // the step whose completion triggered it. The job stays `executing` — a review is not a
+  // planning phase, and parking it in `planning` made the PWA tear down the whole step
+  // timeline (it reads that state as "no execution yet") every time a step finished. So
+  // this field, not the state, is what gates step dispatch and keeps owesStepReview from
+  // re-firing while the review runs.
+  reviewingStepId?: string;
   linearStateMarked?: { inProgress?: boolean; inReview?: boolean; done?: boolean };
   linearStatusDirty?: boolean;
   linearCommentId?: string;

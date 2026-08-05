@@ -42,10 +42,11 @@ function runBounds(events, { startKinds, endKinds, stepId }) {
 // orchestrator_started/orchestrator_reopened → terminal-event pair, where the
 // terminal event is plan_posted (initial plan or a replan) or orchestrator_reviewed
 // (a step-review session that called submit_continue, which has no plan_posted).
-// While `planning`, the orchestrator is still live — return null so the mount
-// keeps showing the streaming transcript tail.
+// While `planning` — or while a step-review holds the gate, which runs on top of
+// `executing` — the orchestrator is still live: return null so the mount keeps
+// showing the streaming transcript tail.
 export function orchestratorStepShim(job) {
-  if (job.state === 'planning') return null;
+  if (job.state === 'planning' || job.reviewingStepId) return null;
   const { start, end } = runBounds(job.events ?? [], {
     startKinds: ORCHESTRATOR_START_KINDS, endKinds: ORCHESTRATOR_END_KINDS, stepId: null,
   });

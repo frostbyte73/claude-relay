@@ -123,6 +123,9 @@ export function activeGroup(j: JobRecord): Step[] {
 export function decide(j: JobRecord, ctx: HandlerCtx): Action[] {
   if (j.state === 'planning' || j.state === 'plan_pending_review') return [];
   if (j.state === 'done' || j.state === 'abandoned' || j.state === 'failed') return [];
+  // A step-review in flight holds the plan: the orchestrator may still amend it, so
+  // don't advance to the next group behind its back. The job stays `executing`.
+  if (j.reviewingStepId) return [];
   const actions: Action[] = [];
   for (const s of activeGroup(j)) {
     const a = handlerFor(s).decide(s, j, ctx);
@@ -692,8 +695,15 @@ export class WorkEngine {
   // no orchestrator session — its launch was parked (never fired) when the daemon stopped.
   // Executing jobs recover via the daemon's existing tick()/decide() re-emit for sessionless
   // active-group steps, which now route through submitLaunch — no duplication needed here.
+  //
+  // A step-review is the exception that needs clearing rather than re-launching: its session
+  // died with the previous process, so the gate would block every dispatch forever. Drop it
+  // and let owesStepReview re-fire on the next tick, which spawns a fresh review.
   reconcilePendingLaunches(): void {
     for (const j of this.opts.queue.list()) {
+      if (j.reviewingStepId) {
+        this.mutate(j.id, (jj) => ({ ...jj, reviewingStepId: undefined }));
+      }
       if (j.state === 'planning' && !j.orchestratorSessionId) {
         void this.spawnInitialOrchestrator(j, j.orchestratorAction ?? 'meta.orchestrate');
       }
@@ -807,6 +817,7 @@ export class WorkEngine {
       this.mutate(jobId, (jj) => this.appendEvent({
         ...jj,
         state: 'plan_pending_review',
+        reviewingStepId: undefined,
         plan: {
           postedAt: this.ctx.now(),
           iterationsRejected: jj.plan?.iterationsRejected ?? [],
@@ -824,6 +835,7 @@ export class WorkEngine {
     this.mutate(jobId, (jj) => this.appendEvent({
       ...jj,
       state: 'plan_pending_review',
+      reviewingStepId: undefined,
       plan: {
         postedAt: jj.plan?.postedAt ?? this.ctx.now(),
         iterationsRejected: jj.plan?.iterationsRejected ?? [],
@@ -854,6 +866,7 @@ export class WorkEngine {
       ...jj,
       state: 'planning',
       steps: [],
+      reviewingStepId: undefined,
       plan: {
         postedAt: jj.plan?.postedAt ?? this.ctx.now(),
         iterationsRejected: [...(jj.plan?.iterationsRejected ?? []), iter],
@@ -895,7 +908,7 @@ export class WorkEngine {
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
     };
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, null, env);
-    this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'planning' }, { kind: 'orchestrator_reopened', who: 'user', body: feedback }));
+    this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'planning', reviewingStepId: undefined }, { kind: 'orchestrator_reopened', who: 'user', body: feedback }));
 
     const followup = `User reopened the orchestrator with this feedback:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (now in mode=replan, with currentSteps and userFeedback). Post an amended plan via /work/plan-ready with mode=replan.`;
 
@@ -1278,11 +1291,15 @@ export class WorkEngine {
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore
     // it to executing — otherwise decide() early-returns and the retried step never
-    // gets a fresh session spawned. Also unset the linearStateMarked.done flag so the
-    // Linear write can fire again if the retry produces a new done transition.
+    // gets a fresh session spawned. A step-review gate is dropped for the same reason:
+    // the review is now moot (its step is re-running), and leaving it set would gate
+    // the re-dispatch on a session that will never answer for this attempt. Also unset
+    // the linearStateMarked.done flag so the Linear write can fire again if the retry
+    // produces a new done transition.
     this.mutate(jobId, (j) => this.appendEvent({
       ...j,
       state: j.state === 'done' || j.state === 'failed' ? 'executing' : j.state,
+      reviewingStepId: undefined,
       linearStateMarked: { ...j.linearStateMarked, done: false },
     }, {
       kind: 'step_retried', who: 'user', stepId, body: this.stepLabel(jobId, stepId),
@@ -1318,6 +1335,7 @@ export class WorkEngine {
       orchestratorAction: undefined,
       plan: undefined,
       pendingReconciliation: undefined,
+      reviewingStepId: undefined,
       linearStateMarked: {},
       failure: undefined,
     }, { kind: 'state_changed', who: 'user', body: 'job reset' }));
@@ -2194,7 +2212,7 @@ export class WorkEngine {
     };
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, null, env);
     this.mutate(jobId, (jj) => this.appendEvent(
-      { ...jj, state: 'planning' },
+      { ...jj, reviewingStepId: completedStepId },
       { kind: 'orchestrator_reviewed', who: 'orchestrator', body: `step-review after ${this.stepLabel(jobId, completedStepId)}` },
     ));
     void this.spawnOrchestratorSession(jobId, 'step-review', envelopePath, actionName);
@@ -2210,6 +2228,7 @@ export class WorkEngine {
     this.mutate(jobId, (jj) => this.appendEvent({
       ...jj,
       state: 'executing',
+      reviewingStepId: undefined,
       steps: jj.steps.map((s) =>
         !s.cancelled && handlerFor(s).isResolved(s) ? ({ ...s, reviewed: true } as Step) : s),
     }, { kind: 'orchestrator_reviewed', who: 'orchestrator', body: reason ? `continue: ${reason}` : 'continue' }));
@@ -2269,7 +2288,14 @@ export class WorkEngine {
         this.bindAction(sessionId, actionName);
         this.stampActionSession(sessionId, actionName, cur.title || 'Job');
         this.mutate(jobId, (j) => this.appendEvent(
-          { ...j, orchestratorSessionId: sessionId, orchestratorAction: actionName, state: 'planning' },
+          {
+            ...j,
+            orchestratorSessionId: sessionId,
+            orchestratorAction: actionName,
+            // A step-review runs on top of an executing plan; only a plan/replan run parks
+            // the job in `planning` (its gate is reviewingStepId, set by the caller).
+            state: mode === 'step-review' ? j.state : 'planning',
+          },
           { kind: 'orchestrator_started', who: 'orchestrator', body: mode === 'replan' ? 'replan' : mode === 'step-review' ? 'step-review' : 'initial' },
         ));
         // spawnDetached only launches the proc — without a user turn, the orchestrator skill

@@ -168,8 +168,15 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
   // executing/done it collapses by default; during planning/review it stays open
   // so the investigation is front-and-center while the plan is being reviewed.
   const findings = renderFinding(j.plan?.findings, 'Investigation', { collapsible: true, open: !live });
+  // A step-review runs the orchestrator on top of an executing plan, so its feed
+  // appears above a timeline that stays put. Say which step it's reviewing —
+  // otherwise a live planner feed mid-execution reads as an unexplained replan.
+  const reviewIdx = j.reviewingStepId ? steps.findIndex((s) => s.id === j.reviewingStepId) : -1;
+  const reviewNote = reviewIdx >= 0
+    ? `<div class="plan-review-note o-microhead">Reviewing step ${String(reviewIdx + 1).padStart(2, '0')} before continuing</div>`
+    : '';
   const replanMount = orchestratorLive && steps.length > 0
-    ? `<div class="orchestrator-inline-session-mount orchestrator-inline-session-mount--replan" data-session-id="${escapeHtml(j.orchestratorSessionId)}" data-job-id="${escapeHtml(j.id)}"></div>`
+    ? `${reviewNote}<div class="orchestrator-inline-session-mount orchestrator-inline-session-mount--replan" data-session-id="${escapeHtml(j.orchestratorSessionId)}" data-job-id="${escapeHtml(j.id)}"></div>`
     : '';
   const foot = (awaitingLaunch || noPlanYet) ? '' : `
     <div class="plan-card-foot">
