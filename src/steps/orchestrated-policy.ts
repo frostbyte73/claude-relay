@@ -77,6 +77,12 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
         if (target.status !== 'failed') {
           return { kind: 'reject', reason: `retryOf must name a failed dispatch; ${d.retryOf} is ${target.status}` };
         }
+        if (target.action !== d.action) {
+          return {
+            kind: 'reject',
+            reason: `retryOf ${d.retryOf} is a ${target.action} dispatch — a retry must name a failed dispatch of the same action`,
+          };
+        }
         if (alreadyRetried.has(d.retryOf) || retriedInThisMove.has(d.retryOf)) {
           return {
             kind: 'reject',

@@ -162,6 +162,17 @@ describe('validateNext — dispatch retries', () => {
     expect(v).toMatchObject({ kind: 'reject' });
   });
 
+  it('refuses a retryOf naming a failed dispatch of a different action', () => {
+    const prior = dispatch({ id: 'd1', action: 'code.review-diff', brief: 'b', status: 'failed', attempts: 1 });
+    const v = validateNext(
+      step({ dispatches: [prior] }),
+      { kind: 'dispatch', dispatches: [{ action: 'code.implement', brief: 'b', retryOf: 'd1' }] },
+      info,
+    );
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/same action/i);
+  });
+
   it('refuses to retry an original that has already been retried — must name the most recent attempt', () => {
     const original = dispatch({ id: 'd1', ...same, status: 'failed', attempts: 1 });
     const retry = dispatch({ id: 'd2', ...same, retryOf: 'd1', status: 'failed', attempts: 2 });
