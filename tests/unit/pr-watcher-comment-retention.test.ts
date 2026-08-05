@@ -7,15 +7,18 @@ import { PrWatcher } from '../../src/integrations/pr-watcher.js';
 
 function makeStep(over: Record<string, unknown> = {}) {
   return {
-    id: 's1', type: 'open-pr', cancelled: false,
-    state: 'reply_pending_review', prState: 'open',
-    prUrl: 'https://github.com/acme/example/pull/639',
-    workspace: { repoCwd: '/tmp/repo', branch: 'feat/x' },
-    comments: [
-      { id: 'review:PRRC_a', author: 'rev', body: 'log all nodes', createdAt: 1000 },
-    ],
+    id: 's1', type: 'orchestrated', controller: 'code.orchestrate-pr', cancelled: false,
+    state: 'waiting',
+    workspace: { kind: 'writable', repoCwd: '/tmp/repo', branch: 'feat/x' },
+    dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
     draftedReplies: [{ commentId: 'review:PRRC_a', recommendation: 'edit', draftReply: 'ok' }],
-    editQueue: [],
+    pr: {
+      prUrl: 'https://github.com/acme/example/pull/639',
+      prState: 'open',
+      comments: [
+        { id: 'review:PRRC_a', author: 'rev', body: 'log all nodes', createdAt: 1000 },
+      ],
+    },
     ...over,
   };
 }
@@ -25,8 +28,8 @@ function harness(step: ReturnType<typeof makeStep>, runGh: (cwd: string, args: s
   const patches: Array<Record<string, unknown>> = [];
   const queue = { get: () => job, list: () => [job] } as never;
   const engine = {
-    applyOpenPrPatch: (_j: string, _s: string, patch: Record<string, unknown>) => patches.push(patch),
-    dropOrphanIterations: () => {},
+    applyPrFacts: (_j: string, _s: string, facts: Record<string, unknown>) => patches.push(facts),
+    pushStepInbox: () => {},
   } as never;
   const watcher = new PrWatcher({ queue, engine, runGh });
   return { watcher, patches };

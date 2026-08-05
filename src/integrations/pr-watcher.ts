@@ -3,7 +3,9 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
-import type { CiCheck, OpenPrStep, PrComment } from '../work/work-types.js';
+import type {
+  CiCheck, IterationRecord, OrchestratedStep, PrComment, PrFacts, WatchedEvent,
+} from '../work/work-types.js';
 
 const execFileP = promisify(execFile);
 
@@ -72,14 +74,14 @@ function ciChecksFrom(view: GhPrView): CiCheck[] {
 
 // Roll the per-check states up into the single badge state, so the badge and the
 // per-workflow list can never disagree: any failure fails, else any pending pends.
-function ciStateFrom(checks: CiCheck[]): OpenPrStep['ciState'] | undefined {
+function ciStateFrom(checks: CiCheck[]): PrFacts['ciState'] {
   if (!checks.length) return undefined;
   if (checks.some((c) => c.state === 'failure')) return 'failure';
   if (checks.some((c) => c.state === 'pending')) return 'pending';
   return 'success';
 }
 
-function reviewStateFrom(view: GhPrView): OpenPrStep['reviewState'] | undefined {
+function reviewStateFrom(view: GhPrView): PrFacts['reviewState'] {
   switch (view.reviewDecision) {
     case 'APPROVED': return 'approved';
     case 'CHANGES_REQUESTED': return 'changes_requested';
@@ -88,7 +90,7 @@ function reviewStateFrom(view: GhPrView): OpenPrStep['reviewState'] | undefined 
   }
 }
 
-function mergeableFrom(view: GhPrView): OpenPrStep['mergeable'] | undefined {
+function mergeableFrom(view: GhPrView): PrFacts['mergeable'] {
   switch (view.mergeable) {
     case 'MERGEABLE': return 'mergeable';
     case 'CONFLICTING': return 'conflicting';
@@ -157,15 +159,82 @@ function parsePrUrl(url: string): { owner: string; repo: string; number: string 
   return m ? { owner: m[1]!, repo: m[2]!, number: m[3]! } : null;
 }
 
-// Whether applying `patch` would actually move the step's observable PR state —
-// used to decide if the adaptive re-poll ladder should be (re)armed.
-function patchChangesStep(prev: OpenPrStep, patch: Partial<OpenPrStep>): boolean {
-  for (const k of ['prState', 'state', 'ciState', 'reviewState', 'mergeable'] as const) {
-    if (patch[k] !== undefined && patch[k] !== prev[k]) return true;
+// Which watched signals the freshly polled facts actually moved. This is the whole of
+// what the watcher tells a controller: what changed, never what it means.
+function changedSignals(prev: PrFacts, next: Partial<PrFacts>): WatchedEvent[] {
+  const moved = <K extends keyof PrFacts>(k: K) => next[k] !== undefined && next[k] !== prev[k];
+  const events: WatchedEvent[] = [];
+  if (moved('ciState')) events.push('ci');
+  if (moved('reviewState')) events.push('review-state');
+  // Mergeability rides on `pr-state`: a PR that just started conflicting is the
+  // controller's problem now, and there is no separate signal for it to wait on.
+  if (moved('prUrl') || moved('prState') || moved('mergeable')) events.push('pr-state');
+  if (next.comments && hashComments(next.comments) !== hashComments(prev.comments ?? [])) {
+    events.push('pr-comments');
   }
-  if (patch.comments && hashComments(patch.comments) !== hashComments(prev.comments ?? [])) return true;
-  if (patch.ciChecks && sigChecks(patch.ciChecks) !== sigChecks(prev.ciChecks ?? [])) return true;
-  return false;
+  return events;
+}
+
+// Deliberately not a watched signal: individual checks finish constantly while the
+// rollup stays 'pending', and waking the controller for each would burn its round
+// budget on nothing. It still re-arms the re-poll ladder — more is coming soon.
+function checksMoved(prev: PrFacts, next: Partial<PrFacts>): boolean {
+  return !!next.ciChecks && sigChecks(next.ciChecks) !== sigChecks(prev.ciChecks ?? []);
+}
+
+function summarize(events: WatchedEvent[], facts: Partial<PrFacts>, fresh: number): string {
+  return events.map((e) => {
+    switch (e) {
+      case 'ci': return `CI ${facts.ciState}`;
+      case 'review-state': return `review ${facts.reviewState}`;
+      case 'pr-state': return `PR ${facts.prState}${facts.mergeable === 'conflicting' ? ' (conflicting)' : ''}`;
+      case 'pr-comments': return fresh ? `${fresh} new comment${fresh === 1 ? '' : 's'}` : 'comment thread updated';
+    }
+  }).join('; ');
+}
+
+// Carry forward the per-comment answers the daemon owns (GitHub knows nothing about
+// them), and reopen a thread that gained a reply after we marked it answered.
+function mergeComments(prev: PrComment[], fetched: PrComment[]): { comments: PrComment[]; fresh: PrComment[] } {
+  const oldById = new Map(prev.map((c) => [c.id, c] as const));
+  const fresh = fetched.filter((c) => !oldById.has(c.id));
+  const merged = fetched.map((c) => {
+    const before = oldById.get(c.id);
+    if (!before) return c;
+    const out: PrComment = { ...c };
+    if (before.respondedAt) out.respondedAt = before.respondedAt;
+    if (before.reopenedAt) out.reopenedAt = before.reopenedAt;
+    return out;
+  });
+
+  const byId = new Map(merged.map((c) => [c.id, c] as const));
+  const rootOf = (c: PrComment): PrComment => {
+    let cur: PrComment | undefined = c;
+    const seen = new Set<string>();
+    while (cur?.inReplyTo && byId.has(cur.inReplyTo) && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      cur = byId.get(cur.inReplyTo);
+    }
+    return cur ?? c;
+  };
+  const reopened = new Set<string>();
+  for (const c of merged) {
+    const root = rootOf(c);
+    if (!root.respondedAt || c.id === root.id) continue;
+    if (c.createdAt > root.respondedAt) reopened.add(root.id);
+  }
+  if (!reopened.size) return { comments: merged, fresh };
+  const now = Date.now();
+  return {
+    comments: merged.map((c) => reopened.has(c.id) ? { ...c, respondedAt: undefined, reopenedAt: now } : c),
+    fresh,
+  };
+}
+
+// A replies round the daemon restarted out from under can never post. New comments are
+// proof it is dead, and nothing else prunes it now that rounds are dispatches.
+function withoutUnpostedReplyRounds(iterations: IterationRecord[]): IterationRecord[] {
+  return iterations.filter((i) => !(i.kind === 'replies' && i.status === 'in_progress' && !i.postedAt));
 }
 
 function sigChecks(cs: CiCheck[]): string {
@@ -181,7 +250,7 @@ export function hashComments(cs: PrComment[]): string {
 export class PrWatcher {
   readonly id = 'pr-watcher';
   readonly name = 'GitHub — tracked PRs';
-  readonly description = 'Refreshes CI, review, and comment state for open-PR steps.';
+  readonly description = 'Refreshes CI, review, and comment state for tracked PRs.';
   private readonly runGh: (cwd: string, args: string[]) => Promise<string>;
   // Adaptive follow-up polling: after a job's PR changes we re-poll at 1m / 5m /
   // 15m so a fresh push (CI back to pending), a new review, etc. surface within
@@ -230,152 +299,83 @@ export class PrWatcher {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
     for (const s of j.steps) {
-      if (s.type !== 'open-pr' || s.cancelled) continue;
-      await this.syncStep(jobId, s).catch((e) => {
-        console.error(`[pr-watcher] ${jobId} ${s.id} ${s.prUrl ?? s.workspace.branch}: ${(e as Error).message}`);
+      if (s.type !== 'orchestrated' || s.cancelled) continue;
+      if (s.state === 'resolved' || s.state === 'failed') continue;
+      // Only a writable workspace can carry a branch, and only a branch can carry a PR.
+      const ws = s.workspace;
+      if (ws.kind !== 'writable') continue;
+      await this.syncStep(jobId, s, ws.repoCwd, ws.branch).catch((e) => {
+        console.error(`[pr-watcher] ${jobId} ${s.id} ${s.pr?.prUrl ?? ws.branch}: ${(e as Error).message}`);
       });
     }
   }
 
-  private async syncStep(jobId: string, s: OpenPrStep): Promise<void> {
-    const cwd = s.workspace.repoCwd;
+  private async syncStep(jobId: string, s: OrchestratedStep, cwd: string, branch: string): Promise<void> {
+    const prev: PrFacts = s.pr ?? {};
+    if (prev.prState === 'merged') return;
 
-    // PR discovery: orchestrator picks the branch, implementer pushes + opens the PR,
-    // we find it by branch.
-    if (!s.prUrl && s.workspace.branch && (s.state === 'implementing' || s.state === 'pr_open')) {
-      try {
-        const out = await this.runGh(cwd, ['pr', 'list', '--head', s.workspace.branch, '--json', 'url', '--limit', '1']);
-        const arr = JSON.parse(out) as Array<{ url?: string }>;
-        const url = arr[0]?.url;
-        if (url) {
-          this.opts.engine.applyOpenPrPatch(jobId, s.id, { prUrl: url, prState: 'open', state: 'pr_open' });
-          s = { ...s, prUrl: url, prState: 'open', state: 'pr_open' };
-        }
-      } catch (e) {
-        console.error(`[pr-watcher] discovery ${jobId} ${s.id} ${s.workspace.branch}: ${(e as Error).message}`);
-      }
+    const facts: Partial<PrFacts> = {};
+    let prUrl = prev.prUrl;
+    if (!prUrl) {
+      // PR discovery: the controller picks the branch and a bound work round pushes and
+      // opens the PR, so finding it by branch is how the daemon learns the URL at all.
+      prUrl = await this.discoverPr(cwd, branch);
+      if (!prUrl) return;
+      facts.prUrl = prUrl;
     }
-    if (!s.prUrl) return;
-    if (s.state === 'merged') return;
 
-    const view = await this.fetchPr(cwd, s.prUrl);
-    const inline = await this.fetchInlineComments(cwd, s.prUrl);
-    const patch: Partial<OpenPrStep> = {};
-    if (view.state === 'MERGED') {
-      patch.prState = 'merged';
-      patch.state = 'merged';
-    } else if (view.state === 'CLOSED') {
-      patch.prState = 'closed';
-    } else {
-      patch.prState = 'open';
-    }
+    const view = await this.fetchPr(cwd, prUrl);
+    const inline = await this.fetchInlineComments(cwd, prUrl);
+    facts.prState = view.state === 'MERGED' ? 'merged' : view.state === 'CLOSED' ? 'closed' : 'open';
     const checks = ciChecksFrom(view);
     if (checks.length) {
-      patch.ciState = ciStateFrom(checks);
-      patch.ciChecks = checks;
-    } else if (s.ciState === 'success' || s.ciState === 'failure') {
+      facts.ciState = ciStateFrom(checks);
+      facts.ciChecks = checks;
+    } else if (prev.ciState === 'success' || prev.ciState === 'failure') {
       // Empty rollup on a PR that last had a terminal result means the head moved
       // (a fresh push) and the new head's checks haven't registered yet — clear the
       // stale green/red badge (and its now-stale check list) back to pending rather
       // than leaving them as-is.
-      patch.ciState = 'pending';
-      patch.ciChecks = [];
+      facts.ciState = 'pending';
+      facts.ciChecks = [];
     }
     const rv = reviewStateFrom(view);
-    if (rv) patch.reviewState = rv;
+    if (rv) facts.reviewState = rv;
     const mergeable = mergeableFrom(view);
-    if (mergeable) patch.mergeable = mergeable;
+    if (mergeable) facts.mergeable = mergeable;
+
     // Only touch comments when the inline fetch actually succeeded. A null here
     // means the GitHub call failed; skip the comment merge so we don't clobber
-    // stored comments (and their drafts/edit jobs) with a partial view.
+    // stored comments (and the drafts keyed to them) with a partial view.
+    let fresh: PrComment[] = [];
     if (inline !== null) {
-      const fetched = commentsFrom(view, inline);
-      const oldById = new Map((s.comments ?? []).map((c) => [c.id, c] as const));
-      const fresh = fetched.filter((c) => !oldById.has(c.id));
-      const merged = fetched.map((c) => {
-        const prev = oldById.get(c.id);
-        if (!prev) return c;
-        const out: PrComment = { ...c };
-        if (prev.respondedAt) out.respondedAt = prev.respondedAt;
-        if (prev.reopenedAt) out.reopenedAt = prev.reopenedAt;
-        return out;
+      const merged = mergeComments(prev.comments ?? [], commentsFrom(view, inline));
+      facts.comments = merged.comments;
+      fresh = merged.fresh;
+    }
+
+    const iterations = s.iterations ?? [];
+    const kept = fresh.length ? withoutUnpostedReplyRounds(iterations) : iterations;
+    if (kept.length !== iterations.length) this.opts.engine.applyPrFacts(jobId, s.id, facts, kept);
+    else this.opts.engine.applyPrFacts(jobId, s.id, facts);
+
+    const events = changedSignals(prev, facts);
+    if (events.length) {
+      this.opts.engine.pushStepInbox(jobId, s.id, {
+        kind: 'external', source: 'pr-watcher', summary: summarize(events, facts, fresh.length), events,
       });
-      patch.comments = merged;
-
-      // Reopen any prior-respondedAt thread that gained a new descendant.
-      const byIdNext = new Map(merged.map((c) => [c.id, c] as const));
-      const rootOf = (c: PrComment): PrComment => {
-        let cur: PrComment | undefined = c;
-        const seen = new Set<string>();
-        while (cur?.inReplyTo && byIdNext.has(cur.inReplyTo) && !seen.has(cur.id)) {
-          seen.add(cur.id);
-          cur = byIdNext.get(cur.inReplyTo);
-        }
-        return cur ?? c;
-      };
-      const reopenedRoots = new Set<string>();
-      for (const c of merged) {
-        const root = rootOf(c);
-        if (!root.respondedAt) continue;
-        if (c.id === root.id) continue;
-        if (c.createdAt > root.respondedAt) reopenedRoots.add(root.id);
-      }
-
-      const drafted = new Set((s.draftedReplies ?? []).map((d) => d.commentId));
-      const userLocked = new Set((s.draftedReplies ?? []).filter((d) => d.userEdited).map((d) => d.commentId));
-      const editBusy = new Set((s.editQueue ?? [])
-        .filter((e) => e.status === 'queued' || e.status === 'running')
-        .map((e) => e.commentId));
-
-      // Apply reopen flags into the patch's comments before computing pending.
-      if (reopenedRoots.size) {
-        patch.comments = merged.map((c) => reopenedRoots.has(c.id)
-          ? ({ ...c, respondedAt: undefined, reopenedAt: Date.now() })
-          : c);
-      }
-      const next = patch.comments ?? merged;
-      const pending = next.filter((c) =>
-        !c.respondedAt
-        && !userLocked.has(c.id)
-        && !editBusy.has(c.id)
-        && (!drafted.has(c.id) || fresh.some((f) => f.id === c.id)),
-      );
-      if (pending.length && s.state !== 'comment_pending_response' && s.state !== 'reply_pending_review') {
-        patch.state = 'comment_pending_response';
-        this.opts.engine.dropOrphanIterations(jobId, s.id, 'replies');
-      } else if (
-        !pending.length
-        && (s.state === 'comment_pending_response' || s.state === 'reply_pending_review')
-        && drafted.size === 0
-        && editBusy.size === 0
-        && !(s.iterations ?? []).some((it) => it.kind === 'replies' && it.status === 'in_progress' && !it.postedAt)
-      ) {
-        // Every comment answered, no drafts awaiting review, no edit/triage round in
-        // flight — the step is settled. Nothing else returns a step from the comment
-        // states to pr_open, so without this it stays reply_pending_review forever and
-        // reads as perpetually needing the user (stepNeedsYou treats that state as
-        // needs-you). Hand it back so the reviewState/ciState gates decide what's next.
-        patch.state = 'pr_open';
-      }
     }
-    // A conflicting PR can't merge and reads CI as pending, so it is
-    // more blocking than unanswered comments — flip to a dedicated state that drives the
-    // resolve-conflicts gate. Placed after the comment block so conflicts win. Skip while a
-    // resolve round is mid-flight so we don't disturb it.
-    if (!s.conflictResolving) {
-      const mergeableNow = (patch.mergeable ?? s.mergeable) as OpenPrStep['mergeable'];
-      const postPr = s.state === 'pr_open'
-        || s.state === 'comment_pending_response'
-        || s.state === 'reply_pending_review';
-      if (mergeableNow === 'conflicting' && postPr) {
-        patch.state = 'conflicting';
-      } else if (mergeableNow === 'mergeable' && s.state === 'conflict_unresolved') {
-        patch.state = 'pr_open';
-      }
+    if (events.length || checksMoved(prev, facts)) this.noteChanged(jobId);
+  }
+
+  private async discoverPr(cwd: string, branch: string): Promise<string | undefined> {
+    try {
+      const out = await this.runGh(cwd, ['pr', 'list', '--head', branch, '--json', 'url', '--limit', '1']);
+      return (JSON.parse(out) as Array<{ url?: string }>)[0]?.url;
+    } catch (e) {
+      console.error(`[pr-watcher] discovery ${branch}: ${(e as Error).message}`);
+      return undefined;
     }
-    const changed = patchChangesStep(s, patch);
-    this.opts.engine.applyOpenPrPatch(jobId, s.id, patch);
-    if (changed) this.noteChanged(jobId);
   }
 
   private async fetchPr(cwd: string, url: string): Promise<GhPrView> {

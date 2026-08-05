@@ -19,6 +19,7 @@ import type {
   OrchestratedStep,
   PlanIteration,
   PrComment,
+  PrFacts,
   ProposedStep,
   ReviewComment,
   Step,
@@ -2493,6 +2494,22 @@ export class WorkEngine {
     }
     if (after) this.mutate(jobId, (jj) => ({ ...jj, linearStatusDirty: true }));
     void this.tickOne(jobId);
+  }
+
+  // The watcher's only write. Facts about the PR — never control state: what they mean is
+  // the step's controller's call, and it learns of them from the matching inbox event, not
+  // from this. `iterations` is not a fact; it is the watcher pruning a replies round that a
+  // restart stranded in_progress, which only the observer of the new comments can know is dead.
+  applyPrFacts(jobId: string, stepId: string, facts: Partial<PrFacts>, iterations?: IterationRecord[]): void {
+    this.mutateStep(jobId, stepId, (s) => s.type === 'orchestrated'
+      ? {
+        ...s,
+        pr: { ...(s.pr ?? {}), ...facts },
+        ...(iterations ? { iterations } : {}),
+        updatedAt: this.ctx.now(),
+      }
+      : s);
+    this.mutate(jobId, (j) => ({ ...j, linearStatusDirty: true }));
   }
 
   // ─────────────────────────────────────────────────────────

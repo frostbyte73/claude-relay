@@ -5,14 +5,18 @@ import { PrWatcher } from '../../src/integrations/pr-watcher.js';
 // an in-progress check (should read as pending) or is transiently empty for the
 // new head (must clear the stale terminal result, but only if there was one).
 
-function makeStep(over: Record<string, unknown> = {}) {
+function makeStep(prOver: Record<string, unknown> = {}) {
   return {
-    id: 's1', type: 'open-pr', cancelled: false,
-    state: 'pr_open', prState: 'open',
-    prUrl: 'https://github.com/acme/example/pull/639',
-    workspace: { repoCwd: '/tmp/repo', branch: 'feat/x' },
-    comments: [],
-    ...over,
+    id: 's1', type: 'orchestrated', controller: 'code.orchestrate-pr', cancelled: false,
+    state: 'waiting',
+    workspace: { kind: 'writable', repoCwd: '/tmp/repo', branch: 'feat/x' },
+    dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+    pr: {
+      prUrl: 'https://github.com/acme/example/pull/639',
+      prState: 'open',
+      comments: [],
+      ...prOver,
+    },
   };
 }
 
@@ -21,8 +25,8 @@ function harness(step: ReturnType<typeof makeStep>, rollup: unknown[] | undefine
   const patches: Array<Record<string, unknown>> = [];
   const queue = { get: () => job, list: () => [job] } as never;
   const engine = {
-    applyOpenPrPatch: (_j: string, _s: string, patch: Record<string, unknown>) => patches.push(patch),
-    dropOrphanIterations: () => {},
+    applyPrFacts: (_j: string, _s: string, facts: Record<string, unknown>) => patches.push(facts),
+    pushStepInbox: () => {},
   } as never;
   const view = JSON.stringify({
     number: 639, url: 'x', state: 'OPEN', reviews: [], comments: [],
