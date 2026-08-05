@@ -58,6 +58,7 @@ function renderHeader(job) {
             <div class="tk-menu-body" hidden>
               <button type="button" class="tk-menu-item" data-job-action="rerun-latest">${job.steps?.some((s) => !s.cancelled && s.failure) ? 'Rerun failed step' : 'Rerun latest step'}</button>
               <button type="button" class="tk-menu-item danger" data-job-action="reset-job">Reset job</button>
+              ${job.state !== 'abandoned' && job.state !== 'done' ? `<button type="button" class="tk-menu-item" data-job-action="mark-done">Mark done</button>` : ''}
               ${job.state !== 'abandoned' && job.state !== 'done' ? `<button type="button" class="tk-menu-item danger" data-job-action="abandon-job">Abandon</button>` : ''}
               ${job.source === 'manual' ? `<button type="button" class="tk-menu-item danger" data-job-action="delete-job">Delete</button>` : ''}
             </div>
@@ -350,6 +351,11 @@ export function renderTrackedDetail(root, jobId) {
       else if (action === 'reset-job') {
         if (!confirm('Reset this job? Steps and plan will be wiped; back to planning. Any active sessions stay open — close them manually.')) return;
         void work.resetJob(job.id).catch((e) => alert(`Reset failed: ${e?.message ?? e}`));
+      }
+      else if (action === 'mark-done') {
+        const linear = job.source === 'linear' ? ' The Linear ticket will be set to Done.' : '';
+        if (!confirm(`Mark this job done? Unfinished steps will be cancelled, active sessions closed, and worktrees archived.${linear}`)) return;
+        void work.markDone(job.id).catch((e) => alert(`Mark done failed: ${e?.message ?? e}`));
       }
       else if (action === 'abandon-job') {
         if (!confirm('Abandon this job? Active sessions will be closed and worktrees archived. The record stays for history.')) return;

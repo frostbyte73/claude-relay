@@ -67,4 +67,28 @@ describe('decideJobTransitions (post-overhaul)', () => {
     const steps = [actionStep('a', { failure: { reason: 'x', at: 1 } })];
     expect(decideJobTransitions(job(steps))).toEqual([{ kind: 'mark-failed' }]);
   });
+
+  // mark-done lands before mark-linear-state in the same batch, so a throw on the
+  // Linear call leaves an already-done job owing the write. Re-emitting for `done`
+  // is the only thing that makes the retry-next-tick path reachable.
+  it('re-emits the Linear done-write for an already-done job that never got one', () => {
+    const j = job([actionStep('a')], {
+      state: 'done', source: 'linear', externalRef: { url: 'https://linear.app/x', linearUuid: 'u' },
+    });
+    expect(decideJobTransitions(j)).toEqual([{ kind: 'mark-linear-state', state: 'done' }]);
+  });
+
+  it('emits nothing for a done job whose Linear state already landed', () => {
+    const j = job([actionStep('a')], {
+      state: 'done', source: 'linear', externalRef: { url: 'https://linear.app/x', linearUuid: 'u' },
+      linearStateMarked: { done: true },
+    });
+    expect(decideJobTransitions(j)).toEqual([]);
+  });
+
+  it('emits nothing for terminal jobs that owe Linear nothing', () => {
+    for (const state of ['done', 'failed', 'abandoned'] as const) {
+      expect(decideJobTransitions(job([actionStep('a')], { state }))).toEqual([]);
+    }
+  });
 });

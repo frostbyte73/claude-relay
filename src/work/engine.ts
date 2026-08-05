@@ -448,18 +448,24 @@ export class WorkEngine {
     }
 
     // Edit-job dispatch: any open-pr step with a queued edit and no other running edit
-    // gets its head edit pumped through code.fix-pr-comment.
-    for (const s of j.steps) {
-      if (s.type !== 'open-pr' || s.cancelled) continue;
-      const queue = s.editQueue ?? [];
-      const running = queue.some((e) => e.status === 'running');
-      if (running) continue;
-      // One session per step: hold an edit round while a triage turn is mid-flight
-      // (dispatched but not yet posted). Once posted, the turn is done and edits proceed.
-      if ((s.iterations ?? []).some((it) => it.status === 'in_progress' && !it.postedAt)) continue;
-      const head = queue.find((e) => e.status === 'queued');
-      if (!head) continue;
-      await this.spawnEditFixSession(j, s, head.id);
+    // gets its head edit pumped through code.fix-pr-comment. Skipped for a settled job —
+    // its worktrees are archived, so the session would have nowhere to run. (`done` still
+    // falls through to the transition pass below, which may owe Linear its done-write.)
+    // Kept inline, and only awaited when there is work: callers rely on tickOne reaching
+    // the transition pass synchronously, which an unconditional await would break.
+    if (j.state !== 'done' && j.state !== 'abandoned') {
+      for (const s of j.steps) {
+        if (s.type !== 'open-pr' || s.cancelled) continue;
+        const queue = s.editQueue ?? [];
+        const running = queue.some((e) => e.status === 'running');
+        if (running) continue;
+        // One session per step: hold an edit round while a triage turn is mid-flight
+        // (dispatched but not yet posted). Once posted, the turn is done and edits proceed.
+        if ((s.iterations ?? []).some((it) => it.status === 'in_progress' && !it.postedAt)) continue;
+        const head = queue.find((e) => e.status === 'queued');
+        if (!head) continue;
+        await this.spawnEditFixSession(j, s, head.id);
+      }
     }
 
     // Per-step review: once a group has fully settled, run the orchestrator once
@@ -699,6 +705,28 @@ export class WorkEngine {
     if (!j) return;
     await this.terminateJobResources(j);
     this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'abandoned' }, { kind: 'abandoned', who: 'user' }));
+  }
+
+  // Settle a job as done by hand — the work finished outside Outpost (CI fixed manually,
+  // PR merged by someone else, the task turned out to be a no-op). Unfinished steps are
+  // cancelled rather than left frozen so a `done` job never contains a step still claiming
+  // to be mid-flight. That also makes allStepsResolved() true, so the Linear done-write
+  // rides the same mark-linear-state transition organic completion uses — hence the tick
+  // rather than a second setState call here.
+  async markJobDone(jobId: string): Promise<void> {
+    const j = this.opts.queue.get(jobId);
+    if (!j) return;
+    if (j.state === 'done') return;
+    await this.terminateJobResources(j);
+    const now = this.ctx.now();
+    this.mutate(jobId, (jj) => this.appendEvent({
+      ...jj,
+      state: 'done',
+      steps: jj.steps.map((s) => (s.cancelled || handlerFor(s).isResolved(s)
+        ? s
+        : ({ ...s, cancelled: true, updatedAt: now } as Step))),
+    }, { kind: 'state_changed', who: 'user', body: 'marked done by user' }));
+    void this.tickOne(jobId);
   }
 
   async deleteJob(jobId: string): Promise<void> {

@@ -195,6 +195,16 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
   });
 
+  server.route('POST', '/api/work/jobs/:id/mark-done', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/mark-done$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    try { await engine.markJobDone(m[1]!); }
+    catch (e) { res.statusCode = 500; res.end(`mark-done error: ${(e as Error).message}`); return; }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
+  });
+
   server.route('DELETE', '/api/work/jobs/:id', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }

@@ -59,7 +59,17 @@ function allOpenPrsHaveRemotePr(j: JobRecord): boolean {
 // transitions in one call is fine — they don't conflict (e.g. you can mark a
 // job done AND mark Linear done in the same tick).
 export function decideJobTransitions(j: JobRecord): JobTransition[] {
-  if (j.state === 'done' || j.state === 'failed' || j.state === 'abandoned') return [];
+  if (j.state === 'failed' || j.state === 'abandoned') return [];
+
+  // An already-done job still owes Linear its done-write if the write hasn't landed:
+  // mark-done is emitted before mark-linear-state in the same batch below, so a throw
+  // on the Linear call leaves a done job whose ticket never moved. Re-emitting here is
+  // what makes the orchestrator's retry-next-tick reachable at all.
+  if (j.state === 'done') {
+    return linearReady(j) && !j.linearStateMarked?.done
+      ? [{ kind: 'mark-linear-state', state: 'done' }]
+      : [];
+  }
 
   const out: JobTransition[] = [];
 

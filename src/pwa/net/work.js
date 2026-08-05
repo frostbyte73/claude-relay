@@ -26,6 +26,7 @@ export const workApi = {
   approve(id, body)                { return request(`${jobPath(id)}/approve`, { method: 'POST', body: JSON.stringify(body) }); },
   reject(id, body)                 { return request(`${jobPath(id)}/reject`, { method: 'POST', body: JSON.stringify(body) }); },
   abandon(id)                      { return request(`${jobPath(id)}/abandon`, { method: 'POST', body: '{}' }); },
+  markDone(id)                     { return request(`${jobPath(id)}/mark-done`, { method: 'POST', body: '{}' }); },
   deleteJob(id)                    { return request(jobPath(id), { method: 'DELETE' }); },
   launchOrchestrator(id, context)  { return request(`${jobPath(id)}/launch-orchestrator`, { method: 'POST', body: JSON.stringify(context ? { context } : {}) }); },
   replan(id, feedback)             { return request(`${jobPath(id)}/replan`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
