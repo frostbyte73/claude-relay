@@ -1,0 +1,13 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh auth status(\\s|$)",
+    "^gh repo clone(\\s|$)",
+    "^git clone(\\s|$)",
+    "^mkdir -p(\\s|$)",
+    "^git -C [^-\\s]\\S* checkout(\\s|$)",
+    "^curl -fsS -X POST [\"']?(\\$OUTPOST_API_URL|\\$\\{OUTPOST_API_URL\\}|http://(127\\.0\\.0\\.1|localhost):[0-9]+)/api/projects"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}

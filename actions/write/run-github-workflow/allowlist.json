@@ -1,0 +1,8 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh workflow run(\\s|$)"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}

@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": ["ok", "summary"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "conclusion": { "type": "string" },
+    "runId": { "type": "number" },
+    "url": { "type": "string" },
+    "workflow": { "type": "string" },
+    "ref": { "type": "string" },
+    "durationSec": { "type": "number" },
+    "failureLog": { "type": "string", "description": "Trimmed logs of the failing step." },
+    "summary": { "type": "string" }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "required": ["repo"],
+  "additionalProperties": false,
+  "properties": {
+    "repo": {
+      "type": "string",
+      "description": "GitHub repo reference: owner/name, or any github.com URL reducible to owner/name."
+    },
+    "dest": {
+      "type": "string",
+      "description": "Absolute path to clone into. Derived from the existing project layout when omitted."
+    },
+    "branch": {
+      "type": "string",
+      "description": "Branch to check out after cloning. Defaults to the repo's default branch."
+    },
+    "recurse_submodules": { "type": "boolean", "default": false },
+    "register": {
+      "type": "boolean",
+      "default": true,
+      "description": "Register the clone with the daemon's project registry."
+    }
+  }
+}

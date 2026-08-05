@@ -68,3 +68,31 @@ ToolSearch({ query: "select:mcp__outpost__submit_step_output", max_results: 1 })
 If the tool doesn't come back, halt. The daemon will mark the step failed when your turn ends. Do NOT try to submit the review as your final text message.
 
 Then call `mcp__outpost__submit_step_output` with `output` set to the JSON-stringified review object. Stop.
+
+## Before you exit — journal a blocker
+
+`submit_journal` is deferred behind ToolSearch:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+```
+
+```
+mcp__outpost__submit_journal({
+  action: "code.review-ui",
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  outcome: "reviewed" | "blocked",
+  lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
+})
+```
+
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, a documented command that didn't exist, anything you had to
+guess at or work around. Journal it even when you recovered and the step succeeded. These
+recur identically on every future run of this action until a human sees them, and this
+journal is the only place `meta.improve-actions` looks.
+
+Name the exact command or field. "`git clone` denied — this action's `allowlist.json` has
+no clone rule" is actionable; "permissions were too tight" is not. Skip the journal only
+when the run was genuinely unremarkable; don't pad.

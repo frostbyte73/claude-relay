@@ -140,3 +140,31 @@ Stop. Don't make recommendations beyond the finding — downstream steps (or the
 - **Treat the subject's framing as a hypothesis, not a finding.** Phrases like "X is broken," "Y must be the bug" — these are leads to verify. Find the specific log line / code path / measurement that supports or refutes each load-bearing claim before promoting it to a finding.
 - **Convert customer-reported timestamps to UTC** when investigating customer incidents. Cross-check against the actual log timestamps.
 - **Calibrate confidence honestly.** A `verdict.confidence` of 0.5 with a clear caveat is more useful than a confident wrong call. If the inputs don't support a classification, return `verdict.kind: "unknown"` with the missing-data caveats.
+
+## Before you exit — journal a blocker
+
+`submit_journal` is deferred behind ToolSearch:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+```
+
+```
+mcp__outpost__submit_journal({
+  action: "read.investigate",
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  outcome: "investigated" | "inconclusive" | "blocked",
+  lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
+})
+```
+
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, a documented command that didn't exist, anything you had to
+guess at or work around. Journal it even when you recovered and the step succeeded. These
+recur identically on every future run of this action until a human sees them, and this
+journal is the only place `meta.improve-actions` looks.
+
+Name the exact command or field. "`git clone` denied — this action's `allowlist.json` has
+no clone rule" is actionable; "permissions were too tight" is not. Skip the journal only
+when the run was genuinely unremarkable; don't pad.

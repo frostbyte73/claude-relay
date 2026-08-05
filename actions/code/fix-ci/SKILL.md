@@ -105,6 +105,12 @@ mcp__outpost__submit_journal({
 })
 ```
 
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, anything you had to guess at or work around. Journal it even
+when you recovered and the step succeeded: it recurs identically on every future run of
+this action until a human sees it, and this journal is the only place
+`meta.improve-actions` looks. Name the exact command or field, not the category.
+
 ## Failure modes
 
 - **Envelope missing/unreadable:** exit with a brief error; the orchestrator marks the

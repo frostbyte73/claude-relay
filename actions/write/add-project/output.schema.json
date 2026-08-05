@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": ["ok", "repo", "cwd", "summary"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "repo": { "type": "string", "description": "Normalized owner/name." },
+    "url": { "type": "string" },
+    "cwd": { "type": "string", "description": "Absolute path of the checkout; what downstream steps branch from." },
+    "cloned": { "type": "boolean" },
+    "alreadyCloned": { "type": "boolean" },
+    "registered": { "type": "boolean" },
+    "alreadyRegistered": { "type": "boolean" },
+    "defaultBranch": { "type": "string" },
+    "checkedOutBranch": { "type": "string" },
+    "headCommit": { "type": "string" },
+    "isPrivate": { "type": "boolean" },
+    "isArchived": { "type": "boolean" },
+    "summary": { "type": "string" }
+  }
+}

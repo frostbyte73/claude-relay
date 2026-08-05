@@ -379,7 +379,7 @@ export class WorkEngine {
             body: `${label} — session interrupted by daemon restart; re-running`,
           }));
         } else if (s.type === 'open-pr' && s.state === 'implementing') {
-          this.onStepFailed(j.id, s.id, 'implement session interrupted by daemon restart');
+          this.onStepFailed(j.id, s.id, 'implement session interrupted by daemon restart', { journal: false });
         } else if (s.type === 'open-pr' && (s.state === 'speccing' || s.state === 'planning') && s.sessionId) {
           // Spec/plan rounds have no uncommitted edits — the shared session was reaped
           // by the bounce; re-dispatch to resume the round rather than hang (decide()
@@ -1232,11 +1232,30 @@ export class WorkEngine {
     }
   }
 
-  onStepFailed(jobId: string, stepId: string, reason: string): void {
+  // `journal: false` for failures the action itself didn't cause — a daemon bounce or a
+  // workspace that wouldn't provision say nothing about the skill, and would crowd real
+  // lessons out of the bounded per-action journal.
+  onStepFailed(jobId: string, stepId: string, reason: string, opts: { journal?: boolean } = {}): void {
+    if (opts.journal !== false) this.journalBlocker(jobId, stepId, reason);
     this.mutateStep(jobId, stepId, (s) => this.appendStepEvent({ ...s, failure: { reason, at: this.ctx.now() } }, 'failed', 'session'));
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_failed', who: 'session', stepId, body: `${this.stepLabel(jobId, stepId)} — ${reason}`,
     }));
+  }
+
+  // A blocker must always reach the action's journal. It's the only signal
+  // meta.improve-actions gets that a skill is mis-specified, and the failure modes that
+  // matter most — an allowlist gap, a missing envelope field — recur identically on every
+  // future run until someone sees them. Actions are instructed to journal their own,
+  // better-distilled lesson before failing; this is the backstop for the ones that don't.
+  private journalBlocker(jobId: string, stepId: string, reason: string): void {
+    const journal = this.opts.journalStore;
+    if (!journal) return;
+    const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+    if (!s) return;
+    const action = actionNameForStep(s);
+    if (journal.hasEntryForStep(action, jobId, stepId)) return;
+    journal.append({ action, jobId, stepId, outcome: 'blocked', lesson: reason });
   }
 
   onStepRetry(jobId: string, stepId: string): void {
@@ -2354,7 +2373,7 @@ export class WorkEngine {
     const wsErr = workspaceError(s.workspace);
     if (wsErr) {
       console.warn(`[work] unusable workspace on step ${stepId}: ${wsErr}`);
-      this.onStepFailed(jobId, stepId, `workspace provision failed: ${wsErr}`);
+      this.onStepFailed(jobId, stepId, `workspace provision failed: ${wsErr}`, { journal: false });
       return;
     }
     try {
@@ -2362,7 +2381,7 @@ export class WorkEngine {
     } catch (e) {
       const reason = (e as Error).message ?? String(e);
       console.warn(`[work] worktree provision failed for step ${stepId}: ${reason}`);
-      this.onStepFailed(jobId, stepId, `workspace provision failed: ${reason}`);
+      this.onStepFailed(jobId, stepId, `workspace provision failed: ${reason}`, { journal: false });
       return;
     }
     const cwd = ws.path ?? this.orchestratorCwd();

@@ -15,7 +15,7 @@
     "alwaysAllow": ["Read", "Glob", "Grep", "LS", "NotebookRead"],
     "alwaysAllowBashPatterns": [
       "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|env|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od|sed -n)(\\s|$)",
-      "^git (status|log|diff|show|blame|branch|remote -v|config --get|fetch|rev-parse|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list)(\\s|$)",
+      "^git (-C [^-\\s]\\S* )?(status|log|diff|show|blame|branch|remote -v|remote get-url|config --get|fetch|rev-parse|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list)(\\s|$)",
       "^(rg|grep)(\\s|$)",
       "^find(\\s|$)"
     ],
@@ -55,7 +55,7 @@
       "^cargo (build|test|check|clippy|fmt)(\\s|$)",
       "^make(\\s|$)",
       "^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\\s|$)",
-      "^git (rebase|checkout|merge|stash|add|reset|restore|cherry-pick|revert|clean|switch|apply|mv|rm)(\\s|$)"
+      "^git (-C [^-\\s]\\S* )?(rebase|checkout|merge|stash|add|reset|restore|cherry-pick|revert|clean|switch|apply|mv|rm)(\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": [

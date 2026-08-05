@@ -109,6 +109,12 @@ mcp__outpost__submit_journal({
 })
 ```
 
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, anything you had to guess at or work around. Journal it even
+when you recovered and the step succeeded: it recurs identically on every future run of
+this action until a human sees it, and this journal is the only place
+`meta.improve-actions` looks. Name the exact command or field, not the category.
+
 Concrete > generic. "Server repo's lint step requires running `mage proto` first if proto files changed" beats "watch out for build steps". Don't pad.
 
 ## Step 5 — Summarize and exit

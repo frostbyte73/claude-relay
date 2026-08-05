@@ -178,3 +178,31 @@ If the user sends new feedback later, this skill runs again with the updated
 envelope — re-draft from scratch using `skillMdBefore` (or your previously
 proposed text, which is now the canonical "before" view from the user's
 perspective if they're refining it).
+
+## Before you exit — journal a blocker
+
+`submit_journal` is deferred behind ToolSearch:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+```
+
+```
+mcp__outpost__submit_journal({
+  action: "meta.build-action",
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  outcome: "proposed" | "blocked",
+  lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
+})
+```
+
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, a documented command that didn't exist, anything you had to
+guess at or work around. Journal it even when you recovered and the step succeeded. These
+recur identically on every future run of this action until a human sees them, and this
+journal is the only place `meta.improve-actions` looks.
+
+Name the exact command or field. "`git clone` denied — this action's `allowlist.json` has
+no clone rule" is actionable; "permissions were too tight" is not. Skip the journal only
+when the run was genuinely unremarkable; don't pad.

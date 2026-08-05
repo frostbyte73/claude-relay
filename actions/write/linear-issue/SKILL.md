@@ -54,3 +54,31 @@ The user approved. File the issue using the approved content (`typePayload.draft
 3. If `inputs.parent_ref` is set, resolve → UUID via `mcp__claude_ai_Linear__get_issue`.
 4. Call `mcp__claude_ai_Linear__save_issue` with the assembled payload (title/body from the approved draft).
 5. Call `mcp__outpost__submit_step_output` with `output` set to the JSON string `{"id": "CORE-1234", "url": "..."}` where `id` is the human identifier.
+
+## Before you exit — journal a blocker
+
+`submit_journal` is deferred behind ToolSearch:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+```
+
+```
+mcp__outpost__submit_journal({
+  action: "write.linear-issue",
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  outcome: "filed" | "blocked",
+  lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
+})
+```
+
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, a documented command that didn't exist, anything you had to
+guess at or work around. Journal it even when you recovered and the step succeeded. These
+recur identically on every future run of this action until a human sees them, and this
+journal is the only place `meta.improve-actions` looks.
+
+Name the exact command or field. "`git clone` denied — this action's `allowlist.json` has
+no clone rule" is actionable; "permissions were too tight" is not. Skip the journal only
+when the run was genuinely unremarkable; don't pad.

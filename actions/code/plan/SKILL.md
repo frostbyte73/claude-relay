@@ -107,6 +107,33 @@ mcp__outpost__submit_impl_plan({
 
 Do NOT write the plan to any file in the repo or worktree — the daemon stores it as job state, not a repo artifact, so the eventual PR diff stays pure implementation. Do NOT submit the plan as your final chat message; the daemon does not scrape transcripts. There is no user gate on the plan round: after the tool call returns, the orchestrator resumes this same session as `/code.implement`, which inherits everything you and the spec round reasoned through. Leave that reasoning legible in the conversation — stop here and let the resumed session pick it up.
 
+## Before you exit — journal a blocker
+
+`submit_journal` is deferred behind ToolSearch:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+```
+
+```
+mcp__outpost__submit_journal({
+  action: "code.plan",
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  outcome: "planned" | "blocked",
+  lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
+})
+```
+
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, a documented command that didn't exist, anything you had to
+guess at or work around. Journal it even when you recovered and the step succeeded. These
+recur identically on every future run of this action until a human sees them, and this
+journal is the only place `meta.improve-actions` looks.
+
+Name the exact command or field. "`git clone` denied — this action's `allowlist.json` has
+no clone rule" is actionable; "permissions were too tight" is not. Skip the journal only
+when the run was genuinely unremarkable; don't pad.
 ## Failure modes
 
 - **The spec itself is unactionable** (an assumption it recorded turns out to be wrong once you look at the actual files, or two of its sections genuinely conflict). Don't silently re-design around it — call out the conflict plainly in the plan's own text (a short "Deviations from spec" note near the top is enough) and plan against the interpretation a competent engineer would pick, so the implementer isn't blocked.

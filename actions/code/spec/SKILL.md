@@ -115,6 +115,33 @@ mcp__outpost__submit_spec({
 
 Do NOT write the spec to any file in the repo or worktree — the daemon stores it as job state, not a repo artifact, so the eventual PR diff stays pure implementation. Do NOT submit the spec as your final chat message; the daemon does not scrape transcripts. After the tool call returns, stop — the user reviews the rendered spec via the PWA gate and either approves (this session resumes as `/code.plan`) or sends feedback (this session resumes as `/code.spec` again, with `typePayload.round.feedback` populated).
 
+## Before you exit — journal a blocker
+
+`submit_journal` is deferred behind ToolSearch:
+
+```
+ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+```
+
+```
+mcp__outpost__submit_journal({
+  action: "code.spec",
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  outcome: "specced" | "blocked",
+  lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
+})
+```
+
+**Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
+ambiguous envelope field, a documented command that didn't exist, anything you had to
+guess at or work around. Journal it even when you recovered and the step succeeded. These
+recur identically on every future run of this action until a human sees them, and this
+journal is the only place `meta.improve-actions` looks.
+
+Name the exact command or field. "`git clone` denied — this action's `allowlist.json` has
+no clone rule" is actionable; "permissions were too tight" is not. Skip the journal only
+when the run was genuinely unremarkable; don't pad.
 ## Failure modes
 
 - **The goal is genuinely unactionable** (contradictory requirements, a named file/API that doesn't exist and no reasonable substitute) — say so plainly in the spec's Assumptions/Risks, propose the closest sane interpretation, and let the user redirect at the gate rather than silently guessing past a real blocker.

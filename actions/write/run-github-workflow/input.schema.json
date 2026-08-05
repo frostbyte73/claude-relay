@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["workflow", "ref"],
+  "properties": {
+    "workflow": {
+      "type": "string",
+      "description": "Workflow file name (deploy.yml), display name, or numeric id."
+    },
+    "ref": { "type": "string", "description": "Branch or tag to run the workflow on." },
+    "repo": { "type": "string", "description": "owner/name. Omit to use workspace.repoCwd." },
+    "inputs": {
+      "type": "object",
+      "description": "workflow_dispatch input name → value; each becomes a -f flag.",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "expect_conclusion": { "type": "string", "default": "success" },
+    "workspace": {
+      "type": "object",
+      "properties": { "repoCwd": { "type": "string" } }
+    }
+  }
+}

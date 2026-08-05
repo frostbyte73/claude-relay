@@ -16,6 +16,9 @@ export interface JournalEntry {
 }
 
 const READ_LIMIT = 10;
+// Tail scanned by hasEntryForStep. Wider than READ_LIMIT so a busy action's
+// dedupe still sees this step's own entry; the file is KB-sized either way.
+const DEDUPE_SCAN = 50;
 const MAX_LESSON_LEN = 400;
 const MAX_OUTCOME_LEN = 80;
 
@@ -75,6 +78,15 @@ export class JournalStore {
     };
     appendFileSync(path, JSON.stringify(row) + '\n', { mode: 0o600 });
     return row;
+  }
+
+  // True when this step already wrote a lesson. Lets the engine's failure backstop
+  // defer to a session-authored lesson rather than duplicate it. An entry from the
+  // same job with no stepId counts — nothing else in a job shares its jobId.
+  hasEntryForStep(action: string, jobId: string, stepId?: string): boolean {
+    return this.recent(action, DEDUPE_SCAN).some(
+      (e) => e.jobId === jobId && (!e.stepId || !stepId || e.stepId === stepId),
+    );
   }
 
   recent(action: string, limit: number = READ_LIMIT): JournalEntry[] {

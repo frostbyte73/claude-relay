@@ -189,6 +189,15 @@ async function main() {
     process.exit(1);
   }
 
+  // Every spawned session inherits process.env (claude-proc merges it under its own
+  // per-session vars), so exporting the loopback base URL here is what makes
+  // $OUTPOST_API_URL resolvable inside action steps — they POST back to the daemon
+  // (e.g. write.add-project registering a fresh clone) and have no other way to
+  // learn the port.
+  if (config.httpPort !== null) {
+    process.env.OUTPOST_API_URL = `http://127.0.0.1:${config.httpPort}`;
+  }
+
   const secret = generateSecret();
   const HOOK_PORT = config.hookPort;
   const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
