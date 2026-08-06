@@ -163,7 +163,12 @@ function parsePrUrl(url: string): { owner: string; repo: string; number: string 
 // `gh` as a subprocess argument, so it gets the strict, anchored check — unlike the
 // permissive `parsePrUrl` above, which only ever runs against a URL `gh pr list` itself
 // returned (trusted GitHub output, not attacker-reachable text).
-const KNOWN_PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
+//
+// The `(?!\.{1,2}\/)` guards exclude a bare `.`/`..` segment: parsePrUrl splices owner and
+// repo into `repos/<owner>/<repo>/pulls/<n>/comments`, so `..` there is path traversal out
+// of the endpoint `gh api` was meant to hit. Dots *inside* a segment (`my.repo.js`) stay legal.
+const KNOWN_PR_URL_RE =
+  /^https:\/\/github\.com\/(?!\.{1,2}\/)[A-Za-z0-9._-]+\/(?!\.{1,2}\/)[A-Za-z0-9._-]+\/pull\/\d+$/;
 
 // Which watched signals the freshly polled facts actually moved. This is the whole of
 // what the watcher tells a controller: what changed, never what it means.
@@ -284,13 +289,19 @@ export class PrWatcher {
   noteChanged(jobId: string): void {
     const existing = this.escalationTimers.get(jobId);
     if (existing) for (const t of existing) clearTimeout(t);
-    const timers = PrWatcher.ESCALATION_MS.map((ms) => {
+    const last = PrWatcher.ESCALATION_MS.length - 1;
+    const timers: NodeJS.Timeout[] = [];
+    PrWatcher.ESCALATION_MS.forEach((ms, i) => {
       const t = setTimeout(() => {
+        // The ladder is spent: drop the entry, or every job the daemon ever tracked keeps a
+        // dead array for the rest of the process's life. Identity-checked so a re-arm that
+        // landed in between (which installed its own array) isn't the one being cleared.
+        if (i === last && this.escalationTimers.get(jobId) === timers) this.escalationTimers.delete(jobId);
         void this.syncJob(jobId).catch((e) =>
           console.error(`[pr-watcher] escalated sync ${jobId}: ${(e as Error).message}`));
       }, ms);
       t.unref();
-      return t;
+      timers.push(t);
     });
     this.escalationTimers.set(jobId, timers);
   }
@@ -349,13 +360,22 @@ export class PrWatcher {
     if (prev.prState === 'merged') return;
 
     const facts: Partial<PrFacts> = {};
-    let prUrl = prev.prUrl;
+    // `s.pr` is not daemon-authored state: POST /api/work/jobs/:id/steps spreads the
+    // caller's object into the step verbatim, and server.ts has no auth of its own. So the
+    // stored URL earns no more trust than the input one — a stored value that fails the
+    // anchored check is treated as absent, which also lets the step self-heal (a readonly
+    // one falls back to its inputs, a writable one re-discovers by branch).
+    let prUrl = prev.prUrl && KNOWN_PR_URL_RE.test(prev.prUrl) ? prev.prUrl : undefined;
+    // Whether this poll is only recording back the URL the controller handed us. That is not
+    // news to the controller, and a wake costs it a round against MAX_ROUNDS.
+    let fromKnownUrl = false;
     if (!prUrl && knownUrl) {
       // Already known by URL (a readonly review step) — never run discovery, and never
       // touch the discovery-miss bound below; that bound exists only for steps guessing
       // a PR from a branch, which this step isn't doing.
       prUrl = knownUrl;
       facts.prUrl = prUrl;
+      fromKnownUrl = true;
     } else if (!prUrl) {
       if (!branch) return;
       // PR discovery: nothing in the catalog opens the PR — code.implement leaves uncommitted
@@ -375,6 +395,11 @@ export class PrWatcher {
       facts.prUrl = prUrl;
     }
 
+    // Last gate before the value becomes `gh` argv, so every source — stored, input, and
+    // `gh pr list` output — passes through the same check.
+    if (!KNOWN_PR_URL_RE.test(prUrl)) {
+      throw new Error(`refusing to poll a malformed prUrl: ${JSON.stringify(prUrl)}`);
+    }
     const view = await this.fetchPr(cwd, prUrl);
     const inline = await this.fetchInlineComments(cwd, prUrl);
     facts.prState = view.state === 'MERGED' ? 'merged' : view.state === 'CLOSED' ? 'closed' : 'open';
@@ -410,7 +435,7 @@ export class PrWatcher {
     if (kept.length !== iterations.length) this.opts.engine.applyPrFacts(jobId, s.id, facts, kept);
     else this.opts.engine.applyPrFacts(jobId, s.id, facts);
 
-    const events = changedSignals(prev, facts);
+    const events = changedSignals(fromKnownUrl ? { ...prev, prUrl } : prev, facts);
     if (events.length) {
       this.opts.engine.pushStepInbox(jobId, s.id, {
         kind: 'external', source: 'pr-watcher', summary: summarize(events, facts, fresh.length), events,

@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { request as httpRequest } from 'node:http';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { HookServer, type HookServerOpts } from '../../src/permissions/hook-server.js';
 import { parseJsonObject } from '../../src/routes/util.js';
 import { handleMcpRequest } from '../../src/mcp-server.js';
@@ -27,7 +29,11 @@ function post(port: number, path: string, body: string): Promise<{ status: numbe
 }
 
 // Mirrors what every real daemon.ts hook callback does post-guard: parse, then throw
-// rather than silently proceeding on a body that isn't a plain object.
+// rather than silently proceeding on a body that isn't a plain object. This is a stand-in
+// on purpose — the subject of the suite below is HookServer's status mapping, and the real
+// callbacks are closures over the whole daemon graph (session manager, engine, stores,
+// tailscale certs, live ports), so driving them means booting the daemon. That the real
+// callbacks still carry the guard is pinned separately, at the bottom of this file.
 function guarded(body: string): void {
   if (!parseJsonObject(body)) throw new Error('invalid json body');
 }
@@ -86,6 +92,83 @@ describe('HookServer — status mapping when a handler throws on a bad body', ()
 
     const res = await post(port, '/hook/pretool', 'null');
     expect(res.status).toBe(500);
+  });
+
+  // /work/create-job parses its own body inside HookServer rather than in a daemon callback,
+  // and was the last raw JSON.parse on the surface — a non-object body reached the field
+  // checks and 400'd on whatever TypeError they happened to raise.
+  it('/work/create-job reports a non-object body as a body problem', async () => {
+    const port = await freePort();
+    server = new HookServer({
+      ...makeOpts(), port,
+      onCreateJob: async () => ({ jobId: 'j1', created: true }),
+    });
+    await server.listen();
+
+    for (const body of ['null', '42', '"a string"', '[{"source":"x","title":"y"}]']) {
+      const res = await post(port, '/work/create-job', body);
+      expect(res.status, body).toBe(400);
+      expect(JSON.parse(res.body), body).toEqual({ error: 'invalid json body' });
+    }
+  });
+
+  it('still rejects a well-formed object missing source/title on its own terms', async () => {
+    const port = await freePort();
+    server = new HookServer({
+      ...makeOpts(), port,
+      onCreateJob: async () => ({ jobId: 'j1', created: true }),
+    });
+    await server.listen();
+
+    const res = await post(port, '/work/create-job', JSON.stringify({ title: 'no source' }));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/source and title/);
+  });
+});
+
+// The suite above proves HookServer maps a throwing callback to the right status. It cannot
+// prove the real callbacks throw, because it supplies its own. This does: every hook callback
+// that receives a raw body must run it through parseJsonObject and refuse a non-object,
+// rather than JSON.parse-ing it or letting a bad body through as `undefined` fields.
+describe('the real hook callbacks guard their bodies', () => {
+  const srcDir = fileURLToPath(new URL('../../src/', import.meta.url));
+  const daemon = readFileSync(`${srcDir}daemon.ts`, 'utf8');
+
+  const BODY_CALLBACKS = [
+    'onStatusLineHook', 'onStopHook', 'onPreToolHook',
+    'onWorkPlanReady', 'onWorkStepResolved', 'onWorkStepFailed', 'onWorkJournal',
+  ];
+
+  // From the callback's key to the next sibling key at the same indent — its whole body.
+  function callbackBody(src: string, name: string): string {
+    const at = src.indexOf(`${name}: async (body) => {`);
+    expect(at, `${name} is not wired in daemon.ts with the expected shape`).toBeGreaterThan(-1);
+    const next = src.indexOf('\n    on', at + 1);
+    return src.slice(at, next > at ? next : at + 4000);
+  }
+
+  it.each(BODY_CALLBACKS)('%s parses via parseJsonObject and throws on a non-object', (name) => {
+    const body = callbackBody(daemon, name);
+    expect(body).toContain('parseJsonObject(body)');
+    const guard = body.indexOf("throw new Error('invalid json body')");
+    expect(guard, `${name} accepts a body that is not a plain object`).toBeGreaterThan(-1);
+    // …and before anything reads a field off it.
+    expect(body.slice(0, guard)).not.toMatch(/payload\.|hookInput\./);
+  });
+
+  it('onActionProposal delegates to a handler that carries the same guard', () => {
+    expect(daemon).toContain('onActionProposal: (body) => onActionProposalHandler(body)');
+    const actions = readFileSync(`${srcDir}routes/actions.ts`, 'utf8');
+    const at = actions.indexOf('const onActionProposalHandler');
+    expect(at).toBeGreaterThan(-1);
+    const head = actions.slice(at, at + 400);
+    expect(head).toContain('parseJsonObject(body)');
+    expect(head).toContain("throw new Error('invalid json body')");
+  });
+
+  it('no hook callback reaches for JSON.parse directly', () => {
+    const hookServer = readFileSync(`${srcDir}permissions/hook-server.ts`, 'utf8');
+    expect(hookServer).not.toContain('JSON.parse(body)');
   });
 });
 
