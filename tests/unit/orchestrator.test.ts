@@ -1186,60 +1186,139 @@ describe('WorkEngine.onStepFailed — orchestrated steps', () => {
   });
 });
 
+// A REAL LaunchGovernor whose concurrency starts at zero, so every queued-priority launch parks
+// instead of firing — a dispatch launch is 'queued' priority (see isReactiveAction), so this
+// reliably reproduces "parked under token headroom", the case every terminal route must guard.
+// A fake governor, or one with headroom, makes these tests vacuous. `openGovernor()` lifts the
+// cap and drains, which is how a test proves a dropped launch stays dropped.
+function makeGovernedEngine() {
+  const dir = mkdtempSync(join(tmpdir(), 'orch-cancel-'));
+  const queue = new JobQueue(dir);
+  const spawned: string[] = [];
+  const closed: string[] = [];
+  const archived: string[] = [];
+  const sessionManager = {
+    spawnDetached(sessionId: string) { spawned.push(sessionId); },
+    send() { /* no-op */ },
+    isWorking() { return false; },
+    sendOrResume() { /* no-op */ },
+    close(sessionId: string) { closed.push(sessionId); },
+  } as never;
+  const worktreeManager = {
+    provision: async () => ({ path: null }),
+    get: (id: string) => ({ projectCwd: '/tmp/repo', worktreePath: `/tmp/wt/${id}`, branch: 'feat/x', baseBranch: 'main' }),
+    archive: async (id: string) => { archived.push(id); },
+  } as never;
+  const linearWriter = { setState: async () => undefined } as never;
+  const actionRegistry = {
+    getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+    listActions: () => [],
+  } as never;
+  let concurrency = 0;
+  const governor = new LaunchGovernor({ getSnapshot: () => undefined, getConcurrency: () => concurrency });
+  const engine = new WorkEngine({
+    queue, sessionManager, worktreeManager, linearWriter, actionRegistry, governor,
+    jobsDir: join(dir, 'jobs'), now: () => 1,
+  });
+
+  const stepId = randomUUID();
+  const controllerSessionId = randomUUID();
+  const step: OrchestratedStep = {
+    id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
+    controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+    dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+    state: 'running', createdAt: 1, updatedAt: 1, sessionId: controllerSessionId,
+  };
+  const job: JobRecord = {
+    id: randomUUID(), source: 'manual', title: 't', description: 'd', state: 'executing',
+    steps: [step], createdAt: 1, updatedAt: 1,
+  };
+  queue.upsert(job);
+  return {
+    engine, queue, governor, jobId: job.id, stepId, controllerSessionId, spawned, closed, archived,
+    openGovernor: () => { concurrency = 5; governor.onUsageSnapshot(); },
+  };
+}
+
+// spawnDispatchSession (and archiveStepResources) are fire-and-forget; flush the microtask chain
+// their awaits need before the parked launch — or the archive — exists to observe.
+async function flushLaunch(): Promise<void> {
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+}
+
+async function parkDispatch(h: ReturnType<typeof makeGovernedEngine>): Promise<string> {
+  h.engine.onStepProgress(h.jobId, h.stepId, {
+    next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'review it' }] },
+  });
+  await flushLaunch();
+  const dispatchId = (h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).dispatches[0]!.id;
+  expect(h.governor.describe(`${h.jobId}#${h.stepId}#${dispatchId}`).state).toBe('queued');
+  return dispatchId;
+}
+
 describe('WorkEngine.markStepResolved — parked dispatch launches', () => {
   it('drops a parked dispatch launch from the governor so it cannot fire after the step is resolved', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'orch-cancel-'));
-    const queue = new JobQueue(dir);
-    const sessionManager = {
-      spawnDetached() { /* no-op */ },
-      send() { /* no-op */ },
-      isWorking() { return false; },
-      sendOrResume() { /* no-op */ },
-    } as never;
-    const worktreeManager = { provision: async () => ({ path: null }) } as never;
-    const linearWriter = { setState: async () => undefined } as never;
-    const actionRegistry = {
-      getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
-      listActions: () => [],
-    } as never;
-    // Zero concurrency forces every queued-priority launch to park instead of firing — a
-    // dispatch launch is 'queued' priority (see isReactiveAction), so this reliably reproduces
-    // "parked under token headroom", the real LaunchGovernor case markStepResolved must guard.
-    const governor = new LaunchGovernor({ getSnapshot: () => undefined, getConcurrency: () => 0 });
-    const engine = new WorkEngine({
-      queue, sessionManager, worktreeManager, linearWriter, actionRegistry, governor,
-      jobsDir: join(dir, 'jobs'), now: () => 1,
-    });
+    const h = makeGovernedEngine();
+    const dispatchId = await parkDispatch(h);
+    const key = `${h.jobId}#${h.stepId}#${dispatchId}`;
 
-    const stepId = randomUUID();
-    const step: OrchestratedStep = {
-      id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
-      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
-      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
-      state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
-    };
-    const job: JobRecord = {
-      id: randomUUID(), source: 'manual', title: 't', description: 'd', state: 'executing',
-      steps: [step], createdAt: 1, updatedAt: 1,
-    };
-    queue.upsert(job);
+    h.engine.markStepResolved(h.jobId, h.stepId);
 
-    engine.onStepProgress(job.id, stepId, {
-      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'review it' }] },
-    });
-    // spawnDispatchSession is fire-and-forget from applyMove; flush the microtask chain its
-    // `await worktreeManager.provision(...)` needs before the parked launch exists to observe.
-    for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
-
-    const dispatchId = (queue.get(job.id)!.steps[0] as OrchestratedStep).dispatches[0]!.id;
-    const key = `${job.id}#${stepId}#${dispatchId}`;
-    expect(governor.describe(key).state).toBe('queued');
-
-    engine.markStepResolved(job.id, stepId);
-
-    expect(governor.describe(key).state).toBe('idle');
-    expect(governor.forceFire(key)).toBe(false);
-    const dispatches = (queue.get(job.id)!.steps[0] as OrchestratedStep).dispatches;
+    expect(h.governor.describe(key).state).toBe('idle');
+    expect(h.governor.forceFire(key)).toBe(false);
+    const dispatches = (h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).dispatches;
     expect(dispatches.find((d) => d.id === dispatchId)?.status).toBe('cancelled');
+  });
+});
+
+describe('WorkEngine.onStepFailed — parked dispatch launches', () => {
+  it('drops the parked launch and cancels the queued dispatch, so a drain spawns nothing for a dead step', async () => {
+    const h = makeGovernedEngine();
+    const dispatchId = await parkDispatch(h);
+    const key = `${h.jobId}#${h.stepId}#${dispatchId}`;
+
+    h.engine.onStepFailed(h.jobId, h.stepId, 'boom');
+
+    expect(h.governor.describe(key).state).toBe('idle');
+    const dispatches = (h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).dispatches;
+    expect(dispatches.find((d) => d.id === dispatchId)?.status).toBe('cancelled');
+
+    // The end the whole cancellation exists to prevent: headroom returns, the governor drains,
+    // and a real child session spawns for a step that failed while the launch sat parked.
+    h.openGovernor();
+    await flushLaunch();
+    expect(h.spawned).toEqual([]);
+    expect((h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).state).toBe('failed');
+  });
+});
+
+describe('WorkEngine — orchestrated terminal cleanup', () => {
+  const successful: Array<[string, (h: ReturnType<typeof makeGovernedEngine>) => void]> = [
+    ['user mark-resolved', (h) => h.engine.markStepResolved(h.jobId, h.stepId)],
+    ['controller resolve move', (h) => h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'resolve', output: 'done' } })],
+  ];
+
+  for (const [label, settle] of successful) {
+    it(`closes the controller session and archives its worktree — ${label}`, async () => {
+      const h = makeGovernedEngine();
+      settle(h);
+      await flushLaunch();
+      expect(h.closed).toEqual([h.controllerSessionId]);
+      expect(h.archived).toEqual([h.stepId]);
+    });
+  }
+
+  // The guard on a deliberate asymmetry: do NOT "unify" this with the successful terminals
+  // above. WorktreeManager.archive tears the worktree down (`git worktree remove --force` +
+  // `branch -D`), which on a failure destroys the uncommitted work and branch that are the only
+  // evidence of WHY the step failed, and 404s its diff view. terminateJobResources still reaps
+  // it when the job is abandoned/deleted, so holding it here leaks nothing permanently.
+  it('keeps a failed step\'s worktree for post-mortem, closing only its session', async () => {
+    const h = makeGovernedEngine();
+    h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'fail', reason: 'boom' } });
+    await flushLaunch();
+    expect(h.archived).toEqual([]);
+    expect(h.closed).toEqual([h.controllerSessionId]);
+    expect((h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).state).toBe('failed');
   });
 });

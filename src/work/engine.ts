@@ -823,9 +823,9 @@ export class WorkEngine {
     catch (e) { console.error(`[work] archive worktree ${step.id.slice(0,8)}: ${(e as Error).message}`); }
   }
 
-  // A step reaching a terminal PR state (merged) no longer needs its implementor
-  // session or worktree; archive both so they don't linger until job teardown.
-  private async archiveMergedStep(jobId: string, stepId: string): Promise<void> {
+  // A step that reached a terminal state no longer needs its session or worktree;
+  // archive both so they don't linger until job teardown.
+  private async archiveStepResources(jobId: string, stepId: string): Promise<void> {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (!step) return;
     await this.closeSessions(step.sessionId ? [step.sessionId] : []);
@@ -1063,6 +1063,7 @@ export class WorkEngine {
       return this.appendStepEvent(next, 'resolved', 'session');
     });
     if (didResolve) {
+      this.settleOrchestratedStep(jobId, stepId, 'succeeded');
       this.mutate(jobId, (j) => this.appendEvent(j, {
         kind: 'step_resolved', who: 'session', stepId, body: this.stepLabel(jobId, stepId),
       }));
@@ -1328,15 +1329,15 @@ export class WorkEngine {
     if (opts.journal !== false) this.journalBlocker(jobId, stepId, reason);
     this.mutateStep(jobId, stepId, (s) => {
       const next: Step = { ...s, failure: { reason, at: this.ctx.now() } };
-      // open-pr/action steps use `.failure` alone as their terminal marker (their `state`
-      // enum has no `failed` member). orchestrated does have one — set it here so the two
-      // agree, rather than leaving `state` frozen at whatever it was mid-round. Without this,
-      // a step the engine treats as terminal (via `.failure`) still reads 'running'/'waiting',
-      // which is exactly the inconsistency applyMove/validateNext now guard against on both
-      // fields.
+      // open-pr/action steps reach failure only through `.failure` — this is the sole producer
+      // of `state: 'failed'`, and only orchestrated steps go through it. Set both so they
+      // agree, rather than leaving `state` frozen at whatever it was mid-round: a step the
+      // engine treats as terminal (via `.failure`) still reading 'running'/'waiting' is exactly
+      // the inconsistency applyMove/validateNext guard against on both fields.
       if (next.type === 'orchestrated') next.state = 'failed';
       return this.appendStepEvent(next, 'failed', 'session');
     });
+    this.settleOrchestratedStep(jobId, stepId, 'failed');
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_failed', who: 'session', stepId, body: `${this.stepLabel(jobId, stepId)} — ${reason}`,
     }));
@@ -1397,21 +1398,53 @@ export class WorkEngine {
     resolveGate(this.orchestratedHost(), jobId, stepId, approved, feedback);
   }
 
+  // The cleanup every terminal transition of an orchestrated step owes, whichever route got
+  // there — the user's mark-resolved, the controller's resolve or fail move, a policy strike,
+  // a crash. Each route used to do its own subset, so a failed step could still spawn a child.
+  //
+  // A `queued` dispatch's parked launch survives the status flip unless dropped here too —
+  // the governor doesn't read Dispatch.status, so a launch parked under token headroom would
+  // still fire later, flip the dispatch back to 'running', and spawn a real session for a step
+  // that's already over. Scoped to this step (not the job-wide `cancel()` used by abandon/
+  // delete/reset) so a sibling step's own parked launch is untouched.
+  //
+  // A `running` dispatch is left alone — killing its session would discard real work already
+  // in flight; its eventual settleDispatch/submit_step_progress just updates a dispatch record
+  // nobody reads anymore, because applyMove refuses to act on an already-terminal step.
+  //
+  // Only a SUCCESSFUL terminal reaps the worktree. Archiving runs `git worktree remove --force`
+  // + `branch -D` (see WorktreeManager.tearDown), so doing it on failure destroys the uncommitted
+  // work and the branch that are the primary evidence for WHY the step failed — and 404s the
+  // diff view. A failed step's worktree is held until the job itself is abandoned/deleted, where
+  // terminateJobResources reaps it, so nothing leaks permanently. Its session is still closed:
+  // the transcript lives in the event log, so ending the process costs nothing.
+  private settleOrchestratedStep(jobId: string, stepId: string, outcome: 'succeeded' | 'failed'): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (step?.type !== 'orchestrated') return;
+    this.opts.governor?.cancelStep(jobId, stepId);
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'orchestrated') return s;
+      const next: OrchestratedStep = {
+        ...s,
+        dispatches: s.dispatches.map((d) => d.status === 'queued'
+          ? { ...d, status: 'cancelled', finishedAt: this.ctx.now() }
+          : d),
+      };
+      return next;
+    });
+    const reap = outcome === 'succeeded'
+      ? this.archiveStepResources(jobId, stepId)
+      : this.closeSessions(step.sessionId ? [step.sessionId] : []);
+    void reap.catch((e) =>
+      console.error(`[work] settle ${stepId.slice(0, 8)}: ${(e as Error).message}`));
+  }
+
   // User force-closes a live orchestrated step rather than waiting for the controller to
-  // converge on its own move. A `queued` dispatch is cancelled outright — it never started.
-  // A `running` one is left alone (killing its session would discard real work already
-  // in flight); its eventual settleDispatch/submit_step_progress just updates a dispatch
-  // record nobody reads anymore, because applyMove now refuses to act on an already-resolved
-  // step — see the guard at the top of applyMove.
+  // converge on its own move.
   markStepResolved(jobId: string, stepId: string): void {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (!step || step.type !== 'orchestrated' || step.state === 'resolved') return;
-    // A `queued` dispatch's parked launch survives the status flip below unless dropped here
-    // too — the governor doesn't read Dispatch.status, so a launch parked under token headroom
-    // would still fire later, flip the dispatch back to 'running', and spawn a real session for
-    // work the user just cancelled. Scoped to this step (not the job-wide `cancel()` used by
-    // abandon/delete/reset) so a sibling step's own parked launch is untouched.
-    this.opts.governor?.cancelStep(jobId, stepId);
+    this.settleOrchestratedStep(jobId, stepId, 'succeeded');
     this.mutateStep(jobId, stepId, (s) => {
       if (s.type !== 'orchestrated') return s;
       const next: OrchestratedStep = {
@@ -1421,9 +1454,6 @@ export class WorkEngine {
         // after — stateLabel/stateTone (step-card.js) and vm/tracked.js give `.failure`
         // priority over `state`. Matches rerunLatest's retry path and the open-pr merge path.
         failure: undefined,
-        dispatches: s.dispatches.map((d) => d.status === 'queued'
-          ? { ...d, status: 'cancelled', finishedAt: this.ctx.now() }
-          : d),
         updatedAt: this.ctx.now(),
       };
       return this.appendStepEvent(next, 'resolved', 'user');
@@ -1555,9 +1585,9 @@ export class WorkEngine {
         const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
         if (!cur || cur.type !== 'orchestrated' || cur.cancelled) return false;
         // The real backstop: re-read the dispatch's own status at fire time, not just the
-        // step's. `markStepResolved`'s governor.cancelStep() is what's supposed to keep this
-        // launch from ever firing after it flips a queued dispatch to 'cancelled' — this is
-        // the belt to that braces, in case a launch was parked under a key that cancellation
+        // step's. `settleOrchestratedStep`'s governor.cancelStep() is what's supposed to keep
+        // this launch from ever firing after it flips a queued dispatch to 'cancelled' — this
+        // is the belt to that braces, in case a launch was parked under a key that cancellation
         // missed (or predates it).
         const target = cur.dispatches.find((d) => d.id === dispatch.id);
         if (!target || target.status !== 'queued') return false;
@@ -1663,7 +1693,7 @@ export class WorkEngine {
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_merged', who: 'user', stepId, body: this.stepLabel(jobId, stepId),
     }));
-    void this.archiveMergedStep(jobId, stepId);
+    void this.archiveStepResources(jobId, stepId);
     void this.tickOne(jobId);
   }
 
@@ -1680,7 +1710,7 @@ export class WorkEngine {
       this.mutate(jobId, (j) => this.appendEvent(j, {
         kind: 'step_merged', who: 'pr-watcher', stepId, body: this.stepLabel(jobId, stepId),
       }));
-      void this.archiveMergedStep(jobId, stepId);
+      void this.archiveStepResources(jobId, stepId);
     }
     const j = this.opts.queue.get(jobId);
     if (j) {
@@ -1865,7 +1895,7 @@ export class WorkEngine {
     // it and the step never advanced past the merge gate — the PWA showed no change
     // until the pr-watcher reconciled the merge minutes later. Branch cleanup is
     // best-effort and decoupled: the local branch is reaped by the worktree teardown
-    // (applyOpenPrPatch → archiveMergedStep → tearDown's `branch -D`), and the remote
+    // (applyOpenPrPatch → archiveStepResources → tearDown's `branch -D`), and the remote
     // branch is deleted below without gating the state transition.
     try {
       execFileSync('gh', ['pr', 'merge', s.prUrl, '--squash'], { cwd: s.workspace.repoCwd, stdio: 'pipe' });
@@ -2489,7 +2519,7 @@ export class WorkEngine {
       // A merged step no longer needs its implementor session or worktree. This is
       // the shared choke point (pr-watcher, mergePr, squash-to-base) so all of them
       // reap here rather than waiting on whole-job teardown.
-      void this.archiveMergedStep(jobId, stepId).catch((e) =>
+      void this.archiveStepResources(jobId, stepId).catch((e) =>
         console.error(`[work] archive merged ${stepId.slice(0, 8)}: ${(e as Error).message}`));
     }
     if (after) this.mutate(jobId, (jj) => ({ ...jj, linearStatusDirty: true }));

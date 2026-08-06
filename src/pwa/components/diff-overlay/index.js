@@ -1373,7 +1373,7 @@ async function doSquashToBase(sessionId) {
     const status = body?.status;
     if (status === 'merged') {
       setSourceFeedback('ok', 'Squashed to base.');
-      // Step sessions are closed+archived server-side (applyOpenPrPatch → archiveMergedStep);
+      // Step sessions are closed+archived server-side (applyOpenPrPatch → archiveStepResources);
       // a plain session has no step, so archive it here like doFinalize does.
       if (!ctx?.stepId) { try { await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'POST' }); } catch { /* fallback */ } }
       closeDiffOverlay();
