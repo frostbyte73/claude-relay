@@ -3,7 +3,7 @@
   "alwaysAllowBashPatterns": [
     "^cat ",
     "^jq ",
-    "^curl -fsS "
+    "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:-X|--request)(?:(?:\\s|\\\\\\n)+|=)POST|(?:-d|--data)(?:(?:\\s|\\\\\\n)+|=)(?:\"\\$\\([\\s\\S]*\\)\"|\"[^-\"\\n@][^\"\\n]*\"|'[^-'\\n@][^'\\n]*'|\\$\\{?[A-Za-z_][A-Za-z0-9_}]*)))*(?:\\s|\\\\\\n)+[\"']?http://(?:127\\.0\\.0\\.1|localhost):(?:\\$\\{?OUTPOST_HOOK_PORT\\}?|[0-9]+)/work/create-job[\"']?(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:-X|--request)(?:(?:\\s|\\\\\\n)+|=)POST|(?:-d|--data)(?:(?:\\s|\\\\\\n)+|=)(?:\"\\$\\([\\s\\S]*\\)\"|\"[^-\"\\n@][^\"\\n]*\"|'[^-'\\n@][^'\\n]*'|\\$\\{?[A-Za-z_][A-Za-z0-9_}]*)))*(?:\\s|\\\\\\n)*$"
   ],
   "alwaysAllowPathPatterns": []
 }

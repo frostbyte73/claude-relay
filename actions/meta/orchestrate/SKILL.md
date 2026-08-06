@@ -123,7 +123,7 @@ If the category isn't obvious from title + description, **investigate now** (Ste
 For each `orchestrated` PR step, pick the repo it lands in. The candidate repos are the user's registered projects — list them first:
 
 ```bash
-curl -s http://127.0.0.1:8080/api/sessions | jq -r '.projects[].cwd'
+curl -s "$OUTPOST_API_URL/api/sessions" | jq -r '.projects[].cwd'
 ```
 
 Translate the ticket's *symptom* into a *set of repos*:
