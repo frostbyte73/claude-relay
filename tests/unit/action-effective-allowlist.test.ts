@@ -4,6 +4,7 @@ import { Ajv } from 'ajv';
 import { Allowlist } from '../../src/permissions/allowlist.js';
 import { ActionRegistry } from '../../src/actions/index.js';
 import groups from '../../config/permission-groups.default.json' with { type: 'json' };
+import globalAllowlist from '../../config/allowlist.default.json' with { type: 'json' };
 
 // Pins what the bundled actions can actually run, resolved the way the daemon resolves it
 // (core ∪ declared groups ∪ colocated allowlist.json) against the real config defaults.
@@ -16,11 +17,24 @@ const registry = new ActionRegistry(join(import.meta.dirname, '../../actions'), 
 });
 const load = registry.load();
 
-function effective(action: string): (command: string) => boolean {
+// `Allowlist.scopesFor()` ALWAYS unions the global scope in, so an action's effective grant
+// is `global ∪ action`, never the action alone. This harness used to build
+// `new Allowlist(def.allowlist)` with an empty global scope, which proved a property the
+// daemon does not have: every "cannot reach X" case below passed while the global
+// `^gh (…|api|…)` rule handed `gh api -X POST/PUT/DELETE` to every action in the catalog.
+// Construct it the way `src/daemon.ts` does — global config + `{ actionRegistry }` — and
+// check through `allows(..., actionName)` so the real union is what's pinned.
+const daemonAllowlist = new Allowlist(globalAllowlist, { actionRegistry: registry });
+
+function requireAction(action: string) {
   const def = registry.getAction(action);
   if (!def) throw new Error(`${action} is not in the bundled catalog`);
-  const al = new Allowlist(def.allowlist);
-  return (command: string) => al.allows('Bash', { command });
+  return def;
+}
+
+function effective(action: string): (command: string) => boolean {
+  requireAction(action);
+  return (command: string) => daemonAllowlist.allows('Bash', { command }, undefined, action);
 }
 
 // Same resolution, for the path-scoped tool rules (`Write:^/tmp/` and friends). No
@@ -28,15 +42,43 @@ function effective(action: string): (command: string) => boolean {
 // point: a self-round target must not depend on the worktree auto-allow to write a
 // payload file it then hands to `gh`.
 function effectiveTool(action: string): (tool: string, input: unknown) => boolean {
-  const def = registry.getAction(action);
-  if (!def) throw new Error(`${action} is not in the bundled catalog`);
-  const al = new Allowlist(def.allowlist);
-  return (tool: string, input: unknown) => al.allows(tool, input);
+  requireAction(action);
+  return (tool: string, input: unknown) => daemonAllowlist.allows(tool, input, undefined, action);
 }
 
 it('the bundled action catalog loads clean', () => {
   expect(load.errors).toEqual([]);
   expect(load.actions).toBeGreaterThan(0);
+});
+
+// The global scope reaches every action in every scope, so a rule there is the widest grant
+// in the system. `^gh (…|api|…)(\s|$)` was a prefix rule on the REST spelling of every write
+// GitHub has, which nullified `pull`'s anchored GET-only `gh api` whitelist and every
+// per-action "cannot reach a merge through gh api" pin below. If a global `gh api` read is
+// ever wanted back, it has to be the anchored `pull` spelling, not a prefix.
+describe('the global scope grants no write to any action', () => {
+  const readOnly = effective('code.verify-resolutions'); // side_effects: none, writes nothing
+  const noGroups = effective('write.linear-issue');      // permissions: [] — global + core only
+
+  it('does not hand gh api writes to a read-only action', () => {
+    for (const c of [
+      'gh api -X POST repos/o/r/pulls/1/reviews -f event=APPROVE',
+      'gh api --method PUT repos/o/r/pulls/1/merge',
+      'gh api --method DELETE repos/o/r/git/refs/heads/main',
+      'gh api graphql -f query=mutation',
+      'gh api -X PATCH repos/o/r/issues/1 -f state=closed',
+    ]) {
+      expect(readOnly(c), c).toBe(false);
+      expect(noGroups(c), c).toBe(false);
+    }
+  });
+
+  it('still allows the plain GET through the action that inherits pull', () => {
+    expect(readOnly('gh api repos/o/r/pulls/1')).toBe(true);
+    expect(readOnly('gh api --method GET repos/o/r/pulls/1')).toBe(true);
+    // …and not through an action that inherits nothing.
+    expect(noGroups('gh api repos/o/r/pulls/1')).toBe(false);
+  });
 });
 
 describe('write.add-project effective allowlist', () => {
