@@ -33,6 +33,9 @@ const SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 // git-check-ref-format shape; leading dash would be parsed as a git flag.
 const BRANCH_NAME_RE = /^[A-Za-z0-9_./][A-Za-z0-9_./-]{0,128}$/;
 const FETCH_TIMEOUT_MS = 20_000;
+// GitHub serves refs/pull/<N>/head but a normal clone never fetches it — `N` is digits-only
+// from this capture, so it can never be argv-flag-shaped.
+const PR_REF_RE = /^refs\/pull\/(\d+)\/head$/;
 
 export class WorktreeManager {
   private records = new Map<string, WorktreeRecord>();
@@ -198,8 +201,22 @@ export class WorktreeManager {
     // NOT `HEAD` — that's whatever branch the user's primary checkout happens to sit on
     // (often an unrelated feature branch), so investigations would read a tree that answers
     // a different question than "what does main do today".
-    const at = ref.ref ?? resolveStartRef(ref.repoCwd, resolveBaseBranch(ref.repoCwd));
+    let at = ref.ref ?? resolveStartRef(ref.repoCwd, resolveBaseBranch(ref.repoCwd));
     if (!BRANCH_NAME_RE.test(at)) throw new Error(`invalid ref: ${JSON.stringify(at)}`);
+    // A PR head the machine has never seen isn't a ref a normal clone has locally — fetch it
+    // (best-effort, mirrors fetchBase()) into a local ref before handing `at` to `worktree add`.
+    // Skip the fetch entirely when it already resolves: provision() is on the hot path for
+    // every step, so an already-fetched PR head must cost zero subprocesses.
+    if (ref.ref) {
+      const prMatch = PR_REF_RE.exec(at);
+      if (prMatch && !refExists(ref.repoCwd, `${at}^{commit}`)) {
+        fetchPrHead(ref.repoCwd, prMatch[1]!);
+        const local = `refs/outpost/pr-${prMatch[1]}`;
+        // Only switch once the fetch has actually landed it. Pointing `at` at a ref the fetch
+        // failed to create makes git blame a name the caller never asked for.
+        if (refExists(ref.repoCwd, `${local}^{commit}`)) at = local;
+      }
+    }
     const worktreePath = join(this.root, stepId);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     execFileSync(
@@ -447,6 +464,19 @@ function fetchBase(cwd: string, baseBranch: string): void {
       timeout: FETCH_TIMEOUT_MS,
     });
   } catch { /* stale remote-tracking ref is better than a failed step */ }
+}
+
+// Best-effort, same as fetchBase(): an offline machine must not block provisioning — git will
+// then report the real "invalid reference" error from `worktree add`, which is the honest
+// failure. --force so a re-provision after the PR author pushes again moves the local ref
+// forward; a stale ref would silently review the wrong code, which is worse than a failure.
+function fetchPrHead(cwd: string, prNumber: string): void {
+  try {
+    execFileSync('git', [
+      '-C', cwd, 'fetch', '--quiet', '--force', 'origin',
+      `refs/pull/${prNumber}/head:refs/outpost/pr-${prNumber}`,
+    ], { stdio: 'pipe', timeout: FETCH_TIMEOUT_MS });
+  } catch { /* leave `at` as the caller gave it; git will report the real problem */ }
 }
 
 function refExists(cwd: string, ref: string): boolean {
