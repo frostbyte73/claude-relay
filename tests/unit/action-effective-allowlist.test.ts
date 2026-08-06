@@ -85,7 +85,8 @@ describe('write.add-project effective allowlist', () => {
 describe('code.orchestrate-pr effective allowlist', () => {
   // The controller reads PR state and decides; the rounds it binds to do the writing. It
   // declares `permissions: [read]` only, so its own `gh` reads have to come from its
-  // colocated allowlist.json — and no push-group rule may reach it.
+  // colocated allowlist.json — and no push-group rule may reach it. `gh pr merge` in
+  // particular belongs to the code.merge-pr round it binds, never to the controller itself.
   const allows = effective('code.orchestrate-pr');
 
   it('allows the PR reads its SKILL.md documents', () => {
@@ -115,6 +116,45 @@ describe('code.orchestrate-pr effective allowlist', () => {
 
   it('registers as a step-orchestrator, not an ordinary action', () => {
     expect(registry.getAction('code.orchestrate-pr')?.frontmatter.outpost.kind).toBe('step-orchestrator');
+  });
+});
+
+describe('code.merge-pr effective allowlist', () => {
+  // The one action allowed to land a PR. It takes `[read, pull]` plus two narrow extras
+  // rather than the whole `push` group, so the merge round can't also commit, push code,
+  // or comment. `gh pr merge` reaching it is the capability the controller's merge rung
+  // depends on — the old hardcoded open-pr machinery owned it, and nothing did after it went.
+  const allows = effective('code.merge-pr');
+  const PR = 'https://github.com/livekit/outpost/pull/12';
+
+  it('allows the merge and the separate remote-branch delete', () => {
+    const documented = [
+      'cat "$OUTPOST_ENVELOPE"',
+      `gh pr view ${PR} --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`,
+      `gh pr merge ${PR} --squash`,
+      `gh pr merge ${PR} --merge`,
+      'git push origin --delete -- job-1234-fix',
+      'git push --delete origin job-1234-fix',
+    ];
+    expect(documented.filter((c) => !allows(c))).toEqual([]);
+  });
+
+  it('stays at merge + branch cleanup — no other write reaches it', () => {
+    for (const c of [
+      'git push',
+      'git push origin HEAD',
+      'git commit -m wip',
+      `gh pr comment ${PR} --body hi`,
+      `gh pr close ${PR}`,
+      'gh pr create --fill',
+      'gh release create v1',
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
+  });
+
+  it('declares the external write the daemon force-gates on', () => {
+    expect(registry.getAction('code.merge-pr')?.frontmatter.outpost.side_effects).toBe('external-write');
   });
 });
 

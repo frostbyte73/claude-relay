@@ -122,18 +122,24 @@ The ladder, top to bottom — take the first row that matches:
 | Comments in `pr.comments` you have not drafted a reply for | `self-round` as `code.triage-pr-comments` | `pr_comments` |
 | Replies drafted | `gate` with the drafted replies as `draft` | `pr_comments` |
 | Approved replies that need code changes | `self-round` as `code.fix-pr-comment` | `pr_comments` |
-| `pr.ciState === "success"` and `pr.reviewState === "approved"` | `gate` asking to merge | `pr_open` |
+| `pr.ciState === "success"` and `pr.reviewState === "approved"` | `self-round` as `code.merge-pr` | `pr_open` |
 | `pr.prState === "merged"` | `resolve` with a summary and the PR URL | `merged` |
 
 **Rows below the one that matched still matter next turn.** The ladder is a priority order
 re-evaluated from scratch on every decision turn, not a script you walk once. A conflict that
 appears after CI went green sends you back up it.
 
-**External-write rounds are gated for you.** `code.fix-ci` and `code.resolve-conflicts`
-declare `side_effects: external-write`, so the daemon holds your move at a user gate before it
-runs. That is expected — the move you submitted is stored and executed **verbatim** on
-approval. Do not re-issue it, do not wrap it in your own `gate`, and do not treat the pause as
-a rejection.
+**External-write rounds are gated for you.** `code.fix-ci`, `code.resolve-conflicts` and
+`code.merge-pr` declare `side_effects: external-write`, so the daemon holds your move at a user
+gate before it runs. That is expected — the move you submitted is stored and executed
+**verbatim** on approval. Do not re-issue it, do not wrap it in your own `gate`, and do not
+treat the pause as a rejection. That is why the merge rung is a `code.merge-pr` round and not a
+`gate` of your own: the user still approves before anything lands, and the round that they
+approved is the one that can actually merge. `code.merge-pr` re-reads the PR from GitHub, and
+on a confirmed merge it `resolve`s the step itself rather than handing you back a decision —
+`pr.prState` can lag the real merge by up to an hour, and a controller re-deciding on those
+stale facts would match this same rung again and re-gate a PR that is already merged. If it
+could *not* merge, it hands back with the blocker in the memo and you take it from there.
 
 **Approval of your own `gate` arrives quietly.** The daemon clears the inbox before resuming
 you, so there is *no* `gate-resolved` item in `delivered` saying "approved". Read

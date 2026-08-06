@@ -1,0 +1,10 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh pr merge(\\s|$)",
+    "^git push origin --delete(\\s|$)",
+    "^git push --delete(\\s|$)"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}

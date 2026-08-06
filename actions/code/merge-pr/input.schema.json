@@ -1,0 +1,204 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.merge-pr input",
+  "description": "The orchestrated step envelope as code.merge-pr sees it. pr.prUrl is the PR to merge and workspace.branch is the head branch whose remote copy is deleted afterwards.",
+  "type": "object",
+  "required": [
+    "jobId",
+    "stepId",
+    "workspace",
+    "pr"
+  ],
+  "properties": {
+    "jobId": {
+      "type": "string"
+    },
+    "stepId": {
+      "type": "string"
+    },
+    "type": {
+      "const": "orchestrated"
+    },
+    "controller": {
+      "const": "code.orchestrate-pr"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Planner-supplied inputs for the step — `approach` and `risks` for a PR step.",
+      "properties": {
+        "approach": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "none",
+            "readonly",
+            "writable"
+          ]
+        },
+        "repoCwd": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    },
+    "phase": {
+      "type": "string",
+      "description": "Where the controller thinks the step stands."
+    },
+    "memo": {
+      "type": "string",
+      "description": "The controller's durable narrative from prior turns."
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "Artifacts from earlier rounds.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "boundAction": {
+      "const": "code.merge-pr",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "What the controller wants merged this round, including a non-default merge strategy."
+    },
+    "previousSteps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "externalRef": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        }
+      }
+    },
+    "gateApproved": {
+      "type": "boolean",
+      "description": "True once the user approved the daemon's forced gate on this external write."
+    },
+    "gateFeedback": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recentLessons": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher — stale by up to an hour, so re-read them with `gh pr view` before merging.",
+      "properties": {
+        "prUrl": {
+          "type": "string"
+        },
+        "prState": {
+          "enum": [
+            "open",
+            "merged",
+            "closed"
+          ]
+        },
+        "ciState": {
+          "enum": [
+            "pending",
+            "success",
+            "failure"
+          ]
+        },
+        "ciChecks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "state"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "success",
+                  "failure",
+                  "pending",
+                  "skipped"
+                ]
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "reviewState": {
+          "enum": [
+            "approved",
+            "changes_requested",
+            "review_required"
+          ]
+        },
+        "mergeable": {
+          "enum": [
+            "mergeable",
+            "conflicting",
+            "unknown"
+          ]
+        }
+      }
+    }
+  }
+}
