@@ -22,6 +22,7 @@ import type {
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
 import { readonlyView, workspaceError } from './workspace.js';
+import { expectRepoOf } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
@@ -1462,7 +1463,9 @@ export class WorkEngine {
     }
     let ws: { path: string | null };
     try {
-      ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
+      ws = await this.opts.worktreeManager.provision(stepId, s.workspace, {
+        expectRepo: s.type === 'orchestrated' ? expectRepoOf(s.inputs) : undefined,
+      });
     } catch (e) {
       const reason = (e as Error).message ?? String(e);
       console.warn(`[work] worktree provision failed for step ${stepId}: ${reason}`);
@@ -1520,7 +1523,9 @@ export class WorkEngine {
     const workspace = dispatch.workspace ?? readonlyView(s.workspace);
     let ws: { path: string | null };
     try {
-      ws = await this.opts.worktreeManager.provision(dispatch.id, workspace);
+      ws = await this.opts.worktreeManager.provision(dispatch.id, workspace, {
+        expectRepo: expectRepoOf(s.inputs),
+      });
     } catch (e) {
       // Fail the dispatch, not the parent step — a bad repoCwd or git error on one fan-out
       // child is the controller's to interpret via the next inbox delivery, same as any other
@@ -1924,7 +1929,9 @@ export class WorkEngine {
       return;
     }
     try {
-      ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
+      ws = await this.opts.worktreeManager.provision(stepId, s.workspace, {
+        expectRepo: s.type === 'orchestrated' ? expectRepoOf(s.inputs) : undefined,
+      });
     } catch (e) {
       const reason = (e as Error).message ?? String(e);
       console.warn(`[work] worktree provision failed for step ${stepId}: ${reason}`);

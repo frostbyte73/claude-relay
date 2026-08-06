@@ -6,6 +6,7 @@ import type { WorkEngine } from '../work/engine.js';
 import type {
   CiCheck, IterationRecord, OrchestratedStep, PrComment, PrFacts, WatchedEvent,
 } from '../work/work-types.js';
+import { PR_URL_RE, parsePrUrl } from '../work/pr-url.js';
 
 const execFileP = promisify(execFile);
 
@@ -154,21 +155,8 @@ function commentsFrom(view: GhPrView, inline: GhInlineComment[]): PrComment[] {
   return out.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-function parsePrUrl(url: string): { owner: string; repo: string; number: string } | null {
-  const m = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-  return m ? { owner: m[1]!, repo: m[2]!, number: m[3]! } : null;
-}
 
-// A step's own prUrl (stored or supplied by the planner/controller in `inputs`) reaches
-// `gh` as a subprocess argument, so it gets the strict, anchored check — unlike the
-// permissive `parsePrUrl` above, which only ever runs against a URL `gh pr list` itself
-// returned (trusted GitHub output, not attacker-reachable text).
-//
-// The `(?!\.{1,2}\/)` guards exclude a bare `.`/`..` segment: parsePrUrl splices owner and
-// repo into `repos/<owner>/<repo>/pulls/<n>/comments`, so `..` there is path traversal out
-// of the endpoint `gh api` was meant to hit. Dots *inside* a segment (`my.repo.js`) stay legal.
-const KNOWN_PR_URL_RE =
-  /^https:\/\/github\.com\/(?!\.{1,2}\/)[A-Za-z0-9._-]+\/(?!\.{1,2}\/)[A-Za-z0-9._-]+\/pull\/\d+$/;
+
 
 // Which watched signals the freshly polled facts actually moved. This is the whole of
 // what the watcher tells a controller: what changed, never what it means.
@@ -344,9 +332,9 @@ export class PrWatcher {
 
   private knownPrUrl(s: OrchestratedStep): string | undefined {
     const stored = s.pr?.prUrl;
-    if (stored && KNOWN_PR_URL_RE.test(stored)) return stored;
+    if (stored && PR_URL_RE.test(stored)) return stored;
     const input = s.inputs?.prUrl;
-    return typeof input === 'string' && KNOWN_PR_URL_RE.test(input) ? input : undefined;
+    return typeof input === 'string' && PR_URL_RE.test(input) ? input : undefined;
   }
 
   private async syncStep(
@@ -365,7 +353,7 @@ export class PrWatcher {
     // stored URL earns no more trust than the input one — a stored value that fails the
     // anchored check is treated as absent, which also lets the step self-heal (a readonly
     // one falls back to its inputs, a writable one re-discovers by branch).
-    let prUrl = prev.prUrl && KNOWN_PR_URL_RE.test(prev.prUrl) ? prev.prUrl : undefined;
+    let prUrl = prev.prUrl && PR_URL_RE.test(prev.prUrl) ? prev.prUrl : undefined;
     // Whether this poll is only recording back the URL the controller handed us. That is not
     // news to the controller, and a wake costs it a round against MAX_ROUNDS.
     let fromKnownUrl = false;
@@ -397,7 +385,7 @@ export class PrWatcher {
 
     // Last gate before the value becomes `gh` argv, so every source — stored, input, and
     // `gh pr list` output — passes through the same check.
-    if (!KNOWN_PR_URL_RE.test(prUrl)) {
+    if (!PR_URL_RE.test(prUrl)) {
       throw new Error(`refusing to poll a malformed prUrl: ${JSON.stringify(prUrl)}`);
     }
     const view = await this.fetchPr(cwd, prUrl);
