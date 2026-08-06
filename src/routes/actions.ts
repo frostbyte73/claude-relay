@@ -19,6 +19,7 @@ import {
   type ActionEdit, type ActionProposal,
 } from '../storage/action-edits-store.js';
 import { intakeProposal, ledgerActionFor, onSessionGone } from '../actions/proposal-intake.js';
+import { resolvableWriteTargets } from '../permissions/allowlist.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
@@ -219,6 +220,14 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   function suggestRule(toolName: string, toolInput: unknown): ActionDenial['suggested'] {
     if (toolName === 'Bash') {
       const cmd = (toolInput as { command?: string })?.command ?? '';
+      // A shell redirection is gated as a Write, so no bash rule alone can unblock a
+      // command that writes to an ungranted path. Suggest the path grant its target
+      // needs — the leading command is usually already covered by the action's groups.
+      const target = resolvableWriteTargets(cmd)[0];
+      if (target) {
+        const dir = target.replace(/\/[^/]*$/, '') || '/';
+        return { kind: 'path', value: `Write:^${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/` };
+      }
       // Anchor on the first whitespace-delimited token (the binary). Narrow enough
       // to avoid blanket Bash grants while obvious enough to one-click approve.
       const head = cmd.split(/\s+/)[0] ?? '';
