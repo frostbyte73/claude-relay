@@ -64,13 +64,26 @@ function parsePathRule(value: string): PathRule {
 //      leaf segments (Write to a new file) are appended after the ancestor's
 //      realpath, so the check is stable whether or not the file exists yet.
 function isPathUnder(path: string, prefix: string): boolean {
-  const absPath = resolve(path);
-  const absPrefix = resolve(prefix);
-  const realPath = realpathAncestor(absPath);
-  const realPrefix = (() => { try { return realpathSync(absPrefix); } catch { return absPrefix; } })();
+  const realPath = canonicalPath(path);
+  const realPrefix = canonicalPath(prefix);
   if (realPath === realPrefix) return true;
   const withSlash = realPrefix.endsWith('/') ? realPrefix : `${realPrefix}/`;
   return realPath.startsWith(withSlash);
+}
+
+// macOS's top-level system symlinks — /tmp, /var and /etc all point into /private — are two
+// spellings of one directory, not an escape. Rules are written in the user-visible spelling
+// (`Write:^/tmp/`), so map a realpath back onto it; without this, resolving symlinks at all
+// would deny every /tmp write on the platform the daemon actually runs on.
+const PRIVATE_ALIAS = /^\/private(\/(?:tmp|var|etc)(?:\/|$))/;
+
+// The single normalisation both the regex path rules and the session-scope prefix check use.
+// They must agree: they used to disagree (lexical resolve vs realpath), and the regex path
+// was the weaker one — a symlink planted in world-writable /tmp turned an `Edit:^/tmp/`
+// grant into a write anywhere on the box.
+function canonicalPath(p: string): string {
+  const real = realpathAncestor(resolve(p));
+  return PRIVATE_ALIAS.test(real) ? real.slice('/private'.length) : real;
 }
 
 // Walk `p`'s ancestor chain until we find one that exists on disk, realpath it,
@@ -472,10 +485,11 @@ function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown):
   // Path-scoped rule: tool name must match AND the path-shaped input matches the regex.
   if (PATH_INPUT_FIELDS[toolName]) {
     const path = readPathInput(toolName, toolInput);
-    // `..` must not walk out from under an anchored prefix rule: `Write:^/tmp/` should not
-    // admit `/tmp/../etc/crontab`. A relative path is tested as written — the daemon can't
-    // know the cwd it resolves against, and every path rule is absolute-anchored, so it denies.
-    const probe = path !== undefined && path.startsWith('/') ? resolve(path) : path;
+    // Neither `..` nor a symlink may walk out from under an anchored prefix rule:
+    // `Write:^/tmp/` should not admit `/tmp/../etc/crontab`, nor `/tmp/link` when `link`
+    // points at /etc/hosts. A relative path is tested as written — the daemon can't know the
+    // cwd it resolves against, and every path rule is absolute-anchored, so it denies.
+    const probe = path !== undefined && path.startsWith('/') ? canonicalPath(path) : path;
     if (probe !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(probe))) {
       return true;
     }
