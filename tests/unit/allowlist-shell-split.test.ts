@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { Allowlist, splitShellCommand, stripLeadingAssignments } from '../../src/permissions/allowlist.js';
+import {
+  Allowlist, splitShellCommand, splitShellClauses, stripLeadingAssignments,
+} from '../../src/permissions/allowlist.js';
+
+const targetsOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.writeTargets);
 
 describe('splitShellCommand', () => {
   it('returns single clause for simple command', () => {
@@ -73,6 +77,66 @@ describe('splitShellCommand', () => {
     expect(splitShellCommand('cmd &>file')).toEqual(['cmd &>file']);
     expect(splitShellCommand('cmd &>>file')).toEqual(['cmd &>>file']);
     expect(splitShellCommand('cmd <&3')).toEqual(['cmd <&3']);
+  });
+
+  it('keeps `>|` in one clause instead of splitting on its pipe', () => {
+    expect(splitShellCommand('echo x >| /tmp/c')).toEqual(['echo x >| /tmp/c']);
+  });
+});
+
+describe('splitShellClauses — redirection targets', () => {
+  it('collects file-creating redirections', () => {
+    expect(targetsOf('ls > /tmp/a')).toEqual([['/tmp/a']]);
+    expect(targetsOf('ls >>/tmp/a')).toEqual([['/tmp/a']]);
+    expect(targetsOf('ls >| /tmp/a')).toEqual([['/tmp/a']]);
+    expect(targetsOf('ls &> /tmp/a')).toEqual([['/tmp/a']]);
+    expect(targetsOf('ls &>> /tmp/a')).toEqual([['/tmp/a']]);
+    expect(targetsOf('ls 2> /tmp/a')).toEqual([['/tmp/a']]);
+    expect(targetsOf('ls > /tmp/a 2> /tmp/b')).toEqual([['/tmp/a', '/tmp/b']]);
+    expect(targetsOf('ls <> /tmp/a')).toEqual([['/tmp/a']]);
+  });
+
+  it('separates fd duplication from a path target', () => {
+    expect(targetsOf('ls 2>&1')).toEqual([[]]);
+    expect(targetsOf('ls >&2')).toEqual([[]]);
+    expect(targetsOf('ls 2>&-')).toEqual([[]]);
+    expect(targetsOf('ls >& /tmp/a')).toEqual([['/tmp/a']]);   // bash's legacy `&>file`
+  });
+
+  it('ignores input redirection', () => {
+    expect(targetsOf('grep x < /etc/hosts')).toEqual([[]]);
+    expect(targetsOf('grep x <<< "text"')).toEqual([[]]);
+    expect(targetsOf('grep x <&3')).toEqual([[]]);
+  });
+
+  it('sees no redirection inside quotes or behind a backslash', () => {
+    expect(targetsOf("echo 'a > b'")).toEqual([[]]);
+    expect(targetsOf('echo "a > b"')).toEqual([[]]);
+    expect(targetsOf('echo a\\>b')).toEqual([[]]);
+    expect(targetsOf('rg "foo -> bar"')).toEqual([[]]);
+  });
+
+  it('does not mistake process substitution for a redirection', () => {
+    expect(targetsOf('tee >(rm bad)')).toEqual([[], []]);
+    expect(targetsOf('diff <(ls a) <(ls b)')).toEqual([[], [], []]);
+  });
+
+  it('attaches a redirection to the clause it belongs to', () => {
+    expect(targetsOf('ls && echo x > /tmp/a')).toEqual([[], ['/tmp/a']]);
+    expect(targetsOf('echo "$(ls > /tmp/a)"')).toEqual([['/tmp/a'], []]);
+  });
+
+  it('keeps the target word whole and unexpanded', () => {
+    expect(targetsOf('ls > "/tmp/a b"')).toEqual([['"/tmp/a b"']]);
+    expect(targetsOf('ls > $HOME/x')).toEqual([['$HOME/x']]);
+    expect(targetsOf('ls >')).toEqual([['']]);
+  });
+
+  // Heredocs are still not understood: the body is split on newlines and each line is
+  // judged as its own clause. That was already true; a `>` in a body line now needs a
+  // write grant too, which is stricter, never looser.
+  it('treats heredoc body lines as clauses, redirection and all', () => {
+    expect(targetsOf('cat <<EOF > /tmp/x\nline > other\nEOF')).toEqual([['/tmp/x'], ['other'], []]);
   });
 });
 
