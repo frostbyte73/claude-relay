@@ -20,7 +20,9 @@ function typeChip(s) {
   if (s?.type === 'action' && s.action) {
     return `<span class="type-mono" data-cat="${escapeHtml(actionCategory(s.action))}">${escapeHtml(actionDisplayName(s.action))}</span>`;
   }
-  if (s?.type === 'open-pr') return `<span class="type-mono" data-cat="code">open-pr</span>`;
+  if (s?.type === 'orchestrated' && s.controller) {
+    return `<span class="type-mono" data-cat="${escapeHtml(actionCategory(s.controller))}">${escapeHtml(actionDisplayName(s.controller))}</span>`;
+  }
   return `<span class="type-mono">${escapeHtml(s?.type ?? '··')}</span>`;
 }
 
@@ -28,7 +30,7 @@ function diffKindFor(p, current) {
   if (!p.keepId) return 'add';
   const prior = current.find((s) => s.id === p.keepId);
   if (!prior) return 'add';
-  const fields = ['title', 'description', 'goal', 'approach', 'risks', 'parallelGroup', 'action', 'forwardOutput'];
+  const fields = ['title', 'description', 'goal', 'parallelGroup', 'action', 'controller', 'forwardOutput'];
   for (const f of fields) {
     const next = p[f];
     if (next !== undefined && next !== prior[f]) return 'patch';

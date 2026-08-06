@@ -375,6 +375,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const catalog = actionRegistry.listActions().map((a) => ({
       name: a.name,
       description: a.frontmatter.description,
+      kind: a.frontmatter.outpost.kind,
       category: a.frontmatter.outpost.category,
       runner: a.frontmatter.outpost.runner,
       permissions: a.frontmatter.outpost.permissions ?? [],

@@ -11,30 +11,29 @@ function job(overrides = {}) {
 }
 
 describe('stepNeedsYou', () => {
-  it('true for reply_pending_review', () => {
-    expect(stepNeedsYou(step({ state: 'reply_pending_review' }))).toBe(true);
-  });
-
-  it('false for comment_pending_response (Outpost triages, not the user)', () => {
-    expect(stepNeedsYou(step({ state: 'comment_pending_response' }))).toBe(false);
-  });
-
-  it('true for an approved, CI-green open PR step', () => {
+  it('true for an approved, CI-green orchestrated step with its PR open', () => {
     expect(stepNeedsYou(step({
-      type: 'open-pr', state: 'pr_open', reviewState: 'approved', ciState: 'success',
+      type: 'orchestrated', state: 'waiting', phase: 'pr_open',
+      pr: { reviewState: 'approved', ciState: 'success' },
     }))).toBe(true);
   });
 
   it('false when reviewState is approved but CI is not green', () => {
     expect(stepNeedsYou(step({
-      type: 'open-pr', state: 'pr_open', reviewState: 'approved', ciState: 'pending',
+      type: 'orchestrated', state: 'waiting', phase: 'pr_open',
+      pr: { reviewState: 'approved', ciState: 'pending' },
     }))).toBe(false);
   });
 
-  it('false when not an open-pr step even with matching state fields', () => {
+  it('false when the PR facts still sit at the top level (pre-migration shape)', () => {
     expect(stepNeedsYou(step({
-      type: 'action', state: 'pr_open', reviewState: 'approved', ciState: 'success',
+      type: 'orchestrated', state: 'waiting', phase: 'pr_open',
+      reviewState: 'approved', ciState: 'success',
     }))).toBe(false);
+  });
+
+  it('false for an orchestrated step waiting on CI it has no verdict for', () => {
+    expect(stepNeedsYou(step({ type: 'orchestrated', state: 'waiting', phase: 'pr_open' }))).toBe(false);
   });
 
   it('false for a plain running step', () => {
@@ -43,6 +42,15 @@ describe('stepNeedsYou', () => {
 
   it('true for a human_gate action parked in gate_pending_approval', () => {
     expect(stepNeedsYou(step({ type: 'action', state: 'gate_pending_approval' }))).toBe(true);
+  });
+
+  it('true for an orchestrated step whose controller gated its move', () => {
+    expect(stepNeedsYou(step({ type: 'orchestrated', state: 'gate_pending_approval' }))).toBe(true);
+  });
+
+  it('true for an indefinite meta.wait hold, false for a timed soak', () => {
+    expect(stepNeedsYou(step({ type: 'action', state: 'waiting' }))).toBe(true);
+    expect(stepNeedsYou(step({ type: 'action', state: 'waiting', resumeAt: 1 }))).toBe(false);
   });
 });
 
@@ -53,13 +61,13 @@ describe('needsYou', () => {
 
   it('true when any non-cancelled step needs you', () => {
     expect(needsYou(job({
-      steps: [step({ state: 'running' }), step({ id: 's2', state: 'reply_pending_review' })],
+      steps: [step({ state: 'running' }), step({ id: 's2', state: 'gate_pending_approval' })],
     }))).toBe(true);
   });
 
   it('false when the only needy step is cancelled', () => {
     expect(needsYou(job({
-      steps: [step({ state: 'reply_pending_review', cancelled: true })],
+      steps: [step({ state: 'gate_pending_approval', cancelled: true })],
     }))).toBe(false);
   });
 

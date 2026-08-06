@@ -70,17 +70,17 @@ function findStepContext({ jobId, stepId, sessionId }) {
     outer: for (const j of jobs) {
       for (const s of j.steps) {
         if (s.sessionId === sessionId) { job = j; step = s; break outer; }
-        if (s.type === 'open-pr') {
+        if (s.type === 'orchestrated') {
           const eq = (s.editQueue ?? []).find((e) => e.sessionId === sessionId);
           if (eq) { job = j; step = s; editJob = eq; break outer; }
         }
       }
     }
-  } else if (step?.type === 'open-pr' && step.sessionId !== sessionId) {
+  } else if (step?.type === 'orchestrated' && step.sessionId !== sessionId) {
     editJob = (step.editQueue ?? []).find((e) => e.sessionId === sessionId) ?? null;
   }
-  const comment = editJob && step?.type === 'open-pr'
-    ? (step.comments ?? []).find((c) => c.id === editJob.commentId) ?? null
+  const comment = editJob && step?.type === 'orchestrated'
+    ? (step.pr?.comments ?? []).find((c) => c.id === editJob.commentId) ?? null
     : null;
   return { job, step, editJob, comment };
 }
@@ -150,7 +150,7 @@ function defaultCommit(ctx, status) {
     // Once a PR is open on this branch, a round appends — "open PR" would re-squash to
     // base and diverge from the pushed head. Default it off so the action is a plain
     // commit-on-top + fast-forward push.
-    openPr: ctx?.mode !== 'pr-comment-edit' && !(ctx?.step?.prUrl || status?.prUrl),
+    openPr: ctx?.mode !== 'pr-comment-edit' && !(ctx?.step?.pr?.prUrl || status?.prUrl),
     mergeMode: 'squash-to-branch',
     newBranch: base === currentBranch || !currentBranch ? suggested : currentBranch,
   };
@@ -809,8 +809,8 @@ function clearDiffSendWarning() {
 
 // "Request changes" — drafted per-hunk comments flow back to the session as a
 // single structured review message. Routes through /git/review first: when the
-// session is an open-pr step awaiting the user's verdict, this requeues a fresh
-// code.fix-pr-comment run with the review as feedback (worktree preserved).
+// session belongs to a step awaiting the user's verdict, the daemon feeds the review
+// back to that step rather than the chat (worktree preserved).
 async function submitReview() {
   if (diffState.openDraftKey) {
     setDiffSendWarning('Save or cancel the open draft first.');
@@ -1373,19 +1373,15 @@ async function doSquashToBase(sessionId) {
     const status = body?.status;
     if (status === 'merged') {
       setSourceFeedback('ok', 'Squashed to base.');
-      // Step sessions are closed+archived server-side (applyOpenPrPatch → archiveStepResources);
-      // a plain session has no step, so archive it here like doFinalize does.
+      // Step sessions are closed+archived server-side when the step resolves; a plain
+      // session has no step, so archive it here like doFinalize does.
       if (!ctx?.stepId) { try { await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'POST' }); } catch { /* fallback */ } }
       closeDiffOverlay();
       _deps.leaveSession();
       return true;
     }
-    if (status === 'resolving-conflicts') {
-      setSourceFeedback('ok', 'Base diverged — resolving conflicts in the session…');
-      closeDiffOverlay();
-      _deps.leaveSession();
-      return true;
-    }
+    // A diverged base is the user's to resolve: the automatic resolve-round handoff is
+    // gone, so name the conflicting files and leave the overlay open to retry.
     if (status === 'conflict') {
       setSourceFeedback('err', 'Base has diverged — resolve conflicts manually, then retry.', (body.files || []).join('\n') || null);
       return false;

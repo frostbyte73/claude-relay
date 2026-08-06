@@ -17,15 +17,15 @@ function hasLiveSession(j) {
   return l.orchestrator || l.stepIds.length > 0;
 }
 
-// An open-pr step whose implement session has finished (its id is absent from
-// live.stepIds) but no PR exists yet — the uncommitted diff is waiting for the
-// user to review and push. This is the one "needs you" case state alone can't tell
+// An orchestrated step in its implement phase whose session has finished (its id is
+// absent from live.stepIds) but no PR exists yet — the uncommitted diff is waiting for
+// the user to review and push. This is the one "needs you" case state alone can't tell
 // from "still coding", so it lives here (where job.live is available), not in
 // the pure stepNeedsYou.
 export function implementAwaitingPush(j) {
   const liveIds = liveStepIds(j);
   return (j.steps ?? []).find((s) =>
-    !s.cancelled && s.type === 'open-pr' && s.state === 'implementing'
+    !s.cancelled && s.type === 'orchestrated' && s.phase === 'implement'
     && s.sessionId && !liveIds.has(s.id));
 }
 
@@ -68,24 +68,12 @@ export function focusAction(job) {
 
   const step = waitingStep(job);
   if (step) {
-    if (step.state === 'spec_pending_review') {
-      return {
-        title: 'Spec ready for review',
-        description: `${step.title} has a spec waiting for your review.`,
-        cta: { label: 'Review spec', action: 'review-spec', stepId: step.id },
-      };
-    }
-    if (step.state === 'reply_pending_review') {
-      return {
-        title: 'Reply drafts ready',
-        description: `${step.title} has drafted responses waiting for your review.`,
-        cta: { label: 'Review replies', action: 'review-replies', stepId: step.id },
-      };
-    }
-    if (step.type === 'action' && step.state === 'gate_pending_approval') {
+    if (step.state === 'gate_pending_approval') {
       return {
         title: 'Approval required',
-        description: `${step.title} is an external write that needs your OK before it runs.`,
+        description: step.type === 'orchestrated'
+          ? (step.gate?.question || `${step.title} is holding a move that needs your OK.`)
+          : `${step.title} is an external write that needs your OK before it runs.`,
         cta: { label: 'Review', action: 'review-gate', stepId: step.id },
       };
     }
@@ -141,6 +129,78 @@ export function focusAction(job) {
   return { title: 'Waiting', description: 'Waiting on CI, review, or the orchestrator.', cta: { label: 'View', action: 'none' } };
 }
 
+// ── Orchestrated steps ───────────────────────────────────────────────────
+// Everything components/work/orchestrated-card.js needs to draw one controller-owned
+// step, derived from the raw step snapshot alone. No DOM, no store reads.
+
+// The controller's own phase vocabulary (storage/jobs-migrate.ts is the authority for
+// the values a migrated open-pr step lands on). An unrecognized phase is still shown —
+// a controller may coin its own — just without a curated label.
+const PHASE_LABEL = {
+  spec: 'Spec',
+  plan: 'Plan',
+  implement: 'Implement',
+  pr_open: 'PR open',
+  pr_comments: 'PR comments',
+  conflict: 'Conflict',
+  merged: 'Merged',
+  failed: 'Failed',
+};
+
+const ARTIFACT_LABEL = { memo: 'Memo', spec: 'Spec', implPlan: 'Implementation plan' };
+
+const DISPATCH_TONE = { running: 'investigate', done: 'ok', failed: 'danger' };
+
+function humanizeKey(k) {
+  const spaced = String(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function phaseChipOf(s) {
+  if (!s.phase) return null;
+  const tone = s.state === 'failed' || s.phase === 'failed' ? 'danger'
+    : s.state === 'resolved' || s.phase === 'merged' ? 'ok'
+    : s.state === 'gate_pending_approval' ? 'warn'
+    : '';
+  return { label: PHASE_LABEL[s.phase] ?? humanizeKey(s.phase), tone };
+}
+
+export function orchestratedRows(step) {
+  const s = step ?? {};
+  const artifacts = s.artifacts ?? {};
+  const artifactRows = [
+    ...(s.memo ? [{ key: 'memo', label: ARTIFACT_LABEL.memo, body: s.memo }] : []),
+    ...Object.entries(artifacts)
+      .filter(([, body]) => typeof body === 'string' && body.trim())
+      .map(([key, body]) => ({ key, label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
+  ];
+
+  return {
+    phaseChip: phaseChipOf(s),
+    waitingReason: s.state === 'waiting' ? (s.waitingOn?.reason ?? 'Waiting') : null,
+    dispatchRows: (s.dispatches ?? []).map((d) => ({
+      id: d.id,
+      action: d.action,
+      brief: d.brief ?? '',
+      status: d.status,
+      tone: DISPATCH_TONE[d.status] ?? '',
+      sessionId: d.sessionId ?? null,
+      failure: d.failure ?? null,
+    })),
+    artifactRows,
+    gate: s.state === 'gate_pending_approval'
+      ? {
+        draft: s.gate?.draft ?? '',
+        question: s.gate?.question ?? '',
+        feedback: s.gateFeedback ?? [],
+      }
+      : null,
+    // The manual fallback for a controller whose session died mid-step. Never offered
+    // once the step has settled — resolving a resolved step is a no-op that reads as a bug.
+    canMarkResolved: !s.cancelled && s.state !== 'resolved' && s.state !== 'failed',
+  };
+}
+
 // ── Token-launch queue status ────────────────────────────────────────────
 // Pure derivation from a job's server-attached `launchStatus` (routes/jobs.ts's
 // serializeJob → engine.launchStatusFor). No DOM, no fetch — callers pass the
@@ -177,11 +237,11 @@ export function sessionsOnJob(job) {
   };
   for (const s of job.steps ?? []) {
     if (s.cancelled) continue;
-    for (const e of s.editQueue ?? []) {
-      push(e.sessionId, 'code.fix-pr-comment', e.status === 'running');
+    for (const d of s.dispatches ?? []) {
+      push(d.sessionId, d.action, d.status === 'running');
     }
-    const label = s.type === 'open-pr' ? 'code.implement' : (s.action ?? s.type);
-    const running = !!s.sessionId && !s.failure && s.state !== 'resolved' && s.state !== 'merged';
+    const label = s.type === 'orchestrated' ? s.controller : (s.action ?? s.type);
+    const running = !!s.sessionId && !s.failure && s.state !== 'resolved' && s.state !== 'failed';
     push(s.sessionId, label, running);
   }
   // A step-review runs the orchestrator while the job stays `executing`, so the

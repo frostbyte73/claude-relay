@@ -4,16 +4,28 @@ import { actions } from '../../state/actions.js';
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
 const TYPE_LABELS = {
-  'open-pr': 'open-pr  (implement + open PR)',
-  'action':  'action  (run a named action for one-shot work)',
+  'orchestrated': 'orchestrated  (a controller action drives the step turn by turn)',
+  'action':       'action  (run a named action for one-shot work)',
 };
+
+function optionsHtml(names, selected, fallback) {
+  const withSelected = selected && !names.includes(selected) ? [selected, ...names] : names;
+  if (!withSelected.length) return `<option value="${escapeHtml(selected ?? fallback)}">${escapeHtml(selected ?? fallback)}</option>`;
+  return withSelected.map((n) => `<option value="${escapeHtml(n)}"${n === selected ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+}
 
 function actionOptions(selected) {
   const list = actions.get()?.actions ?? [];
-  const names = list.map((a) => a.name).filter(Boolean).sort();
-  const withSelected = selected && !names.includes(selected) ? [selected, ...names] : names;
-  if (!withSelected.length) return `<option value="${escapeHtml(selected ?? 'claude')}">${escapeHtml(selected ?? 'claude')}</option>`;
-  return withSelected.map((n) => `<option value="${escapeHtml(n)}"${n === selected ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+  return optionsHtml(list.map((a) => a.name).filter(Boolean).sort(), selected, 'claude');
+}
+
+// Only a `kind: step-orchestrator` action can own an orchestrated step — a plain action
+// has no next-move contract, so offering one here would hand the engine a step whose
+// controller can never report a move.
+function controllerOptions(selected) {
+  const catalog = actions.get()?.catalog ?? [];
+  const names = catalog.filter((a) => a.kind === 'step-orchestrator').map((a) => a.name).filter(Boolean).sort();
+  return optionsHtml(names, selected, 'code.orchestrate-pr');
 }
 
 // `editStep` is the current step when editing. Workspace fields stay editable: the dialog only
@@ -22,27 +34,33 @@ function actionOptions(selected) {
 function renderFields(type, editStep) {
   const s = editStep && editStep.type === type ? editStep : null;
   switch (type) {
-    case 'open-pr':
+    case 'orchestrated':
       return `
+        <div>
+          <div class="field-label">Controller</div>
+          <select id="as-controller" class="field-input">
+            ${controllerOptions(s?.controller)}
+          </select>
+        </div>
         <div>
           <div class="field-label">Repo cwd</div>
           <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" value="${escapeHtml(s?.workspace?.repoCwd ?? '')}" />
         </div>
         <div>
-          <div class="field-label">Branch</div>
+          <div class="field-label">Branch <span class="field-hint">optional — blank means read-only</span></div>
           <input id="as-branch" class="field-input" type="text" placeholder="fix/dropping-rpc" value="${escapeHtml(s?.workspace?.branch ?? '')}" />
         </div>
         <div>
           <div class="field-label">Goal</div>
-          <textarea id="as-goal" class="field-textarea" placeholder="What outcome does this PR deliver?">${escapeHtml(s?.goal ?? '')}</textarea>
+          <textarea id="as-goal" class="field-textarea" placeholder="What outcome does this step deliver?">${escapeHtml(s?.goal ?? '')}</textarea>
         </div>
         <div>
           <div class="field-label">Approach</div>
-          <textarea id="as-approach" class="field-textarea" placeholder="Files / modules / functions to touch">${escapeHtml(s?.approach ?? '')}</textarea>
+          <textarea id="as-approach" class="field-textarea" placeholder="Files / modules / functions to touch">${escapeHtml(s?.inputs?.approach ?? '')}</textarea>
         </div>
         <div>
           <div class="field-label">Risks <span class="field-hint">optional</span></div>
-          <textarea id="as-risks" class="field-textarea" placeholder="What could go wrong?">${escapeHtml(s?.risks ?? '')}</textarea>
+          <textarea id="as-risks" class="field-textarea" placeholder="What could go wrong?">${escapeHtml(s?.inputs?.risks ?? '')}</textarea>
         </div>
       `;
     case 'action':
@@ -133,10 +151,8 @@ export function openAddStepDialog(jobId, opts = {}) {
   const refreshFields = () => { fieldsHost.innerHTML = renderFields(typeEl.value, editStep); };
   typeEl.addEventListener('change', refreshFields);
   refreshFields();
-  // Re-render action options once the action list finishes loading.
-  const unsub = actions.subscribe(() => {
-    if (typeEl.value === 'action') refreshFields();
-  });
+  // Re-render the action / controller dropdowns once the catalog finishes loading.
+  const unsub = actions.subscribe(refreshFields);
 
   const showError = (msg) => {
     const err = wrap.querySelector('#as-error');
@@ -151,17 +167,20 @@ export function openAddStepDialog(jobId, opts = {}) {
     const description = wrap.querySelector('#as-desc').value;
 
     const step = { type, title, description };
-    if (type === 'open-pr') {
-      const goal     = wrap.querySelector('#as-goal')?.value.trim();
+    if (type === 'orchestrated') {
+      const controller = wrap.querySelector('#as-controller')?.value.trim();
+      if (!controller) return showError('Controller required');
+      const goal = wrap.querySelector('#as-goal')?.value.trim();
+      if (!goal) return showError('Goal required');
       const approach = wrap.querySelector('#as-approach')?.value.trim();
       const risks    = wrap.querySelector('#as-risks')?.value.trim();
-      step.goal = goal ?? '';
-      step.approach = approach ?? '';
-      step.risks = risks ?? '';
+      step.controller = controller;
+      step.goal = goal;
+      step.inputs = { ...(approach ? { approach } : {}), ...(risks ? { risks } : {}) };
       const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
       const branch  = wrap.querySelector('#as-branch')?.value.trim();
-      if (!repoCwd || !branch) return showError('Repo cwd and branch required for open-pr');
-      step.workspace = { kind: 'writable', repoCwd, branch };
+      if (!repoCwd) return showError('Repo cwd required');
+      step.workspace = branch ? { kind: 'writable', repoCwd, branch } : { kind: 'readonly', repoCwd };
     } else {
       const action = wrap.querySelector('#as-action')?.value.trim();
       if (!action) return showError('Action required');

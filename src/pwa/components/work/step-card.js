@@ -1,7 +1,7 @@
 import { work } from '../../state/work.js';
 import { sessions } from '../../state/sessions.js';
 import { openDiffForStep } from '../../app-bridge.js';
-import { hasPrBlock, renderPrBlockHtml, wirePrBlockActions } from './pr-block.js';
+import { orchestratedHasPrBlock, renderOrchestratedCard, wireOrchestratedCard } from './orchestrated-card.js';
 import { renderMarkdown } from '../../markdown.js';
 import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
@@ -9,7 +9,7 @@ import { launchPillClass } from './ticket-row.js';
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
 function stepLabel(s) {
-  if (s.type === 'open-pr') return 'OPEN PR';
+  if (s.type === 'orchestrated') return s.controller ?? 'ORCHESTRATED';
   return s.action ? `ACTION · ${s.action.toUpperCase()}` : 'ACTION';
 }
 
@@ -18,59 +18,26 @@ function stateLabel(s) {
   if (s.cancelled) return 'cancelled';
   // A step in its initial state with no session attached hasn't been started yet —
   // it's queued behind earlier steps. Label as "todo" to match the job-level vocabulary.
-  // Mirrors OpenPrStep's initialState ('speccing').
-  const initial = s.type === 'open-pr' ? 'speccing' : 'running';
-  if (!s.sessionId && s.state === initial) return 'todo';
-  if (s.type === 'open-pr') {
-    if (s.state === 'reply_pending_review') return 'pending';
-    return s.state.replace(/_/g, ' ');
-  }
+  if (!s.sessionId && s.state === 'running') return 'todo';
   if (s.state === 'gate_pending_approval') return 'needs approval';
   return s.state;
 }
 function stateTone(s) {
   if (s.failure) return 'danger';
   if (s.cancelled) return 'mute';
-  // Mirrors OpenPrStep's initialState ('speccing').
-  const initial = s.type === 'open-pr' ? 'speccing' : 'running';
   // todo: queued, no session yet.
-  if (!s.sessionId && s.state === initial) return 'mute';
+  if (!s.sessionId && s.state === 'running') return 'mute';
   // done.
-  if (s.state === 'resolved' || s.state === 'merged') return 'ok';
-  // meta.wait hold — a soft gate the user (or a soak timer) releases.
+  if (s.state === 'resolved') return 'ok';
+  // The hard hold, either kind: a human_gate action before an external write, or an
+  // orchestrated step whose controller gated its own move.
+  if (s.state === 'gate_pending_approval') return 'gate';
+  // meta.wait hold — a soft gate the user (or a soak timer) releases. An orchestrated
+  // step's `waiting` is on CI/review/dispatches, so it stays active, not a gate.
   if (s.type === 'action' && s.state === 'waiting') return 'gate';
-  // human_gate hard hold — an external-write action awaiting explicit approval.
-  if (s.type === 'action' && s.state === 'gate_pending_approval') return 'gate';
-  if (s.type === 'open-pr') {
-    // Gates: spec review, pending review, ready-to-merge.
-    if (s.state === 'spec_pending_review') return 'gate';
-    if (s.state === 'reply_pending_review') return 'gate';
-    if (s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success' && s.prState !== 'merged') return 'gate';
-    // Otherwise active (implementing with session, pr_open without gate).
-    return 'active';
-  }
-  // Active running session for non-open-pr steps.
+  if (s.type === 'orchestrated' && s.phase === 'pr_open'
+    && s.pr?.reviewState === 'approved' && s.pr?.ciState === 'success') return 'gate';
   return 'active';
-}
-
-function unresolvedCount(s) {
-  const comments = s.comments ?? [];
-  return comments.filter((c) => !c.respondedAt).length;
-}
-
-function metaOpenPr(s) {
-  const n = unresolvedCount(s);
-  const bits = [
-    s.workspace?.branch ? `<span class="branch">${escapeHtml(s.workspace.branch)}</span>` : '',
-    s.ciState === 'success' ? '<span class="ci-ok">CI ok</span>'
-      : s.ciState === 'failure' ? '<span class="ci-fail">CI fail</span>'
-      : s.ciState ? '<span class="muted">CI pending</span>' : '',
-    s.reviewState === 'approved' ? '<span class="review-ok">Approved</span>'
-      : s.reviewState === 'changes_requested' ? '<span class="muted">Changes requested</span>'
-      : s.reviewState ? '<span class="muted">Review required</span>' : '',
-    n > 0 ? `<span class="unresolved">${n} unresolved</span>` : '',
-  ].filter(Boolean);
-  return bits.join('');
 }
 
 function metaAction(s) {
@@ -84,33 +51,12 @@ function descriptionFor(s) {
   return text;
 }
 
-function metaFor(s) {
-  if (s.type === 'open-pr') return metaOpenPr(s);
-  if (s.type === 'action') return metaAction(s);
-  return '';
-}
-
 function actionFor(s) {
   if (s.failure) return `<button class="o-btn o-btn--danger" data-step-action="retry">Retry</button>`;
   if (s.cancelled) return '';
-  if (s.type === 'open-pr') {
-    if (s.state === 'spec_pending_review') {
-      return `
-        <button class="o-btn o-btn--primary" data-step-action="accept-spec">Accept spec</button>
-        <button class="o-btn o-btn--default" data-step-action="toggle-spec-feedback">Propose changes</button>
-        <div class="thread-composer" data-composer="spec-feedback" hidden>
-          <textarea class="thread-compose-input" data-autogrow placeholder="What should change?"></textarea>
-          <div class="thread-composer-row">
-            <button class="o-btn o-btn--primary" data-step-action="submit-spec-feedback">Submit</button>
-          </div>
-        </div>
-      `;
-    }
-    if (s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success' && s.prState !== 'merged') {
-      return `<button class="o-btn o-btn--primary" data-step-action="merge">Approve merge</button>`;
-    }
-    return '';
-  }
+  // An orchestrated step's affordances (gate, message, mark-resolved) all live in its
+  // own card, which owns the wiring too.
+  if (s.type === 'orchestrated') return '';
   // meta.wait hold: let the user release it early (timed) or at all (indefinite).
   if (s.type === 'action' && s.state === 'waiting') {
     return `<button class="o-btn o-btn--primary" data-step-action="resume">Resume now</button>`;
@@ -150,11 +96,9 @@ function actionFor(s) {
 function dotTone(s) {
   if (s.cancelled) return 'mute';
   if (s.failure) return 'danger';
-  if (s.state === 'resolved' || s.state === 'merged') return 'done';
-  // Mirrors OpenPrStep's initialState ('speccing').
-  const initial = s.type === 'open-pr' ? 'speccing' : 'running';
+  if (s.state === 'resolved') return 'done';
   if (stateTone(s) === 'gate') return 'hot';
-  if (!s.sessionId && s.state === initial) return 'pending';
+  if (!s.sessionId && s.state === 'running') return 'pending';
   return 'busy';
 }
 
@@ -254,8 +198,9 @@ function launchRowHtml(job, s) {
 // model doesn't have; only render refs we can actually resolve).
 function stepRefs(job, s) {
   const refs = [];
-  if (s.type === 'open-pr' && s.sessionId && s.state !== 'merged') refs.push({ kind: 'diff', label: 'Review changes' });
-  if (s.type === 'open-pr' && s.prUrl) refs.push({ kind: 'pr', label: 'Open PR', href: s.prUrl });
+  if (s.type !== 'orchestrated') return refs;
+  if (s.sessionId && s.phase !== 'merged') refs.push({ kind: 'diff', label: 'Review changes' });
+  if (s.pr?.prUrl) refs.push({ kind: 'pr', label: 'Open PR', href: s.pr.prUrl });
   return refs;
 }
 
@@ -272,19 +217,17 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   const title = s.title || s.type;
   const desc = descriptionFor(s);
   const output = (s.type === 'action' && s.output) ? renderMarkdown(s.output) : '';
-  const spec = s.type === 'open-pr' && s.spec ? renderMarkdown(s.spec) : '';
-  const implPlan = s.type === 'open-pr' && s.implPlan ? renderMarkdown(s.implPlan) : '';
   // Findings are the long tail of a step — collapse them once the step is done so
   // the timeline reads as a compact list of names/descriptions, expandable on demand.
   // Live/failed steps stay open (you're actively reading the result). Native
   // <details>; open state survives repaints via detail.js's snapshotUi.
-  const findingsOpen = !(s.state === 'resolved' || s.state === 'merged');
+  const findingsOpen = s.state !== 'resolved';
   const groupAttr = groupPos ? ` data-group-pos="${groupPos}"` : '';
-  const showPrBlock = s.type === 'open-pr' && hasPrBlock(s);
-  // The PR block carries its own diff-review button and PR link, so suppress the
-  // standalone refs alongside it. The transcript is never a link — its inline
-  // feed (mounted below, same as the orchestrator) carries an "Open ↗" affordance.
-  const refs = showPrBlock ? [] : stepRefs(job, s);
+  const orchestrated = s.type === 'orchestrated';
+  // The PR block (mounted inside the orchestrated card) carries its own diff-review
+  // button and PR link, so suppress the standalone refs alongside it. The transcript is
+  // never a link — its inline feed carries an "Open ↗" affordance.
+  const refs = orchestrated && orchestratedHasPrBlock(s) ? [] : stepRefs(job, s);
   const action = actionFor(s);
   return `
     <div class="tl-step" data-step-id="${escapeHtml(s.id)}" data-cancelled="${!!s.cancelled}"${groupAttr}>
@@ -301,11 +244,9 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${gateBlockHtml(s)}
         ${launchRowHtml(job, s)}
         ${s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
-        ${showPrBlock ? renderPrBlockHtml(job, s) : (metaFor(s) ? `<div class="tl-meta">${metaFor(s)}</div>` : '')}
+        ${orchestrated ? renderOrchestratedCard(s, { job }) : (metaAction(s) ? `<div class="tl-meta">${metaAction(s)}</div>` : '')}
         ${refsHtml(refs)}
         ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
-        ${spec && !showPrBlock ? `<details class="plan-findings tl-findings"${s.state === 'spec_pending_review' ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Spec</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${spec}</div></details>` : ''}
-        ${implPlan && !showPrBlock ? `<details class="plan-findings tl-findings"><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Implementation plan</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${implPlan}</div></details>` : ''}
         ${action ? `<div class="step-actions">${action}</div>` : ''}
       </div>
       ${opts.editTools ?? ''}
@@ -338,19 +279,9 @@ export function wireTimelineStep(el, job, s) {
         void work.reject(job.id, { gate: 'gate', stepId: s.id, feedback });
       }
       else if (kind === 'retry') void work.retryStep(job.id, s.id).catch((err) => alert(`Retry failed: ${err?.message ?? err}`));
-      else if (kind === 'merge') void work.approve(job.id, { gate: 'merge', stepId: s.id });
-      else if (kind === 'accept-spec') void work.approve(job.id, { gate: 'spec', stepId: s.id });
-      else if (kind === 'toggle-spec-feedback') {
-        el.querySelector('[data-composer="spec-feedback"]')?.toggleAttribute('hidden');
-      } else if (kind === 'submit-spec-feedback') {
-        const ta = el.querySelector('[data-composer="spec-feedback"] textarea');
-        const feedback = (ta?.value ?? '').trim();
-        if (!feedback) { ta?.focus(); return; }
-        void work.reject(job.id, { gate: 'spec', stepId: s.id, feedback });
-      }
     });
   });
-  if (s.type === 'open-pr' && hasPrBlock(s)) wirePrBlockActions(el, job, s);
+  if (s.type === 'orchestrated') wireOrchestratedCard(el, s, { job });
 }
 
 export function computeGroupPositions(steps) {

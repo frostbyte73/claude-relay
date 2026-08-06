@@ -1,7 +1,7 @@
 // Inline PR-review block for the Tracked timeline (both layouts — mobile
 // mounts the same drill-in). This module owns no separate view/tab;
-// step-card.js's timeline mounts it directly inside the open-pr step's row
-// once there's something to show.
+// orchestrated-card.js mounts it directly inside the step's row once there's
+// something to show, adapting the step's `pr` facts onto the flat shape read here.
 
 import { groupThreads, renderThreadCard, wireThreadCard } from './thread-card.js';
 import { openDiffForStep } from '../../app-bridge.js';

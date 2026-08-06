@@ -227,16 +227,21 @@ export function openActionPickerDialog(jobId, opts = {}) {
   // Map (action, inputs) → ProposedStep that the existing orchestrator accepts.
   // Keep this shim small; it goes away when the orchestrator routes by action name.
   function buildStep(action, title, inputs) {
-    if (action.name === 'code.implement') {
+    // A step-orchestrator isn't run as a one-shot action — it owns a step and picks its
+    // own move each turn, so it becomes the step's controller rather than its action.
+    if (action.kind === 'step-orchestrator') {
       const ws = inputs.workspace ?? {};
+      const { workspace: _ws, goal: _goal, ...rest } = inputs;
       return {
-        type: 'open-pr',
+        type: 'orchestrated',
+        controller: action.name,
         title,
-        description: '',
+        description: action.description ?? '',
         goal: typeof inputs.goal === 'string' ? inputs.goal : title,
-        approach: typeof inputs.approach === 'string' ? inputs.approach : '',
-        risks: typeof inputs.risks === 'string' ? inputs.risks : '',
-        workspace: { kind: 'writable', repoCwd: ws.repoCwd ?? '', branch: ws.branch ?? '' },
+        inputs: rest,
+        workspace: ws.repoCwd
+          ? (ws.branch ? { kind: 'writable', repoCwd: ws.repoCwd, branch: ws.branch } : { kind: 'readonly', repoCwd: ws.repoCwd })
+          : { kind: 'none' },
       };
     }
     // Generic action shim: goal carries a serialized rendering of the inputs so

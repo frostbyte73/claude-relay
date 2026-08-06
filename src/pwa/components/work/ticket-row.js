@@ -43,11 +43,11 @@ export function ago(epochMs) {
 export function stepDotState(s) {
   if (s.failure) return 'failed';
   if (s.cancelled) return 'todo';
-  if (s.type === 'open-pr' && s.state === 'merged') return 'ok';
   if (s.state === 'resolved') return 'ok';
-  if (s.state === 'reply_pending_review' || s.state === 'spec_pending_review') return 'gate';
-  if (s.type === 'action' && (s.state === 'gate_pending_approval' || s.state === 'waiting')) return 'gate';
-  if (s.type === 'open-pr' && s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success') return 'gate';
+  if (s.state === 'gate_pending_approval') return 'gate';
+  if (s.type === 'action' && s.state === 'waiting') return 'gate';
+  if (s.type === 'orchestrated' && s.phase === 'pr_open'
+    && s.pr?.reviewState === 'approved' && s.pr?.ciState === 'success') return 'gate';
   if (s.sessionId) return 'active';
   return 'todo';
 }
@@ -58,7 +58,7 @@ export function stepDots(j) {
   const steps = (j.steps ?? []).filter((s) => !s.cancelled);
   if (steps.length === 0) return '<span class="step-dot" data-state="queued"></span>';
   return steps.map((s) => {
-    const label = s.type === 'action' ? `action · ${s.action ?? ''}` : s.type;
+    const label = s.type === 'action' ? `action · ${s.action ?? ''}` : `orchestrated · ${s.controller ?? ''}`;
     return `<span class="step-dot" data-state="${stepDotState(s)}" title="${escapeAttr(label)}: ${escapeAttr(s.state)}"></span>`;
   }).join('');
 }

@@ -3,13 +3,15 @@
 // the same definition (D2 of the UX redesign plan).
 
 export function stepNeedsYou(s) {
-  return s.state === 'reply_pending_review' || s.state === 'spec_pending_review'
-    // A human_gate action parked before an external write only runs on explicit approval.
-    || (s.type === 'action' && s.state === 'gate_pending_approval')
+  // Both step kinds park here for an explicit approval: a human_gate action before an
+  // external write, an orchestrated step before the move its controller gated.
+  return s.state === 'gate_pending_approval'
     // An indefinite meta.wait hold only clears when the user resumes; a timed soak
-    // (resumeAt set) auto-resumes, so it's waiting on the clock, not on you.
+    // (resumeAt set) auto-resumes, so it's waiting on the clock, not on you. An
+    // orchestrated step's `waiting` is on CI/review/dispatches, never on you.
     || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null)
-    || (s.type === 'open-pr' && s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success');
+    || (s.type === 'orchestrated' && s.phase === 'pr_open'
+      && s.pr?.reviewState === 'approved' && s.pr?.ciState === 'success');
 }
 
 // abandonJob flips job state without rewriting step states, so a terminal job

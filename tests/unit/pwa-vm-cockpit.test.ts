@@ -16,7 +16,7 @@ describe('cockpitGroups', () => {
           title: 'PR job',
           state: 'executing',
           updatedAt: NOW - 2000,
-          steps: [{ id: 's1', type: 'open-pr', state: 'reply_pending_review', updatedAt: NOW - 100 }],
+          steps: [{ id: 's1', type: 'orchestrated', state: 'gate_pending_approval', updatedAt: NOW - 100 }],
         },
       ],
     });
@@ -26,14 +26,14 @@ describe('cockpitGroups', () => {
     expect(groups.waiting[0].tone).toBe('hot');
   });
 
-  it('a comment_pending_response step is not a waiting row, but its job still shows inFlight', () => {
+  it('a step chewing on PR comments is not a waiting row, but its job still shows inFlight', () => {
     const job = {
       id: 'j1',
       title: 'Triage job',
       state: 'executing',
       updatedAt: NOW,
       externalRef: null,
-      steps: [{ id: 's1', type: 'open-pr', state: 'comment_pending_response', updatedAt: NOW }],
+      steps: [{ id: 's1', type: 'orchestrated', state: 'running', phase: 'pr_comments', updatedAt: NOW }],
     };
     const groups = cockpitGroups({ now: NOW, jobs: [job] });
 
@@ -64,7 +64,8 @@ describe('cockpitGroups', () => {
         title: 'Ready job',
         state: 'executing',
         updatedAt: NOW,
-        steps: [{ id: 's1', type: 'open-pr', state: 'pr_open', reviewState: 'approved', ciState: 'success', updatedAt: NOW }],
+        steps: [{ id: 's1', type: 'orchestrated', state: 'waiting', phase: 'pr_open',
+          pr: { reviewState: 'approved', ciState: 'success' }, updatedAt: NOW }],
       }],
     });
     expect(groups.waiting[0].tone).toBe('warn');

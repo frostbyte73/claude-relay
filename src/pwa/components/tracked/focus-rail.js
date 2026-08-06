@@ -24,12 +24,12 @@ function ago(epochMs) {
   return `${Math.floor(s / 86400)}d`;
 }
 
-function primaryOpenPrStep(job) {
-  return (job.steps ?? []).find((s) => s.type === 'open-pr' && !s.cancelled);
+function primaryOrchestratedStep(job) {
+  return (job.steps ?? []).find((s) => s.type === 'orchestrated' && !s.cancelled);
 }
 
 function kv(job) {
-  const step = primaryOpenPrStep(job);
+  const step = primaryOrchestratedStep(job);
   const rows = [];
   if (job.externalRef?.issueIdentifier) {
     rows.push(['Linear', job.externalRef.url
@@ -37,9 +37,9 @@ function kv(job) {
       : escapeHtml(job.externalRef.issueIdentifier)]);
   }
   if (step?.workspace?.branch) rows.push(['Branch', escapeHtml(step.workspace.branch)]);
-  if (step?.prUrl) {
-    const m = step.prUrl.match(/\/pull\/(\d+)/);
-    rows.push(['PR', `<a href="${escapeHtml(step.prUrl)}" target="_blank" rel="noopener">${m ? `#${m[1]}` : 'view'} ↗</a>`]);
+  if (step?.pr?.prUrl) {
+    const m = step.pr.prUrl.match(/\/pull\/(\d+)/);
+    rows.push(['PR', `<a href="${escapeHtml(step.pr.prUrl)}" target="_blank" rel="noopener">${m ? `#${m[1]}` : 'view'} ↗</a>`]);
   }
   if (step?.workspace?.repoCwd) rows.push(['Repo', escapeHtml(shortName(step.workspace.repoCwd))]);
   rows.push(['Age', ago(job.createdAt)]);
@@ -80,7 +80,7 @@ function runFocusCta(job, cta) {
     void work.approve(job.id, { gate: 'wait', stepId: cta.stepId });
     return;
   }
-  // review-replies / review-diff / watch: land on the relevant timeline step.
+  // review-gate / review-diff / watch: land on the relevant timeline step.
   const stepEl = cta.stepId ? document.querySelector(`.tk-shell .tl-step[data-step-id="${CSS.escape(cta.stepId)}"]`) : null;
   if (stepEl) { stepEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
   if (cta.action === 'watch' && cta.sessionId) openSession({ id: cta.sessionId, fromTicketId: job.id });

@@ -35,16 +35,16 @@ function planReviewRow(j) {
 }
 
 function stepWaitPill(s) {
-  if (s.state === 'reply_pending_review') return { label: 'Reply ready', variant: 'gate' };
-  if (s.state === 'spec_pending_review') return { label: 'Spec ready', variant: 'gate' };
-  if (s.type === 'action' && s.state === 'gate_pending_approval') return { label: 'Approve write', variant: 'gate' };
+  if (s.state === 'gate_pending_approval') {
+    return { label: s.type === 'orchestrated' ? 'Approve move' : 'Approve write', variant: 'gate' };
+  }
   if (s.type === 'action' && s.state === 'waiting') return { label: 'On hold', variant: 'gate' };
   return { label: 'Ready to merge', variant: 'ok' };
 }
 
 function stepWaitTone(s) {
-  return (s.state === 'reply_pending_review' || s.state === 'spec_pending_review'
-    || (s.type === 'action' && (s.state === 'gate_pending_approval' || s.state === 'waiting'))) ? 'hot' : 'warn';
+  return (s.state === 'gate_pending_approval'
+    || (s.type === 'action' && s.state === 'waiting')) ? 'hot' : 'warn';
 }
 
 function stepWaitingRows(j) {

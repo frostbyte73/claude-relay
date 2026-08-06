@@ -426,6 +426,47 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   margin: 2px 0 8px;
 }
 
+/* ── Orchestrated step card ───────────────────────────────────────────────
+   The body of a controller-owned step. Every part is its own stacked row —
+   chips, wait reason, PR block, dispatches, artifacts, gate, composer — so the
+   header line above stays name/skill/time and nothing else. */
+.orc-card { display: flex; flex-direction: column; gap: 8px; }
+.orc-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.orc-wait {
+  font-size: 12px;
+  color: var(--text-mute);
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border-left: 2px solid var(--line);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+}
+
+.orc-dispatches { display: flex; flex-direction: column; gap: 6px; }
+.orc-dispatch {
+  display: grid;
+  grid-template-columns: auto auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+}
+.orc-dispatch-icon { display: inline-flex; width: 16px; height: 16px; color: var(--cat-fg, var(--text-dim)); }
+.orc-dispatch-icon svg { width: 100%; height: 100%; }
+.orc-dispatch-open { justify-self: end; }
+.orc-dispatch-brief,
+.orc-dispatch-failure {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.orc-dispatch-brief { color: var(--text-mute); }
+.orc-dispatch-failure { color: var(--danger); }
+
+.orc-msg { margin-top: 0; }
+
 /* ── Inline PR block ──────────────────────────────────────────────────── */
 .pr-block {
   margin: 4px 0 0;
