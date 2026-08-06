@@ -374,6 +374,17 @@ export function literalRedirectPath(word: string): string | null {
   return resolve(out);
 }
 
+// Redirection targets that create nothing and truncate nothing, so no Write grant can be
+// the thing that authorises them. `2>/dev/null` is idiomatic in exactly the commands a
+// read-only action runs, and no permission group grants Write anywhere — without this the
+// redirect gate hard-denies `cat x 2>/dev/null` for every action in the catalog.
+// Deliberately a fixed set of character devices, not a `/dev/` prefix: `/dev/sda` is a disk.
+const DEVICE_SINKS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty']);
+
+function isDeviceSink(path: string): boolean {
+  return DEVICE_SINKS.has(path) || /^\/dev\/fd\/\d+$/.test(path);
+}
+
 // Every path a Bash command would create or truncate by redirection, skipping the ones
 // that can't be resolved statically. Used to suggest a grant after a denial; the gate
 // itself treats an unresolvable target as fatal, which this can't express.
@@ -562,6 +573,7 @@ export class Allowlist {
       for (const word of clause.writeTargets) {
         const path = literalRedirectPath(word);
         if (path === null) return false;
+        if (isDeviceSink(path)) continue;
         const asWrite = { file_path: path };
         if (scopes.some((s) => rulesAllow(s, 'Write', asWrite))) continue;
         if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) continue;
