@@ -135,8 +135,15 @@ path. Be conservative:
   path rules over blanket `tool: Write` / `tool: Edit` grants so writes are
   confined to the action's working area (e.g. `Edit:^/tmp/`,
   `Write:^/Users/[^/]+/repos/foo/`).
-- `bash` — JavaScript regex matched against the full bash command. Anchor with
-  `^` and keep the pattern narrow (e.g. `^curl -fsS -X POST`).
+- `bash` — JavaScript regex matched against one clause of the bash command.
+  Anchor with `^` and keep the pattern narrow. A rule that grants a **network
+  or filesystem write** must be a positive whitelist pinned to its destination:
+  name the exact host/path and enumerate the flags that may appear, anchored
+  with `$`. A prefix rule grants everything after it — `^curl ` and even
+  `^curl -fsS -X POST ` allow any method, any body, any URL, and `-o <path>`
+  to overwrite any local file. Never write a rule that tries to *forbid* a
+  flag: `-d`, `-d=x`, `"-d"`, `-d""`, `-d$X` and `-sd` all reach argv as the
+  same flag, and a negative lookahead misses most of them.
 - `mcp` — regex matched against the MCP tool id.
 
 Prefer narrow path/bash rules over blanket tool grants.
@@ -161,7 +168,7 @@ mcp__outpost__submit_action_proposal({
   skillMdAfter: "<full new SKILL.md text — pass as a native JSON string, no shell escaping>",
   allowlistAdds: [
     { "kind": "tool", "value": "Read" },
-    { "kind": "bash", "value": "^curl " }
+    { "kind": "bash", "value": "^curl -fsS \"?https://api\\.example\\.com/v1/status\"?$" }
   ]
 })
 ```
