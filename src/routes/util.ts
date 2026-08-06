@@ -26,7 +26,10 @@ export async function readJsonBody<T>(req: NodeJS.ReadableStream): Promise<T | n
 }
 
 export interface JsonObjectOpts {
-  // Routes that today spell `body ? JSON.parse(body) : {}` accept a missing body.
+  // Routes that spell `body ? JSON.parse(body) : {}` accept a MISSING body. Deliberately not
+  // `!raw.trim()`: a whitespace-only body is truthy, so it used to reach JSON.parse and 400.
+  // Widening it to "empty" would let `POST .../git/discard` with a body of " " fall through to
+  // paths=undefined, i.e. `git reset --hard` + `git clean -fd` on a request that used to bounce.
   allowEmpty?: boolean;
   // Routes whose 400 carries a JSON error body rather than the plain-text default.
   onInvalid?: () => void;
@@ -38,7 +41,7 @@ export async function readJsonObject<T>(
   opts: JsonObjectOpts = {},
 ): Promise<T | null> {
   const raw = await readBody(req);
-  if (!raw.trim() && opts.allowEmpty) return {} as T;
+  if (!raw && opts.allowEmpty) return {} as T;
   const parsed = parseJsonObject(raw);
   if (parsed) return parsed as T;
   if (opts.onInvalid) opts.onInvalid();
