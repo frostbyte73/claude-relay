@@ -4,6 +4,9 @@
 export type ActionCategory = 'read' | 'write' | 'code' | 'meta';
 export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-write';
 export type ActionRunner = 'claude' | 'builtin';
+// 'step-orchestrator' marks a controller: an action that owns an orchestrated step
+// end to end, deciding its own next move each turn instead of running once.
+export type ActionKind = 'action' | 'step-orchestrator';
 
 // The frontmatter block of an action's SKILL.md. `name` is "<category>.<rest>"
 // and must match the dir path: actions/<category>/<rest>/SKILL.md.
@@ -11,7 +14,7 @@ export interface ActionFrontmatter {
   name: string;
   description: string;
   outpost: {
-    kind: 'action';
+    kind: ActionKind;
     category: ActionCategory;
     side_effects: SideEffects;
     // 'claude' spawns a session; 'builtin' is daemon-implemented (body is docs only).

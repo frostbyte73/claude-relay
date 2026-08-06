@@ -82,6 +82,42 @@ describe('write.add-project effective allowlist', () => {
   });
 });
 
+describe('code.orchestrate-pr effective allowlist', () => {
+  // The controller reads PR state and decides; the rounds it binds to do the writing. It
+  // declares `permissions: [read]` only, so its own `gh` reads have to come from its
+  // colocated allowlist.json — and no push-group rule may reach it.
+  const allows = effective('code.orchestrate-pr');
+
+  it('allows the PR reads its SKILL.md documents', () => {
+    const documented = [
+      'cat "$OUTPOST_ENVELOPE"',
+      'jq -r \'.pr | "prState=\\(.prState)"\' "$OUTPOST_ENVELOPE"',
+      'gh pr view --json state,mergeable,statusCheckRollup,reviewDecision',
+      'gh pr checks',
+      'gh pr diff',
+    ];
+    expect(documented.filter((c) => !allows(c))).toEqual([]);
+  });
+
+  it('cannot write — no push-group rule reaches it', () => {
+    for (const c of [
+      'git push',
+      'git push origin HEAD',
+      'git commit -m wip',
+      'gh pr merge 12 --squash',
+      'gh pr comment 12 --body hi',
+      'gh pr create --fill',
+      'gh pr review 12 --approve',
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
+  });
+
+  it('registers as a step-orchestrator, not an ordinary action', () => {
+    expect(registry.getAction('code.orchestrate-pr')?.frontmatter.outpost.kind).toBe('step-orchestrator');
+  });
+});
+
 describe('write.run-github-workflow effective allowlist', () => {
   // Shipped with `permissions: []` and no allowlist.json — same defect as add-project:
   // not even `gh workflow run`, the one thing the action exists to do, was grantable.

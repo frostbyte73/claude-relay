@@ -2620,6 +2620,7 @@ export class WorkEngine {
     return reg.listActions().map((a) => ({
       name: a.name,
       description: a.frontmatter.description,
+      kind: a.frontmatter.outpost.kind,
       category: a.frontmatter.outpost.category,
       runner: a.frontmatter.outpost.runner,
       side_effects: a.frontmatter.outpost.side_effects,

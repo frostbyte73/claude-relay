@@ -76,6 +76,8 @@ export function augmentEnvelopeWithLessons(path: string, lessons: JournalEntry[]
 export interface ActionCatalogEntry {
   name: string;
   description: string;
+  // 'step-orchestrator' entries are the only valid `controller` for an orchestrated step.
+  kind: 'action' | 'step-orchestrator';
   category: string;
   runner: 'claude' | 'builtin';
   side_effects: 'none' | 'gated-write' | 'worktree-edit' | 'external-write';

@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.orchestrate-pr input",
+  "type": "object",
+  "required": ["goal"],
+  "properties": {
+    "goal": {
+      "type": "string",
+      "description": "What the PR must accomplish, as a user-visible outcome."
+    },
+    "approach": {
+      "type": "string",
+      "description": "The planner's framing: files/functions to touch, the shape of the change."
+    },
+    "risks": {
+      "type": "string",
+      "description": "Known hazards the controller should carry into the spec."
+    }
+  }
+}

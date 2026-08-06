@@ -3,11 +3,12 @@ import { basename, dirname, join } from 'node:path';
 import yaml from 'js-yaml';
 import { Ajv } from 'ajv';
 import type {
-  ActionAllowlist, ActionCategory, ActionDef, ActionFrontmatter, ActionRunner,
+  ActionAllowlist, ActionCategory, ActionDef, ActionFrontmatter, ActionKind, ActionRunner,
   PermissionGroupMap, SideEffects,
 } from './types.js';
 
 export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
+const KINDS: readonly ActionKind[] = ['action','step-orchestrator'];
 const SIDE_EFFECTS: readonly SideEffects[] = ['none','gated-write','worktree-edit','external-write'];
 const RUNNERS: readonly ActionRunner[] = ['claude','builtin'];
 
@@ -144,7 +145,9 @@ export class ActionRegistry {
     const op = r.outpost;
     if (!isObject(op)) throw new Error('outpost block missing');
     const o = op as Record<string, unknown>;
-    if (o.kind !== 'action') throw new Error(`outpost.kind must be "action" (got ${JSON.stringify(o.kind)})`);
+    const kind: ActionKind = o.kind === undefined ? 'action' : o.kind as ActionKind;
+    if (!KINDS.includes(kind))
+      throw new Error(`outpost.kind must be one of ${KINDS.join('|')} (got ${JSON.stringify(o.kind)})`);
     if (typeof r.name !== 'string' || !r.name.includes('.'))
       throw new Error('frontmatter.name must be "<category>.<rest>"');
     if (typeof r.description !== 'string' || !r.description)
@@ -174,7 +177,7 @@ export class ActionRegistry {
       name: r.name,
       description: r.description,
       outpost: {
-        kind: 'action',
+        kind,
         category: o.category as ActionCategory,
         side_effects: o.side_effects as SideEffects,
         runner: o.runner as ActionRunner,
