@@ -320,6 +320,15 @@ export class PrWatcher {
       // PR discovery: nothing in the catalog opens the PR — code.implement leaves uncommitted
       // edits and the user pushes and opens it by hand — so matching the step's branch is the
       // only way the daemon ever learns the URL.
+      //
+      // Deliberately unbounded for as long as the step is live. A cap on consecutive misses
+      // was tried and reverted: the canonical flow parks the controller on a `wait` for
+      // pr-state while the *user* opens the PR, so nothing bumps the step's round count and
+      // any miss-based cap expires while that wait is doing exactly what it should. Discovery
+      // is then the only path that could ever wake it, and the step waits forever on a PR
+      // sitting open on GitHub. The cost this bounds is one `gh pr list` per sweep per live
+      // writable step — and every controller that holds one opens a PR, so the population it
+      // would save is empty.
       prUrl = await this.discoverPr(cwd, branch);
       if (!prUrl) return;
       facts.prUrl = prUrl;

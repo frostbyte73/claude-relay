@@ -191,11 +191,24 @@ describe('orchestratedRows', () => {
     expect(rows.map((a: any) => [a.key, a.slug])).toEqual([
       ['weird key! with/slashes', 'weird-key-with-slashes'],
       ['', 'artifact'],
-      ['!!!', 'artifact'],
+      // Both empty-ish keys fall back to 'artifact'; the second is disambiguated rather
+      // than sharing the first's disclosure state.
+      ['!!!', 'artifact-2'],
     ]);
     // Every slug is a lone token match for the CSS class regex — no injected space, no
     // leftover punctuation that would break out of `orc-artifact-<slug>`.
     for (const a of rows) expect((a as any).slug).toMatch(/^[a-z0-9-]+$/);
+  });
+
+  it('breaks a slug collision so two artifacts cannot share one disclosure', () => {
+    // tracked/detail.js keys each <details>'s open/closed state off its className, so two
+    // keys normalising to the same slug would toggle each other across repaints.
+    const rows = orchestratedRows(step({
+      artifacts: { notes: 'a', 'Notes!': 'b', 'NOTES': 'c' },
+    })).artifactRows;
+    const slugs = rows.map((a: any) => a.slug);
+    expect(slugs).toEqual(['notes', 'notes-2', 'notes-3']);
+    expect(new Set(slugs).size).toBe(slugs.length);
   });
 
   it('exposes the gate only while parked on it', () => {
