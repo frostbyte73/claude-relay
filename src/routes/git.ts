@@ -1,6 +1,7 @@
+import type { ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { SessionStore } from '../session/session-store.js';
-import type { WorktreeManager } from '../git/worktree-manager.js';
+import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
 import { diffBaseFor } from '../git/worktree-manager.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
@@ -18,6 +19,30 @@ export interface GitRoutesDeps {
   worktreeManager: WorktreeManager;
   engine: WorkEngine;
   prWatcher: PrWatcher;
+}
+
+// WorktreeManager.provision() gives a readonly (review/investigation) worktree an empty
+// `branch` — it's a detached checkout, never meant to be written to or pushed from (see
+// worktree-manager.ts's `provision()`). A writable step or a plain worktree session always
+// carries a real branch name, so `!rec.branch` is the one durable signal that a record is
+// read-only-by-design — there is no separate `kind` field to check.
+function isReadonlyRecord(rec: WorktreeRecord | undefined): boolean {
+  return !!rec && !rec.archivedAt && !!rec.worktreePath && !rec.branch;
+}
+
+// Shared guard for every route that mutates a worktree: refuse outright on a readonly
+// checkout rather than let git fail confusingly against a detached HEAD (or, for discard,
+// actually destroy the one thing sitting in a review workspace). Step sessions key their
+// worktree by stepId, so resolve through the engine first, same as every route below.
+function refuseIfReadonly(
+  worktreeManager: WorktreeManager, engine: WorkEngine, sessionId: string, res: ServerResponse,
+): boolean {
+  const rec = engine.worktreeRecordForSession(sessionId) ?? worktreeManager.get(sessionId);
+  if (!isReadonlyRecord(rec)) return false;
+  res.statusCode = 403;
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ error: 'this session\'s workspace is a read-only checkout — this action is not available' }));
+  return true;
 }
 
 // Git endpoints resolve cwd to worktree path for worktree-backed sessions, else project cwd.
@@ -133,6 +158,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
+    if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const payload = await readJsonObject<{ message?: string }>(req, res);
     if (!payload) return;
     const message = typeof payload.message === 'string' ? payload.message : '';
@@ -160,6 +186,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
+    if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const payload = await readJsonObject<{ paths?: unknown; action?: unknown }>(req, res);
     if (!payload) return;
     const action = payload.action;
@@ -191,6 +218,12 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: 'discard is only valid for active worktree sessions' }));
       return;
     }
+    if (isReadonlyRecord(rec)) {
+      res.statusCode = 403;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: 'this session\'s workspace is a read-only checkout — discard is not available' }));
+      return;
+    }
     const payload = await readJsonObject<{ paths?: unknown }>(req, res, { allowEmpty: true });
     if (!payload) return;
     let paths: string[] | undefined;
@@ -218,6 +251,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
+    if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const payload = await readJsonObject<{ newBranch?: unknown }>(req, res);
     if (!payload) return;
     if (typeof payload.newBranch !== 'string') {
@@ -241,6 +275,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
+    if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const payload = await readJsonObject<{ title?: string; body?: string; base?: string }>(req, res, { allowEmpty: true });
     if (!payload) return;
     const result = await gitOpenPr(resolved.cwd, payload);
@@ -264,6 +299,12 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.statusCode = 400;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ error: 'finalize is only valid for active worktree sessions' }));
+      return;
+    }
+    if (isReadonlyRecord(rec)) {
+      res.statusCode = 403;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: 'this session\'s workspace is a read-only checkout — finalize is not available' }));
       return;
     }
     const payload = await readJsonObject<{ kind?: string; message?: string; newBranch?: string; push?: boolean }>(req, res);
@@ -330,6 +371,10 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       respond(400, { status: 'error', message: 'squash-to-base is only valid for active worktree sessions' });
       return;
     }
+    if (isReadonlyRecord(rec)) {
+      respond(403, { status: 'error', message: 'this session\'s workspace is a read-only checkout — squash-to-base is not available' });
+      return;
+    }
     const payload = await readJsonObject<{ message?: string }>(req, res, {
       onInvalid: () => respond(400, { status: 'error', message: 'invalid json' }),
     });
@@ -354,6 +399,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
+    if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const result = await gitPush(resolved.cwd);
     // The push moves the head, so any prior CI result is stale. Arm the watcher's
     // 1m/5m/15m ladder so the new run's status lands without waiting on the hourly sweep.
@@ -378,6 +424,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
+    if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const result = await gitPull(resolved.cwd);
     let status;
     try { status = await gitStatus(resolved.cwd); } catch { status = null; }

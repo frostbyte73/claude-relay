@@ -134,11 +134,12 @@ function actionsHtml(s, vm) {
       </div>`);
   }
   if (vm.canMarkResolved) {
+    const { label, hint } = vm.markResolved;
     bits.push(`
       <div class="o-menu">
         <button type="button" class="o-btn o-btn--ghost o-menu-toggle" data-menu-toggle aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
         <div class="o-menu-body" hidden>
-          <button class="o-btn o-btn--ghost" data-orc-action="mark-resolved">Mark resolved</button>
+          <button class="o-btn o-btn--ghost" data-orc-action="mark-resolved"${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(label)}</button>
         </div>
       </div>`);
   }

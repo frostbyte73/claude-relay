@@ -131,6 +131,10 @@ export function focusAction(job) {
 // authority for what a live controller reports; storage/jobs-migrate.ts only for what a
 // migrated open-pr step landed on). An unrecognized phase is still shown — a controller
 // may coin its own — just without a curated label.
+// code.orchestrate-review's own phase ladder (actions/code/orchestrate-review/SKILL.md §3):
+// triage, lenses, synthesis, review_pending, resolutions_checked, resolutions_pending,
+// verdict_submitted, verdict_pending, watching. Merged into the same map as code.orchestrate-pr's
+// — the two controllers never share a step, so there's no collision risk.
 const PHASE_LABEL = {
   spec: 'Spec',
   plan: 'Plan',
@@ -140,9 +144,32 @@ const PHASE_LABEL = {
   conflict: 'Conflict',
   merged: 'Merged',
   failed: 'Failed',
+  triage: 'Triage',
+  lenses: 'Review lenses',
+  synthesis: 'Synthesis',
+  review_pending: 'Review pending',
+  resolutions_checked: 'Resolutions checked',
+  resolutions_pending: 'Resolutions pending',
+  verdict_submitted: 'Verdict submitted',
+  verdict_pending: 'Verdict pending',
+  watching: 'Watching',
 };
 
-const ARTIFACT_LABEL = { memo: 'Memo', spec: 'Spec', implPlan: 'Implementation plan' };
+// code.orchestrate-review's own artifact keys (SKILL.md §3's `artifacts` row): `lenses` and
+// `review` are the controller's own working notes; `postedReview`/`resolutions`/`verdict` are
+// written by the bound rounds it dispatches into. "Review" alone reads as ambiguous inside a
+// card whose whole subject is reviewing a PR — "Draft review" vs "Posted review" disambiguates
+// the synthesized-but-unposted comment set from what actually landed on GitHub.
+const ARTIFACT_LABEL = {
+  memo: 'Memo',
+  spec: 'Spec',
+  implPlan: 'Implementation plan',
+  lenses: 'Review lenses',
+  review: 'Draft review',
+  postedReview: 'Posted review',
+  resolutions: 'Resolution check',
+  verdict: 'Verdict',
+};
 
 const DISPATCH_TONE = { running: 'investigate', done: 'ok', failed: 'danger' };
 
@@ -176,6 +203,35 @@ function phaseChipOf(s) {
   return { label: PHASE_LABEL[s.phase] ?? humanizeKey(s.phase), tone };
 }
 
+// "Mark resolved" is one button doing three different jobs, so it reads as an undifferentiated
+// "give up" action unless the label/hint names which job applies here:
+//  - a FAILED step: the controller's sessionId is now permanent (engine.ts sets it once on
+//    spawn and never clears it outside onStepRetry), which is also what backs stepIsEditable —
+//    so Edit and Cancel both refuse once a session ever ran, and Retry only reproduces the
+//    same failure for a bad input. Resolving force-clears `.failure` (engine.ts's
+//    markStepResolved does this explicitly) and unblocks the group, so a corrected replacement
+//    step can be added below (the plan editor's "+ insert" after any step, incl. a failed
+//    one, has no such gate) — the recovery code.orchestrate-review's own SKILL documents.
+//  - code.orchestrate-review's `until: "closed"` vigil (phase `watching`, SKILL.md row 12):
+//    ending it here is the sanctioned way to close out a review the user is satisfied with,
+//    not an emergency measure — same button, different meaning.
+//  - anything else: the generic rescue for a step whose session died mid-run.
+function markResolvedInfo(s) {
+  if (s.state === 'failed') {
+    return {
+      label: 'Mark resolved — skip this step',
+      hint: 'This step already ran and failed; retrying reuses the same inputs. Marking it resolved unblocks the plan so you can add a corrected step below.',
+    };
+  }
+  if (s.phase === 'watching') {
+    return {
+      label: 'Mark resolved — end review',
+      hint: 'Ending the watch here is expected once you\'re satisfied with the outcome, not an emergency action.',
+    };
+  }
+  return { label: 'Mark resolved', hint: '' };
+}
+
 export function orchestratedRows(step) {
   const s = step ?? {};
   const artifacts = s.artifacts ?? {};
@@ -207,9 +263,13 @@ export function orchestratedRows(step) {
         feedback: s.gateFeedback ?? [],
       }
       : null,
-    // The manual fallback for a controller whose session died mid-step. Never offered
-    // once the step has settled — resolving a resolved step is a no-op that reads as a bug.
-    canMarkResolved: !s.cancelled && s.state !== 'resolved' && s.state !== 'failed',
+    // The manual fallback for a controller whose session died mid-step — and, since engine.ts's
+    // markStepResolved explicitly clears `.failure` on the way to 'resolved', also the escape
+    // for a FAILED step that Edit/Cancel can't reach once a session ever ran (see
+    // markResolvedInfo above). Never offered once the step has already settled — resolving a
+    // resolved step is a no-op that reads as a bug.
+    canMarkResolved: !s.cancelled && s.state !== 'resolved',
+    markResolved: markResolvedInfo(s),
   };
 }
 

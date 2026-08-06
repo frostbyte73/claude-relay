@@ -21,11 +21,25 @@ function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean)
 // must survive store-driven repaints without a round-trip.
 const editingPlanByJob = new Map();
 function isEditingPlan(jobId) { return editingPlanByJob.get(jobId) === true; }
+// Mirrors engine.ts's editStepManually/cancelStepManually exactly (their own comments
+// cross-reference this function) — once a session has ever run for a step, both refuse
+// server-side, so there is no point enabling these tools client-side only to 409. That
+// includes a FAILED step: its sessionId is set from turn 1 and never cleared outside a
+// Retry. The real escape for a broken failed step is "Mark resolved" (see markResolvedInfo
+// in vm/tracked.js) followed by inserting a corrected step — editBlockedReason below says so.
 function stepIsEditable(s) {
   if (s.cancelled) return false;
   if (s.sessionId) return false;
   if (s.state === 'resolved') return false;
   return true;
+}
+
+// The disabled tool's tooltip has to tell the truth: a FAILED step isn't "running or done",
+// and the fix isn't "wait" — it's mark-resolved-then-insert. Everything else keeps the
+// original wording.
+function editBlockedReason(s) {
+  if (s.failure) return 'Failed — mark resolved (⋯ menu), then add a corrected step below';
+  return 'Step already running or done';
 }
 
 function primaryRepo(job) {
@@ -95,12 +109,13 @@ function renderLaunchRow(job) {
 }
 
 function editTools(s, editable, canMoveUp, canMoveDown) {
+  const blockedReason = editBlockedReason(s);
   return `
     <div class="step-edit-tools" data-step-id="${escapeHtml(s.id)}">
       <button class="step-edit-tool" type="button" data-step-action="move-up"   aria-label="Move up"   ${canMoveUp ? '' : 'disabled'} title="Move up">▲</button>
       <button class="step-edit-tool" type="button" data-step-action="move-down" aria-label="Move down" ${canMoveDown ? '' : 'disabled'} title="Move down">▼</button>
-      <button class="step-edit-tool" type="button" data-step-action="edit-step" aria-label="Edit" ${editable ? '' : 'disabled'} title="${editable ? 'Edit step' : 'Step already running or done'}">✎</button>
-      <button class="step-edit-tool danger" type="button" data-step-action="cancel-step" aria-label="Cancel" ${editable ? '' : 'disabled'} title="${editable ? 'Cancel step' : 'Step already running or done'}">×</button>
+      <button class="step-edit-tool" type="button" data-step-action="edit-step" aria-label="Edit" ${editable ? '' : 'disabled'} title="${editable ? 'Edit step' : escapeHtml(blockedReason)}">✎</button>
+      <button class="step-edit-tool danger" type="button" data-step-action="cancel-step" aria-label="Cancel" ${editable ? '' : 'disabled'} title="${editable ? 'Cancel step' : escapeHtml(blockedReason)}">×</button>
     </div>
   `;
 }
