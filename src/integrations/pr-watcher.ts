@@ -159,6 +159,12 @@ function parsePrUrl(url: string): { owner: string; repo: string; number: string 
   return m ? { owner: m[1]!, repo: m[2]!, number: m[3]! } : null;
 }
 
+// A step's own prUrl (stored or supplied by the planner/controller in `inputs`) reaches
+// `gh` as a subprocess argument, so it gets the strict, anchored check — unlike the
+// permissive `parsePrUrl` above, which only ever runs against a URL `gh pr list` itself
+// returned (trusted GitHub output, not attacker-reachable text).
+const KNOWN_PR_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/pull\/\d+$/;
+
 // Which watched signals the freshly polled facts actually moved. This is the whole of
 // what the watcher tells a controller: what changed, never what it means.
 function changedSignals(prev: PrFacts, next: Partial<PrFacts>): WatchedEvent[] {
@@ -309,22 +315,57 @@ export class PrWatcher {
     for (const s of j.steps) {
       if (s.type !== 'orchestrated' || s.cancelled) continue;
       if (s.state === 'resolved' || s.state === 'failed') continue;
-      // Only a writable workspace can carry a branch, and only a branch can carry a PR.
       const ws = s.workspace;
-      if (ws.kind !== 'writable') continue;
-      await this.syncStep(jobId, s, ws.repoCwd, ws.branch).catch((e) => {
-        console.error(`[pr-watcher] ${jobId} ${s.id} ${s.pr?.prUrl ?? ws.branch}: ${(e as Error).message}`);
+      if (ws.kind === 'writable') {
+        // Only a writable workspace can carry a branch, and only a branch can carry a PR.
+        await this.syncStep(jobId, s, ws.repoCwd, ws.branch).catch((e) => {
+          console.error(`[pr-watcher] ${jobId} ${s.id} ${s.pr?.prUrl ?? ws.branch}: ${(e as Error).message}`);
+        });
+        continue;
+      }
+      // A readonly workspace (e.g. a review step, detached at the PR head) has no branch
+      // of its own to discover by — its checkout has nothing to do with the PR's source
+      // branch — so it only qualifies once it already knows its PR, from either a prior
+      // poll (`s.pr.prUrl`) or the planner/controller (`s.inputs.prUrl`). `kind: 'none'`
+      // has no repoCwd to run `gh` in at all; rather than guess one (the daemon's own cwd
+      // is unrelated to the PR's repo and untested as a `gh` invocation dir), skip it —
+      // nothing in the catalog currently produces that combination.
+      if (ws.kind !== 'readonly') continue;
+      const knownUrl = this.knownPrUrl(s);
+      if (!knownUrl) continue;
+      await this.syncStep(jobId, s, ws.repoCwd, undefined, knownUrl).catch((e) => {
+        console.error(`[pr-watcher] ${jobId} ${s.id} ${knownUrl}: ${(e as Error).message}`);
       });
     }
   }
 
-  private async syncStep(jobId: string, s: OrchestratedStep, cwd: string, branch: string): Promise<void> {
+  private knownPrUrl(s: OrchestratedStep): string | undefined {
+    const stored = s.pr?.prUrl;
+    if (stored && KNOWN_PR_URL_RE.test(stored)) return stored;
+    const input = s.inputs?.prUrl;
+    return typeof input === 'string' && KNOWN_PR_URL_RE.test(input) ? input : undefined;
+  }
+
+  private async syncStep(
+    jobId: string,
+    s: OrchestratedStep,
+    cwd: string,
+    branch: string | undefined,
+    knownUrl?: string,
+  ): Promise<void> {
     const prev: PrFacts = s.pr ?? {};
     if (prev.prState === 'merged') return;
 
     const facts: Partial<PrFacts> = {};
     let prUrl = prev.prUrl;
-    if (!prUrl) {
+    if (!prUrl && knownUrl) {
+      // Already known by URL (a readonly review step) — never run discovery, and never
+      // touch the discovery-miss bound below; that bound exists only for steps guessing
+      // a PR from a branch, which this step isn't doing.
+      prUrl = knownUrl;
+      facts.prUrl = prUrl;
+    } else if (!prUrl) {
+      if (!branch) return;
       // PR discovery: nothing in the catalog opens the PR — code.implement leaves uncommitted
       // edits and the user pushes and opens it by hand — so matching the step's branch is the
       // only way the daemon ever learns the URL.
