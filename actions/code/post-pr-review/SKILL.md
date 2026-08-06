@@ -58,7 +58,7 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 | Field | What it is |
 |---|---|
 | `boundNote` | **The approved payload.** One entry per comment: file path, line, and the exact body. This is what the user saw at the gate — it wins over everything else, including your own memory of the review. |
-| `artifacts.findings` | The review round's full findings, for context. Only the ones named in `boundNote` are approved. |
+| `artifacts.review` | The synthesis round's full comment set, for context. Only the ones named in `boundNote` are approved. |
 | `artifacts.postedReview` | What an earlier round already posted. Never post one of these twice. |
 | `pr.prUrl` / `inputs.prUrl` | The PR to review. |
 | `gateFeedback` | Anything the user wrote when approving. A wording change there is also approved text — apply it. |
@@ -90,9 +90,13 @@ the payload with the **Write tool** to a path directly under `/tmp/`:
 Write({ file_path: "/tmp/outpost-review-<PR_NUMBER>.json", content: "…" })
 ```
 
-`/tmp/` is the only place this action may write, and the filename must be a **literal** —
-write the PR number into it yourself rather than letting the shell expand a variable, or
-the post in Step 4 is denied.
+Outside this step's own worktree, `/tmp/` is the only place this action may write. The
+worktree auto-allows via session scope — an `Edit`/`Write` under it succeeds rather than
+denying — but it is a throwaway detached PR-head checkout, `git worktree remove --force`d
+when the step settles: nothing you leave there survives, and nothing there reaches the PR.
+The payload has to be somewhere `gh` can still read it and somewhere the allowlist pins, so
+put it in `/tmp/`, and make the filename a **literal** — write the PR number into it yourself
+rather than letting the shell expand a variable, or the post in Step 4 is denied.
 
 The payload shape:
 
@@ -176,15 +180,31 @@ ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__sub
 `artifacts.postedReview` is the **only** durable record that these comments went out, and
 the controller's ladder reads it to know this rung is done. It also has to be
 machine-checkable, because `code.verify-resolutions` walks it comment by comment on a later
-round. Write the review id first, then one line per comment: path, line, outcome, and the
-first 80 characters of the body.
+round.
+
+**First line: the review id and the commit you posted against**, exactly
+`review: <id> (commit <headRefOid from Step 2>)`. The commit is not decoration. The
+controller's rung 8 fires on "the PR's head differs from the last head I verified", and this
+line is where it initialises that value; `code.verify-resolutions` uses the same sha as the
+left-hand side of its compare range. A `postedReview` whose first line has no commit leaves
+that rung unreadable, and an unreadable rung either never fires (the controller waits forever
+while the author pushes fix after fix) or fires on every wake.
+
+Then one line per comment: path, line, outcome, and the first 80 characters of the body.
+
+**Your `memo` replaces the controller's, wholesale.** The daemon overwrites `memo` with
+whatever this submit carries — it does not merge, and there is no second copy. Everything the
+controller was keeping there is gone unless you write it again: the head sha, what the review
+concluded and why, and any waiver or instruction the user gave it. Carry that narrative
+forward and add your line to it. A memo that is only a status line costs the controller a
+whole round to rebuild, and costs the review's reasoning outright.
 
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "review_posted",
-  memo: "posted review <id> on <PR_URL>: <n> line comments, <m> degraded to body",
+  memo: "posted review <id> on <PR_URL> against head <headRefOid>: <n> line comments, <m> degraded to body. Last verified head: <headRefOid>. <then the controller's own narrative, carried forward verbatim: what the review concluded, and any user override it had recorded>",
   artifacts: { postedReview: "review: 2314567890 (commit abc1234)\n- src/work/orchestrator.ts:412 — posted — \"This re-enters mutate() while the previous mutation is still…\"\n- src/pwa/app.js:88 — degraded-to-body (line not in diff) — \"The listener is never removed, so a second boot double-fires…\"" },
   next: { kind: "self-round" }
 })
@@ -198,14 +218,16 @@ resolutions, or submit a verdict — so do not pick that yourself.
 
 Nothing to post, or the post failed. Same hand-back, with the reason in `memo`, and **no**
 `postedReview` artifact — an empty artifact would falsify the controller's rung and it
-would never retry:
+would never retry. This is the path where the memo matters most: the controller's rows 7 and
+10 have no artifact to read, so your line *is* the record, and it still replaces everything
+that was there. Name what `gh` said, then carry the controller's narrative forward.
 
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "review_pending",
-  memo: "posted nothing: <boundNote was empty / no prUrl / gh said '<stderr>'>",
+  memo: "posted nothing: <boundNote was empty / no prUrl / gh said '<stderr>'>. <then the controller's narrative, carried forward>",
   next: { kind: "self-round" }
 })
 ```

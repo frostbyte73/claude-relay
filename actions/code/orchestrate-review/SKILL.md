@@ -44,7 +44,7 @@ cat "$OUTPOST_ENVELOPE"
 | `workspace` | `{"kind":"readonly","repoCwd":…,"ref":"refs/pull/<n>/head"}` — a detached checkout of the PR's head. Your cwd is already that worktree. **It has no branch and nothing uncommitted**; see §1b. |
 | `phase` | The label you or your last bound round set. One of the strings in §3. |
 | `memo` | What you wrote last turn. Your only durable memory (§5). Empty on your first turn. |
-| `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on four: `lenses` (yours), `review` (yours), `postedReview` (from `code.post-pr-review`), `resolutions` (`code.verify-resolutions`), `verdict` (`code.submit-pr-verdict`). Anything else you store is yours. |
+| `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on five: `lenses` (yours), `review` (yours), `postedReview` (from `code.post-pr-review`), `resolutions` (`code.verify-resolutions`), `verdict` (`code.submit-pr-verdict`). Anything else you store is yours. |
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every lens you fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `comments[]`. **No head sha** — see §4. |
@@ -149,7 +149,7 @@ Your six moves:
 | Move | Payload | What the daemon does |
 |---|---|---|
 | `self-round` | `{kind:"self-round", action?, note?}` | Resumes *your* session, optionally rebound to `action`'s skill and permissions, with `note` as `boundNote`. |
-| `dispatch` | `{kind:"dispatch", dispatches:[{action, brief, inputs?, workspace?, retryOf?}]}` | Spawns one fresh child session per entry and parks you until all settle. Each child sees **only its brief** — no memo, no artifacts, no envelope of yours. |
+| `dispatch` | `{kind:"dispatch", dispatches:[{action, brief, inputs?, workspace?, retryOf?}]}` | Spawns one fresh child session per entry and parks you until all settle. A child's envelope is built fresh: its brief (as `goal` and `description`), whatever you put in `inputs`, its workspace, the job's `source`/`title`/`description`/`externalRef`, and journal lessons for its own action. **Nothing of yours travels with it** — no memo, no artifacts, no `pr` facts, no sibling's output, and `previousSteps` is empty. |
 | `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?, resumeAt?}}` | Parks the step until one of `events` fires, all dispatches settle, or `resumeAt` passes. `reason` is shown to the user. |
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user. **You never need this one** — see below. |
 | `resolve` | `{kind:"resolve", output}` | Step done. `output` is the summary the job keeps. |
@@ -201,16 +201,21 @@ of its condition.
 | 10 | No `artifacts.verdict` and your memo records a verdict round that handed back without submitting | — (terminal) | `resolve` if `artifacts.postedReview` exists (the comments reached the author; only the verdict didn't), else `fail` — with `gh`'s reason either way | `done` / `failed` |
 | 11 | `artifacts.verdict` present and `inputs.until !== "closed"` | — (terminal) | `resolve` with the verdict and the PR URL | `done` |
 | 12 | `artifacts.verdict` present and `inputs.until === "closed"` | `pr.prState` reaches `merged`/`closed` (row 2), or the user marks the step resolved | `wait` on `["pr-state"]` — unless `roundsRemaining <= 4`, then `resolve` with the verdict and a line saying the PR was still open | `watching` |
-| 13 | Nothing above matches | a delivery wakes you | `wait` on `["pr-comments","ci","pr-state"]` | `awaiting_response` |
+| 13 | Nothing above matches | a delivery wakes you | `wait` on `["pr-comments","ci","pr-state"]` **and** a `resumeAt` six hours out — a push on its own fires none of those events | `awaiting_response` |
 
 Three of these rows read a fact only *you* can record, so record it (§5):
 
 - **Row 8's "last verified head."** `pr` carries no head sha, so nothing in the envelope can
-  tell you whether the author has pushed since your last verify. Your memo is the record. Set
-  it to `postedReview`'s commit the moment the post round lands, and update it on every verify
-  round. Without it row 8 either never fires (and you sit in row 13 forever while the author
-  pushes fix after fix) or fires on every wake (and you burn the budget re-verifying an
-  unchanged head).
+  tell you whether the author has pushed since your last verify. Your memo is the primary
+  record: initialise it to the commit on `postedReview`'s first line the moment the post round
+  lands, and re-state it every decision turn. **Memo is replaced wholesale, not merged** — the
+  daemon overwrites it with whatever the next submit sends, and the three bound rounds submit
+  too, so anything you don't rewrite is gone. Both artifact-writing rounds put the head they
+  worked against on their artifact's first line (`postedReview`: `review: <id> (commit <sha>)`;
+  `resolutions`: `verified against <sha>`), and artifacts *are* merged — so if a memo ever comes
+  back without the sha, recover it from the later of those two rather than guessing. Without it
+  row 8 either never fires (and you sit in row 13 forever while the author pushes fix after fix)
+  or fires on every wake (and you burn the budget re-verifying an unchanged head).
 - **Rows 7 and 10's "handed back."** `code.post-pr-review` and `code.submit-pr-verdict` write
   **no** artifact when they could not do their job — deliberately, so an empty artifact can't
   falsify a rung. That leaves your memo as the only record that the round ran and failed. Name
@@ -271,8 +276,10 @@ Then dispatch them **in one move**, in parallel:
 
 **`inputs.diffRange` is not optional here.** Omit `workspace` on the dispatch entry — a child
 inherits your readonly PR-head ref, which is what you want — but `diffRange` you must set, in
-the **three-dot** form. `git diff A...B` is `git diff $(git merge-base A B) B`: what this
-branch actually changed since it forked. Two dots would drag in everything that landed on the
+the **three-dot** form. `git diff A...B` *means* `git diff $(git merge-base A B) B`: what this
+branch actually changed since it forked. That expansion is the semantics, not a command —
+`git merge-base` is not granted to this action or to any lens, and running it is denied. Write
+the three dots and let git find the base. Two dots would drag in everything that landed on the
 base branch after the fork and the lens would flag other people's code as the PR author's.
 `origin/<baseRefName>...<headRefOid>` is the spelling to use, after the `git fetch` above. If
 `origin/<baseRefName>` doesn't resolve in this checkout, take the merge base from GitHub
@@ -280,7 +287,8 @@ instead — `gh api "repos/{owner}/{repo}/compare/<base>...<head>"`, field
 `.merge_base_commit.sha` — and pass `<mergeBaseSha>...<headRefOid>`.
 
 **Write briefs that stand alone, and that say what the other lenses are covering.** A child's
-entire context is its brief: it cannot see your memo, your envelope, or the other two children.
+context is its brief plus the job's own title and description: it cannot see your memo, your
+artifacts, the `pr` facts, or the other two children.
 Each brief needs the PR URL and number, its title and what its description claims it does, the
 author, the base branch, the file list (or its shape, if it is long), `inputs.goal` if the
 review is narrower than general, and **one line naming the other lenses running in parallel and
@@ -316,8 +324,28 @@ out of `note` gets posted.
 
 ### Rungs 8, 9, 13 in detail — the response loop and its budget
 
-Row 13 parks you on `["pr-comments","ci","pr-state"]`. When something fires, re-read the PR and
-compare its head against the one your memo names.
+Row 13 parks you on `["pr-comments","ci","pr-state"]` **and a `resumeAt`**. When something
+fires, re-read the PR and compare its head against the one your memo names.
+
+**Arm the `resumeAt`, because a push is not a watched signal.** The watcher derives events by
+diffing `PrFacts` — CI state, review state, PR state/mergeability, and a hash of the comment
+thread. There is no head sha in `PrFacts` and no "the branch moved" event. So a push wakes you
+only *incidentally*: because it kicked CI, because it flipped mergeability, or because the
+author also commented. On a repo with no CI checks, a silent fixup or a force-push moves
+nothing the watcher can see, and a `wait` on events alone parks you until the PR is closed
+under you. `resumeAt` is the backstop — the daemon arms a real timer for it and delivers a
+`timer` item when it elapses, which is the only way that `wait` ever ends on its own.
+
+Six hours (`resumeAt: <now + 21600000>` in epoch ms) is the interval to use. Anything a PR
+author does that moves a watched signal still reaches you within a minute — the watcher
+escalates to a 1m/5m/15m re-poll ladder the moment it sees a change — so the timer only has to
+catch the *silent* case, which is a human on a human's schedule. It is not free: a timer wake
+that finds an unchanged head costs two rounds (the delivery, plus the `wait` you re-arm), so
+six hours spends about eight rounds a day of silence and the budget still covers the better
+part of a week. An hour would burn it in two days for no signal you didn't already have.
+
+Rung 12 is the exception that proves this: its vigil waits for a merge or a close, and *those*
+genuinely move `pr-state`. Do not arm a `resumeAt` there.
 
 **A reply is not a push.** An author writing "good catch, fixed" moves `pr.comments` but not
 the head, and row 8 correctly does not fire: `code.verify-resolutions` judges the diff, never
@@ -331,7 +359,8 @@ synthesis-and-post move, the post round's hand-back, the first wait, then the ve
 its hand-back, and the resolve. (The two force-gates are free — an approved gate runs its
 deferred move without charging a round.) So the loop has room for about eighteen rounds of
 push-and-recheck, which is more than any real review needs, and you should never be near the
-wall on an honest one.
+wall on an honest one. Fruitless timer wakes come out of the same seventy-two, two at a time —
+the other half of why rung 13's `resumeAt` is six hours and not one.
 
 **If you are near it anyway, submit the verdict you have.** Row 9's `roundsRemaining <= 10`
 clause exists for exactly this: at ten rounds left you stop waiting for the author, take the
@@ -375,14 +404,19 @@ before deciding — never infer the state of the world from the event name.
 jq -r '.pr | "prState=\(.prState) ci=\(.ciState) review=\(.reviewState) comments=\(.comments|length)"' "$OUTPOST_ENVELOPE"
 ```
 
-Expect spurious wakes — a `wait` on one signal can fire for a neighbouring one, and a batch can
-carry several events at once. Re-derive your position from `pr` + `artifacts` + your memo every
-time; if nothing you care about actually changed, `wait` again with the same spec rather than
-inventing work.
+Expect spurious wakes — a `wait` on one signal can fire for a neighbouring one, a batch can
+carry several events at once, and on rung 13 a `timer` item just means six hours passed. Re-derive
+your position from `pr` + `artifacts` + your memo every time; if nothing you care about actually
+changed, `wait` again with the same *events* rather than inventing work — but compute a **fresh**
+`resumeAt` from the current time. `resumeAt` is an absolute epoch-ms deadline, so re-sending the
+one that just elapsed fires the timer again immediately and spins the step through its budget.
 
 **`pr` has no head sha, and that is the one fact rung 8 turns on.** The watcher reports state,
-CI, reviews and comments; it does not report what the branch points at. So the head comparison
-is a read you do yourself on the decision turn:
+CI, reviews and comments; it does not report what the branch points at. Two consequences, both
+load-bearing. First, **there is no push event** — the four signals you can wait on are
+`ci`, `review-state`, `pr-state` and `pr-comments`, and a push that doesn't kick CI, change
+mergeability or come with a comment moves none of them, which is why rung 13 arms a `resumeAt`
+as well. Second, the head comparison is a read you do yourself on the decision turn:
 
 ```bash
 gh pr view "$PR_URL" --json headRefOid,state,comments
@@ -399,11 +433,14 @@ the verdict mentions and the author fixes.
 ## 5. Write `memo` every turn
 
 The memo is replayed to you and is the only thing that survives a compaction or a cold resume.
-Rewrite it in full each turn — it is a narrative, not an append-only log. Write for a version
-of you that remembers nothing. This step's memo has five jobs no artifact does:
+Rewrite it in full each turn — it is a narrative, not an append-only log, and the daemon
+**replaces** it with each submit rather than merging. That includes the submits your three bound
+rounds make: they are told to carry your narrative forward, but the mechanism is them rewriting
+it, not the daemon preserving it. Write for a version of you that remembers nothing. This step's
+memo has five jobs no artifact does:
 
 - **The head sha you last verified against.** Row 8 is unreadable without it. Initialise it to
-  `postedReview`'s commit.
+  the commit on `postedReview`'s first line, and restate it every turn.
 - **What the review actually concluded** — the shape of the change, what you decided was wrong
   with it and why, and what you looked at and deliberately did not comment on. This is what
   makes `code.verify-resolutions` able to tell "they fixed it" from "they touched that line."
@@ -420,10 +457,17 @@ cost the review's reasoning, which nothing else holds. Be specific.
 
 Do not post a comment, submit a review, merge, close, push, or commit. Not from a decision
 turn, and not "just this once" from a work turn whose bound action doesn't do it. This is
-somebody else's repository. Your own grant is reads — the worktree, the envelope, and
-`gh pr view` / `gh pr diff` / `gh pr checks` / `gh api` in its GET form. The two writes this
-step makes belong to `code.post-pr-review` and `code.submit-pr-verdict`, which carry the
-permissions for them and which the daemon gates before they run.
+somebody else's repository. Everything your own grant reaches is a read — the worktree, the
+envelope, and `gh pr view` / `gh pr diff` / `gh pr checks` / `gh api` in its GET form. The two
+writes this step makes belong to `code.post-pr-review` and `code.submit-pr-verdict`, which carry
+the permissions for them and which the daemon gates before they run.
+
+The one thing that *is* writable is this step's own worktree: paths under it auto-allow via
+session scope, so an `Edit`/`Write` there succeeds rather than denying. Don't read that as
+permission to do anything. It is a throwaway detached PR-head checkout with no branch,
+`git worktree remove --force`d the moment the step settles — nothing you leave in it reaches
+the PR, reaches the author, or is still there next round. Editing somebody else's code in it is
+pure noise that a later `git diff` will then mislead you with.
 
 In particular: **do not "just add a note" on the PR** between the review and the verdict. There
 is no third write in this step's catalog, and there is no gate that would have shown it to the
@@ -495,7 +539,8 @@ Other `next` shapes:
 { kind: "self-round", action: "code.submit-pr-verdict",
   note: "REQUEST_CHANGES — 2 of 5 unaddressed: src/pwa/app.js:88 (listener still never removed), src/git/git-ops.ts:210 (unclear, ask). User waived src/work/orchestrator.ts:412 — says the re-entrancy is pre-existing." }
 { kind: "wait", wait: { reason: "Review posted — watching for the author's push",
-                        events: ["pr-comments", "ci", "pr-state"] } }
+                        events: ["pr-comments", "ci", "pr-state"],
+                        resumeAt: <epoch ms, six hours out> } }   // a silent push fires no event
 { kind: "wait", wait: { reason: "Verdict submitted — holding the step open until the PR merges or closes",
                         events: ["pr-state"] } }
 { kind: "resolve", output: "REQUEST_CHANGES on <prUrl>: 2 of 5 comments unaddressed." }
@@ -529,7 +574,8 @@ the only place `meta.improve-actions` looks. Name the exact command or field.
   accept it as a clean bill of health — that is the failure this whole step is shaped to avoid.
   Re-derive the range (§ rung 3) and re-brief the lens.
 - **Woken with nothing new.** Re-derive from `pr` + `artifacts` + the head sha in your memo. If
-  your position is unchanged, `wait` again with the same spec — don't manufacture a round.
+  your position is unchanged, `wait` again on the same events with a **fresh** `resumeAt` — don't
+  manufacture a round, and don't resend the deadline that just elapsed.
 - **The author force-pushed.** The commit `postedReview` anchored to is gone, your line comments
   may be orphaned on GitHub, and `compare` against it fails. `code.verify-resolutions` handles
   this by falling back to the whole PR diff; update the head sha in your memo and let it.

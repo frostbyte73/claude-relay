@@ -182,7 +182,9 @@ Any "no" on a load-bearing item → keep investigating, or record the gap in `ri
 
 ## Step 5 — Compose the plan
 
-**Gate — no ungrounded PR step.** Before you emit any `orchestrated` PR step, confirm both: (1) its target repo was chosen from evidence you can cite, and (2) its `inputs.approach` names real files/functions you read *this run*. If either is missing, do NOT emit it — instead surface the unknown in `risks` and stop at that boundary, or, if the missing piece can only be resolved during execution, emit a `read.investigate` step for it. A guessed PR step is the single most expensive mistake here (CS-1105): it burns a worktree on a plan shape you couldn't yet see.
+**Gate — no ungrounded PR step.** Before you emit any `orchestrated` step with `controller: "code.orchestrate-pr"`, confirm both: (1) its target repo was chosen from evidence you can cite, and (2) its `inputs.approach` names real files/functions you read *this run*. If either is missing, do NOT emit it — instead surface the unknown in `risks` and stop at that boundary, or, if the missing piece can only be resolved during execution, emit a `read.investigate` step for it. A guessed PR step is the single most expensive mistake here (CS-1105): it burns a worktree on a plan shape you couldn't yet see.
+
+**The gate is scoped to `code.orchestrate-pr` on purpose.** A `code.orchestrate-review` step has no `approach` — its inputs are `prUrl` / `until` / `goal`, and the whole point is that it reads the PR itself. Do not invent an `approach` for one to get it past this gate; that would be a fabricated finding, which is exactly what the gate exists to stop. Its own grounding requirement is different and narrower: the `prUrl` must be the exact `https://github.com/<owner>/<repo>/pull/<n>` form (no `/files`, no trailing slash, no fragment — the controller hard-fails on turn 1 otherwise), and `workspace.repoCwd` must be a path that exists on disk, per Step 3.
 
 For each step you emit, fill the fields the catalog requires for its `type`. Refer to `stepTypeCatalog` for the step shapes and `actionCatalog` for action names + their input/output schemas.
 
@@ -203,6 +205,25 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
     "risks": "..."                                      // optional bullets
   },
   "workspace": { "kind": "writable", "repoCwd": "/path/to/api-server", "branch": "fix/dropping-rpc" }
+}
+```
+
+```jsonc
+// A review of somebody else's PR: one controller action owns it end to end — fan out the
+// review lenses, synthesize one comment set, post it, watch what the author does, submit a
+// verdict. No `approach`; it reads the PR itself. Do NOT plan its rounds.
+{
+  "type": "orchestrated",
+  "controller": "code.orchestrate-review",
+  "title": "Review PR #482 in livekit/protocol",       // short, scannable
+  "description": "...",                                // 1-2 sentences for the UI
+  "goal": "...",                                       // user-visible outcome
+  "inputs": {
+    "prUrl": "https://github.com/livekit/protocol/pull/482",  // exact form; no /files, no trailing slash
+    "until": "closed",                                 // optional; omit for the default "approved"
+    "goal": "..."                                      // optional; only when narrower than a general review
+  },
+  "workspace": { "kind": "readonly", "repoCwd": "/path/to/protocol", "ref": "refs/pull/482/head" }
 }
 ```
 

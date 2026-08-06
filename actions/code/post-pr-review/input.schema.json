@@ -29,7 +29,7 @@
     "memo": { "type": "string" },
     "artifacts": {
       "type": "object",
-      "description": "`findings` holds the review round's full findings; `postedReview` records what an earlier round already posted.",
+      "description": "`review` holds the synthesis round's full comment set; `postedReview` records what an earlier round already posted — its first line is `review: <id> (commit <sha>)`, the head the review was anchored to.",
       "additionalProperties": { "type": "string" }
     },
     "boundAction": {
