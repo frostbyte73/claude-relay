@@ -207,7 +207,10 @@ headroom rather than discovering the wall. Separately, at most **three**
 it moves `phase` or writes an `artifacts` entry whose content differs from what was already
 there — a redraft under the same key counts, a byte-identical resubmit does not. Anything else
 — same phase, nothing new written — charges the count. A `dispatch`, `wait`, or `gate` (yours
-or one the daemon imposed on an external write), or a fresh delivery, resets it outright.
+or one the daemon imposed on an external write), or a delivery carrying a fresh *external* event
+(a watcher tick, a user message, a dispatch finishing), resets it outright. A delivery that only
+hands back your own last move — a policy rejection, a declined gate — deliberately does **not**,
+so you cannot clear the count by tripping a rejection between rounds.
 Walking the ladder (`spec` → `plan` → `implement`) never approaches the cap; three rounds that
 show nothing new do, and that is the signal to park on a `wait`, gate it, or dispatch it — not
 to push a fourth.
