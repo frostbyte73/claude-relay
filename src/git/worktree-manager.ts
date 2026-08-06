@@ -1,7 +1,10 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import type { WorkspaceRef } from '../work/work-types.js';
+
+const execFileP = promisify(execFile);
 
 export interface WorktreeRecord {
   sessionId: string;
@@ -36,18 +39,29 @@ const FETCH_TIMEOUT_MS = 20_000;
 // GitHub serves refs/pull/<N>/head but a normal clone never fetches it — `N` is digits-only
 // from this capture, so it can never be argv-flag-shaped.
 const PR_REF_RE = /^refs\/pull\/(\d+)\/head$/;
+// The namespace fetchPrHead writes into. Exclusively the daemon's, which is what makes it
+// safe to delete on teardown and to sweep at start-up.
+const OUTPOST_PR_REF_RE = /^refs\/outpost\/pr-\d+$/;
 
 export class WorktreeManager {
   private records = new Map<string, WorktreeRecord>();
   private readonly indexPath: string;
   protected readonly root: string;
   protected readonly projectsRoot: string;
+  // In-flight PR-head fetches keyed by repo+PR number. A review step fans out to several
+  // lenses that provision the same PR at once; without this each child spawns its own
+  // `git fetch` of the identical refspec against the same repo.
+  private readonly prFetches = new Map<string, Promise<void>>();
+  // Ordered before any PR fetch so the sweep can't delete a ref a concurrent provision
+  // just wrote. Nothing awaits the manager's construction, so this is the handle.
+  private readonly startupSweep: Promise<void>;
 
   constructor(opts: WorktreeManagerOpts) {
     this.root = opts.root;
     this.projectsRoot = opts.projectsRoot;
     this.indexPath = join(this.root, 'index.json');
     this.load();
+    this.startupSweep = this.sweepStalePrRefs().catch(() => { /* best-effort */ });
   }
 
   get(sessionId: string): WorktreeRecord | undefined {
@@ -103,7 +117,7 @@ export class WorktreeManager {
     const branch = opts.branch ?? `outpost/${shortId}`;
     const worktreePath = join(this.root, opts.sessionId);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    const startRef = resolveStartRef(opts.projectCwd, opts.baseBranch);
+    const startRef = await this.resolveStartRef(opts.projectCwd, opts.baseBranch);
 
     // If this branch is already checked out somewhere, decide whether to adopt it.
     // Primary working tree: park it on baseBranch if clean (so we can move the branch into
@@ -180,7 +194,15 @@ export class WorktreeManager {
   // Job-step entry point: dispatches on workspace kind. Worktree-bound steps
   // share the same per-id worktree store; readonly variants are created in detached
   // mode (no branch). `none` is a no-op for steps that don't need a checkout.
-  async provision(stepId: string, ref: WorkspaceRef): Promise<{ path: string | null }> {
+  // `expectRepo` ("owner/repo") cross-checks the caller's independent knowledge of which
+  // GitHub repo the work belongs to against `repoCwd`'s own origin. The planner picks
+  // repoCwd; a wrong pick still holds refs/pull/<N>/head for its own PR #N, so the fetch
+  // succeeds and the step reviews an unrelated diff with no error anywhere.
+  async provision(
+    stepId: string,
+    ref: WorkspaceRef,
+    opts: { expectRepo?: string } = {},
+  ): Promise<{ path: string | null }> {
     if (ref.kind === 'none') return { path: null };
     if (!SESSION_ID_RE.test(stepId)) {
       throw new Error(`invalid stepId: ${JSON.stringify(stepId)}`);
@@ -192,6 +214,7 @@ export class WorktreeManager {
       const rec = this.records.get(stepId)!;
       if (!rec.archivedAt) return { path: rec.worktreePath };
     }
+    if (opts.expectRepo) await assertOriginRepo(ref.repoCwd, opts.expectRepo);
     if (ref.kind === 'writable') {
       const baseBranch = resolveBaseBranch(ref.repoCwd);
       const rec = await this.create({ sessionId: stepId, projectCwd: ref.repoCwd, baseBranch, branch: ref.branch });
@@ -201,21 +224,25 @@ export class WorktreeManager {
     // NOT `HEAD` — that's whatever branch the user's primary checkout happens to sit on
     // (often an unrelated feature branch), so investigations would read a tree that answers
     // a different question than "what does main do today".
-    let at = ref.ref ?? resolveStartRef(ref.repoCwd, resolveBaseBranch(ref.repoCwd));
+    let at = ref.ref ?? await this.resolveStartRef(ref.repoCwd, resolveBaseBranch(ref.repoCwd));
     if (!BRANCH_NAME_RE.test(at)) throw new Error(`invalid ref: ${JSON.stringify(at)}`);
-    // A PR head the machine has never seen isn't a ref a normal clone has locally — fetch it
-    // (best-effort, mirrors fetchBase()) into a local ref before handing `at` to `worktree add`.
-    // Skip the fetch entirely when it already resolves: provision() is on the hot path for
-    // every step, so an already-fetched PR head must cost zero subprocesses.
-    if (ref.ref) {
-      const prMatch = PR_REF_RE.exec(at);
-      if (prMatch && !refExists(ref.repoCwd, `${at}^{commit}`)) {
-        fetchPrHead(ref.repoCwd, prMatch[1]!);
-        const local = `refs/outpost/pr-${prMatch[1]}`;
-        // Only switch once the fetch has actually landed it. Pointing `at` at a ref the fetch
-        // failed to create makes git blame a name the caller never asked for.
-        if (refExists(ref.repoCwd, `${local}^{commit}`)) at = local;
+    // A PR head is fetched into our own `refs/outpost/pr-<N>` and the worktree is cut from
+    // THAT ref, never from the caller's `refs/pull/<N>/head`: a clone configured with
+    // `remote.origin.fetch = +refs/pull/*/head:refs/pull/*/head` keeps its own copy of the
+    // caller's spelling, which goes stale the instant the PR author force-pushes. So there
+    // is no local ref whose presence proves freshness, and the fetch is unconditional —
+    // concurrent provisions of one PR share it (prFetches), which is the case the skip was
+    // really written for. If it can't land, fail: silently reviewing the pre-force-push
+    // tree is worse than a step that reports it couldn't reach origin.
+    const prMatch = ref.ref ? PR_REF_RE.exec(at) : null;
+    if (prMatch) {
+      await this.startupSweep;
+      const local = `refs/outpost/pr-${prMatch[1]}`;
+      await this.fetchPrHead(ref.repoCwd, prMatch[1]!);
+      if (!await refExists(ref.repoCwd, `${local}^{commit}`)) {
+        throw new Error(`could not fetch ${at} from origin in ${ref.repoCwd}`);
       }
+      at = local;
     }
     const worktreePath = join(this.root, stepId);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -352,14 +379,131 @@ export class WorktreeManager {
     try {
       execFileSync('git', ['-C', rec.projectCwd, 'worktree', 'prune'], { stdio: 'pipe' });
     } catch { /* best-effort */ }
-    try {
-      execFileSync(
-        'git',
-        ['-C', rec.projectCwd, 'branch', '-D', '--', rec.branch],
-        { stdio: 'pipe' },
-      );
-    } catch { /* branch may already be gone */ }
+    if (rec.branch) {
+      try {
+        execFileSync(
+          'git',
+          ['-C', rec.projectCwd, 'branch', '-D', '--', rec.branch],
+          { stdio: 'pipe' },
+        );
+      } catch { /* branch may already be gone */ }
+    }
+    // A readonly PR checkout carries no branch, so the `branch -D` above never applied to it
+    // and its `refs/outpost/pr-<N>` outlived every worktree that used it — permanently pinning
+    // that PR's object graph against `git gc` in a repo the daemon doesn't own. Deleting it
+    // while another lens is still detached at the same commit is safe: that worktree's own
+    // HEAD keeps the objects reachable.
+    if (rec.baseRef && OUTPOST_PR_REF_RE.test(rec.baseRef)) {
+      deleteRef(rec.projectCwd, rec.baseRef);
+    }
   }
+
+  // Refs a previous daemon left behind — it died between `worktree add` and teardown, or ran a
+  // build that never deleted them at all. Bounded to repos we hold a record for; the
+  // refs/outpost namespace is exclusively ours, so anything in it with no live record is dead.
+  async sweepStalePrRefs(): Promise<void> {
+    const repos = new Set<string>();
+    const live = new Set<string>();
+    for (const r of this.records.values()) {
+      if (!r.projectCwd) continue;
+      repos.add(r.projectCwd);
+      if (!r.archivedAt && r.baseRef && OUTPOST_PR_REF_RE.test(r.baseRef)) {
+        live.add(`${r.projectCwd}\0${r.baseRef}`);
+      }
+    }
+    for (const cwd of repos) {
+      let listed: string;
+      try {
+        const { stdout } = await execFileP('git', ['-C', cwd, 'for-each-ref', '--format=%(refname)', 'refs/outpost/']);
+        listed = stdout;
+      } catch { continue; }
+      for (const line of listed.split('\n')) {
+        const ref = line.trim();
+        if (!ref || !OUTPOST_PR_REF_RE.test(ref)) continue;
+        if (live.has(`${cwd}\0${ref}`)) continue;
+        deleteRef(cwd, ref);
+      }
+    }
+  }
+
+  // The only network-touching subprocess on the provision path. Overridable so a test can
+  // count fetches without a remote.
+  protected async runGitFetch(cwd: string, args: string[]): Promise<void> {
+    await execFileP('git', ['-C', cwd, 'fetch', ...args], { timeout: FETCH_TIMEOUT_MS });
+  }
+
+  // Fetch `origin/<base>` and decide what to actually branch from. Local wins only when it holds
+  // commits origin doesn't (unpushed work you want to build on); otherwise origin wins, because a
+  // checkout that hasn't been pulled in days would silently cut branches from a stale tree.
+  // Prefer fast-forwarding the local ref so baseBranch stays an honest diff/PR base; when the base
+  // is checked out somewhere git refuses that, and we hand back `origin/<base>` as the start point.
+  private async resolveStartRef(cwd: string, baseBranch: string): Promise<string> {
+    await this.fetchBase(cwd, baseBranch);
+    const remote = `origin/${baseBranch}`;
+    if (!await refExists(cwd, remote)) return baseBranch;
+    if (!await refExists(cwd, baseBranch)) return remote;
+    if (await isAncestor(cwd, remote, baseBranch)) return baseBranch; // local ahead of (or equal to) origin
+    try {
+      // Moves the ref only — no working tree touched. Refused when baseBranch is checked out.
+      await this.runGitFetch(cwd, ['--quiet', 'origin', `${baseBranch}:${baseBranch}`]);
+      return baseBranch;
+    } catch {
+      return remote;
+    }
+  }
+
+  // Best-effort: an offline machine or a repo with no `origin` must not block provisioning.
+  private async fetchBase(cwd: string, baseBranch: string): Promise<void> {
+    try {
+      await this.runGitFetch(cwd, ['--quiet', 'origin', baseBranch]);
+    } catch { /* stale remote-tracking ref is better than a failed step */ }
+  }
+
+  // --force so a re-provision after the PR author pushes again moves the local ref forward.
+  // Failures are swallowed here and diagnosed by the caller's refExists check, which can name
+  // the ref the step actually asked for.
+  private fetchPrHead(cwd: string, prNumber: string): Promise<void> {
+    const key = `${cwd}\0${prNumber}`;
+    const inflight = this.prFetches.get(key);
+    if (inflight) return inflight;
+    const p = this.runGitFetch(cwd, [
+      '--quiet', '--force', 'origin', `refs/pull/${prNumber}/head:refs/outpost/pr-${prNumber}`,
+    ])
+      .catch(() => { /* offline / no origin */ })
+      .finally(() => { this.prFetches.delete(key); });
+    this.prFetches.set(key, p);
+    return p;
+  }
+}
+
+// `--` so a ref name that somehow reached here leading-dash-first can't be read as a flag;
+// OUTPOST_PR_REF_RE is the first layer, same discipline as the branch/session regexes.
+function deleteRef(cwd: string, ref: string): void {
+  try {
+    execFileSync('git', ['-C', cwd, 'update-ref', '-d', '--', ref], { stdio: 'pipe' });
+  } catch { /* already gone */ }
+}
+
+// "owner/repo" out of any spelling git records for a GitHub remote, else null (a local-path
+// or non-GitHub origin can't be cross-checked, so it isn't treated as a mismatch).
+export function repoFromRemoteUrl(url: string): string | null {
+  const m = url.trim().match(
+    /^(?:(?:https?|ssh|git\+ssh|git):\/\/)?(?:[^@/]+@)?github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
+  );
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+async function assertOriginRepo(cwd: string, expectRepo: string): Promise<void> {
+  let actual: string | null = null;
+  try {
+    const { stdout } = await execFileP('git', ['-C', cwd, 'remote', 'get-url', 'origin']);
+    actual = repoFromRemoteUrl(stdout);
+  } catch { return; }
+  if (!actual) return;
+  if (actual.toLowerCase() === expectRepo.toLowerCase()) return;
+  throw new Error(
+    `repoCwd ${cwd} has origin ${actual}, but this step's work belongs to ${expectRepo}`,
+  );
 }
 
 export type DiffMode = 'branch' | 'worktree';
@@ -433,66 +577,18 @@ function readCurrentBranch(cwd: string): string | null {
   } catch { return null; }
 }
 
-// Fetch `origin/<base>` and decide what to actually branch from. Local wins only when it holds
-// commits origin doesn't (unpushed work you want to build on); otherwise origin wins, because a
-// checkout that hasn't been pulled in days would silently cut branches from a stale tree.
-// Prefer fast-forwarding the local ref so baseBranch stays an honest diff/PR base; when the base
-// is checked out somewhere git refuses that, and we hand back `origin/<base>` as the start point.
-function resolveStartRef(cwd: string, baseBranch: string): string {
-  fetchBase(cwd, baseBranch);
-  const remote = `origin/${baseBranch}`;
-  if (!refExists(cwd, remote)) return baseBranch;
-  if (!refExists(cwd, baseBranch)) return remote;
-  if (isAncestor(cwd, remote, baseBranch)) return baseBranch; // local ahead of (or equal to) origin
+// Local object-db lookups, but on the same provision path as the fetches above — kept async so
+// nothing on it re-blocks the event loop.
+async function refExists(cwd: string, ref: string): Promise<boolean> {
   try {
-    // Moves the ref only — no working tree touched. Refused when baseBranch is checked out.
-    execFileSync('git', ['-C', cwd, 'fetch', '--quiet', 'origin', `${baseBranch}:${baseBranch}`], {
-      stdio: 'pipe',
-      timeout: FETCH_TIMEOUT_MS,
-    });
-    return baseBranch;
-  } catch {
-    return remote;
-  }
-}
-
-// Best-effort: an offline machine or a repo with no `origin` must not block provisioning.
-function fetchBase(cwd: string, baseBranch: string): void {
-  try {
-    execFileSync('git', ['-C', cwd, 'fetch', '--quiet', 'origin', baseBranch], {
-      stdio: 'pipe',
-      timeout: FETCH_TIMEOUT_MS,
-    });
-  } catch { /* stale remote-tracking ref is better than a failed step */ }
-}
-
-// Best-effort, same as fetchBase(): an offline machine must not block provisioning — git will
-// then report the real "invalid reference" error from `worktree add`, which is the honest
-// failure. --force so a re-provision after the PR author pushes again moves the local ref
-// forward; a stale ref would silently review the wrong code, which is worse than a failure.
-function fetchPrHead(cwd: string, prNumber: string): void {
-  try {
-    execFileSync('git', [
-      '-C', cwd, 'fetch', '--quiet', '--force', 'origin',
-      `refs/pull/${prNumber}/head:refs/outpost/pr-${prNumber}`,
-    ], { stdio: 'pipe', timeout: FETCH_TIMEOUT_MS });
-  } catch { /* leave `at` as the caller gave it; git will report the real problem */ }
-}
-
-function refExists(cwd: string, ref: string): boolean {
-  try {
-    execFileSync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', ref], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    await execFileP('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', ref]);
     return true;
   } catch { return false; }
 }
 
-function isAncestor(cwd: string, maybeAncestor: string, descendant: string): boolean {
+async function isAncestor(cwd: string, maybeAncestor: string, descendant: string): Promise<boolean> {
   try {
-    execFileSync('git', ['-C', cwd, 'merge-base', '--is-ancestor', maybeAncestor, descendant], {
-      stdio: 'pipe',
-    });
+    await execFileP('git', ['-C', cwd, 'merge-base', '--is-ancestor', maybeAncestor, descendant]);
     return true;
   } catch { return false; }
 }
