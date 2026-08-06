@@ -971,9 +971,9 @@ export class WorkEngine {
     pushInbox(this.orchestratedHost(), jobId, stepId, { kind: 'dispatch-done', dispatchId });
   }
 
-  // User clicks "Resolve" on a step from the UI, or a session POSTs /work/step-resolved.
-  // `payload.output` is captured as the step's stored output; agent steps with
-  // `forwardOutput` will then thread it into downstream steps' `previousSteps`.
+  // A session POSTs /work/step-resolved (or calls submit_step_output). `payload.output` is
+  // captured as the step's stored output; agent steps with `forwardOutput` will then thread it
+  // into downstream steps' `previousSteps`.
   onStepResolved(jobId: string, stepId: string, payload?: { output?: string }): void {
     // A dispatch child submits through the same tool as any other action step, using its
     // own dispatch id as `stepId` (see spawnDispatchSession's envelope). Route it to the
@@ -983,6 +983,16 @@ export class WorkEngine {
       this.settleDispatch(jobId, parentStepId, stepId, 'done', { output: payload?.output });
       return;
     }
+    // An orchestrated step is NOT resolvable from here. A bound work round runs on the
+    // controller's own session under the controller's stepId, so an action whose SKILL ends in
+    // submit_step_output (code.review-diff, code.review-ui, code.security-review) lands right
+    // here — and settling on its behalf would end the step AND archive its worktree
+    // (`git worktree remove --force` + `branch -D`) in the middle of the work it was reviewing.
+    // Resolution is the controller's own decision, taken as a `resolve` move through
+    // resolveStepByController; the user's force-close goes through markStepResolved. The round
+    // still owes a submit_step_progress, which is what actually reports its findings.
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (step?.type === 'orchestrated') return;
     let didResolve = false;
     this.mutateStep(jobId, stepId, (s) => {
       didResolve = true;
@@ -991,7 +1001,6 @@ export class WorkEngine {
       return this.appendStepEvent(next, 'resolved', 'session');
     });
     if (didResolve) {
-      this.settleOrchestratedStep(jobId, stepId, 'archive');
       this.mutate(jobId, (j) => this.appendEvent(j, {
         kind: 'step_resolved', who: 'session', stepId, body: this.stepLabel(jobId, stepId),
       }));
@@ -1285,7 +1294,7 @@ export class WorkEngine {
         this.spawnDispatchSession(jobId, stepId, d).catch((e) =>
           this.settleDispatch(jobId, stepId, d.id, 'failed', { failure: `dispatch spawn failed: ${(e as Error).message ?? e}` }));
       },
-      resolveStep: (jobId, stepId, output) => this.onStepResolved(jobId, stepId, { output }),
+      resolveStep: (jobId, stepId, output) => this.resolveStepByController(jobId, stepId, output),
       failStep: (jobId, stepId, reason) => this.onStepFailed(jobId, stepId, reason),
       actionInfo: {
         sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
@@ -1355,6 +1364,9 @@ export class WorkEngine {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (step?.type !== 'orchestrated') return;
     this.opts.governor?.cancelStep(jobId, stepId);
+    // A soak armed by a `wait` outlives the step otherwise. Firing it would only tick a job
+    // whose decide() ignores a terminal step, but there is no reason to hold the timer.
+    this.clearWaitTimer(jobId, stepId);
     this.mutateStep(jobId, stepId, (s) => {
       if (s.type !== 'orchestrated') return s;
       const next: OrchestratedStep = {
@@ -1370,6 +1382,23 @@ export class WorkEngine {
       : this.closeSessions(step.sessionId ? [step.sessionId] : []);
     void cleanup.catch((e) =>
       console.error(`[work] settle ${stepId.slice(0, 8)}: ${(e as Error).message}`));
+  }
+
+  // The controller's own `resolve` move — the ONE terminal that means the work landed, and so
+  // the only one that archives the worktree. Reached only through the orchestrated host, never
+  // from a route or an MCP tool: those cannot prove they are the controller deciding rather
+  // than a bound action reporting its own output (see onStepResolved).
+  private resolveStepByController(jobId: string, stepId: string, _output: string): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (step?.type !== 'orchestrated' || step.state === 'resolved') return;
+    this.settleOrchestratedStep(jobId, stepId, 'archive');
+    this.mutateStep(jobId, stepId, (s) => this.appendStepEvent(
+      { ...s, state: 'resolved', updatedAt: this.ctx.now() }, 'resolved', 'session',
+    ));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_resolved', who: 'session', stepId, body: this.stepLabel(jobId, stepId),
+    }));
+    void this.tickOne(jobId);
   }
 
   // User force-closes a live orchestrated step rather than waiting for the controller to

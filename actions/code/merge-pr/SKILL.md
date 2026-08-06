@@ -6,7 +6,7 @@ outpost:
   category: code
   side_effects: external-write
   runner: claude
-  permissions: [read, pull]
+  permissions: [read]
   timeout_sec: 600
   retries: 0
 ---
@@ -21,9 +21,12 @@ approved this merge.** Do not gate it again, do not ask; land it.
 
 Your job is exactly three things: confirm the PR is still mergeable, merge it, then make a
 best-effort attempt at deleting the remote branch. Nothing else — and nothing else is
-granted. This action deliberately does **not** inherit the `push` group; its only writes
-are `gh pr merge` and `git push --delete`, so `git commit`, `git push` of new commits,
-`gh pr comment/close/create` and `gh release create` are all denied here. If you find
+granted. This action inherits neither the `push` group nor `pull`: its whole grant is
+`read` plus four rules of its own — `gh pr view`, the `gh pr merge` whitelist below, and
+the two `git push --delete` shapes. So `git commit`, `git push` of new commits,
+`gh pr comment/close/create` and `gh release create` are all denied here, and so is
+`gh api` in every form — that is deliberate, because `gh api -X PUT …/pulls/12/merge` is
+the REST spelling of the merge and would walk straight around the whitelist. If you find
 yourself wanting one of those, this is the wrong round: hand it back (Step 5b).
 
 ## Step 1 — Read the envelope
@@ -74,6 +77,9 @@ gh pr view "$PR_URL" --json state,mergeable,mergeStateStatus,reviewDecision,stat
 gh pr merge "$PR_URL" --squash
 ```
 
+There is no second route to a merge: `gh api` is not granted, so the REST endpoint
+(`PUT /repos/{owner}/{repo}/pulls/{n}/merge`) is denied too. `gh pr merge` is the merge.
+
 **NEVER pass `--delete-branch`.** This is not a style preference; it is a bug Outpost
 already shipped once and had to fix. `gh pr merge --delete-branch` also deletes the
 *local* branch, and this step's branch is still checked out in this worktree, so git
@@ -117,8 +123,10 @@ git push origin --delete -- "$BRANCH"
 The **only** branch you may delete is this step's own — `workspace.branch`, which is what
 `$BRANCH` holds. The grant is shaped to match: an explicit remote, `--delete`, and exactly
 **one** branch operand. No extra arguments, no second branch, no bare `git push --delete`,
-and the literal names `main`, `master`, `HEAD`, `trunk`, `develop`, `release/…` and
-`refs/heads/…` are denied outright. If you ever find yourself typing a branch name that
+and the literal names `main`, `master`, `HEAD`, `trunk`, `develop` and `release/…` are
+denied outright — as is any `heads/…` or `refs/heads/…` spelling, since git resolves
+`heads/main` to `refs/heads/main` just as readily as the bare name. If you ever find
+yourself typing a branch name that
 isn't `$BRANCH`, stop — that is not this round's job.
 
 Expect this to fail sometimes and **ignore it when it does**: GitHub's "automatically

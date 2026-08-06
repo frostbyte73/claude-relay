@@ -225,4 +225,22 @@ describe('POST /api/work/jobs/:id/steps/:stepId/resolve — orchestrated steps',
     expect((queue.get('job-1')!.steps[0] as OrchestratedStep).state).toBe('resolved');
     expect(archived).toEqual([]);
   });
+
+  it('404s on a terminated job rather than falling through to the action-step path', async () => {
+    const h = jobRoutesHarness('abandoned');
+    const port = await freePort();
+    server = new Server({ httpPort: port, heartbeatMs: 0 });
+    registerJobsRoutes(server, {
+      jobQueue: h.queue, engine: h.engine,
+      prWatcher: {} as never, scheduler: {} as never, sessionStore: {} as never,
+      worktreeManager: {} as never, jobsDir: h.jobsDir,
+    });
+    await server.listen();
+
+    const res = await post(port, '/api/work/jobs/job-1/steps/step-1/resolve', {});
+    expect(res.status).toBe(404);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.archived).toEqual([]);
+    expect((h.queue.get('job-1')!.steps[0] as OrchestratedStep).state).toBe('waiting');
+  });
 });

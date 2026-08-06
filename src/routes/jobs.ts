@@ -359,11 +359,17 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     let payload: { output?: string };
     try { payload = body ? JSON.parse(body) : {}; } catch { res.statusCode = 400; res.end('invalid json'); return; }
     // A user resolving an orchestrated step is a force-close, not the controller reporting that
-    // the work landed — route it to markStepResolved so it keeps the worktree (which may still
-    // hold uncommitted work on an unpushed branch) instead of archiving it. onStepResolved's
-    // archive is reserved for the controller's own resolve move.
-    if (orchestratedStep(jobQueue, m[1]!, m[2]!)) engine.markStepResolved(m[1]!, m[2]!);
-    else engine.onStepResolved(m[1]!, m[2]!, payload);
+    // the work landed — route it to markStepResolved, which keeps the worktree (it may still
+    // hold uncommitted work on an unpushed branch). Archiving is reserved for the controller's
+    // own resolve move. The type is read directly rather than through orchestratedStep() so a
+    // terminated job answers 404 here instead of falling through to the action-step path.
+    const step = jobQueue.get(m[1]!)?.steps.find((s) => s.id === m[2]!);
+    if (step?.type === 'orchestrated') {
+      if (!orchestratedStep(jobQueue, m[1]!, m[2]!)) { res.statusCode = 404; res.end('not found'); return; }
+      engine.markStepResolved(m[1]!, m[2]!);
+    } else {
+      engine.onStepResolved(m[1]!, m[2]!, payload);
+    }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));

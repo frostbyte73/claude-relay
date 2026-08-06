@@ -135,6 +135,21 @@ describe('orchestratedHandler.buildEnvelope', () => {
     }]);
   });
 
+  // A delivery that lands while the step has no session (reconcileInterruptedSteps clears it,
+  // then a dead dispatch settles) drains into lastDelivered with no resume to carry it — the
+  // cold spawn that follows goes through THIS envelope. resumeControllerRound's own rationale
+  // ("so a cold resume still shows what woke it") applies here or the batch is simply lost.
+  it('carries what was last delivered, so a cold spawn still knows what woke it', () => {
+    const s = step({ lastDelivered: [{ id: 'i9', at: 5, kind: 'dispatch-done', dispatchId: 'd1' }] });
+    const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
+    expect(env.delivered).toEqual([{ id: 'i9', at: 5, kind: 'dispatch-done', dispatchId: 'd1' }]);
+  });
+
+  it('omits `delivered` when nothing has been delivered yet', () => {
+    const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
+    expect(env).not.toHaveProperty('delivered');
+  });
+
   it('omits the action catalog when no registry is wired', () => {
     const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
     expect(env).not.toHaveProperty('actionCatalog');

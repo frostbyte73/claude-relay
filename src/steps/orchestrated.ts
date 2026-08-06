@@ -47,6 +47,11 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
     return {
       boundAction: s.controller,
       ...(actionCatalog ? { actionCatalog } : {}),
+      // A batch can be drained with no live session to hand it to — reconcileInterruptedSteps
+      // clears a dead controller's session, and a dispatch settling right after drains into
+      // `lastDelivered` with no resume to carry it. The cold spawn comes through here, so it
+      // has to show what woke it or that batch is lost.
+      ...(s.lastDelivered?.length ? { delivered: s.lastDelivered } : {}),
       kind: 'step',
       jobId: job.id,
       stepId: s.id,

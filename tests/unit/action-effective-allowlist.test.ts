@@ -120,10 +120,11 @@ describe('code.orchestrate-pr effective allowlist', () => {
 });
 
 describe('code.merge-pr effective allowlist', () => {
-  // The one action allowed to land a PR. It takes `[read, pull]` plus three narrow extras
-  // rather than the whole `push` group, so the merge round can't also commit, push code,
-  // or comment. `gh pr merge` reaching it is the capability the controller's merge rung
-  // depends on — the old hardcoded open-pr machinery owned it, and nothing did after it went.
+  // The one action allowed to land a PR. It takes `[read]` plus four narrow extras rather than
+  // the whole `push` group (and not `pull` either — see the gh api case below), so the merge
+  // round can't also commit, push code, or comment. `gh pr merge` reaching it is the capability
+  // the controller's merge rung depends on — the old hardcoded open-pr machinery owned it, and
+  // nothing did after it went.
   const allows = effective('code.merge-pr');
   const PR = 'https://github.com/livekit/outpost/pull/12';
 
@@ -164,6 +165,15 @@ describe('code.merge-pr effective allowlist', () => {
       'git push origin --delete release/1.2',
       'git push origin --delete HEAD',
       'git push origin --delete refs/heads/main',
+      // `heads/main` is a ref git resolves to refs/heads/main just as happily — verified
+      // locally that `git push origin --delete heads/<x>` deletes. Refusing only the bare and
+      // `refs/heads/` spellings left the protected names one prefix away from reachable.
+      'git push origin --delete heads/main',
+      'git push origin --delete heads/master',
+      'git push --delete origin heads/main',
+      'git push origin --delete -- heads/main',
+      'git push origin --delete "heads/develop"',
+      'git push origin --delete heads/release/1.2',
       // Shape, not just names: no operand, no remote, more than one operand, or a
       // flag smuggled in where the branch belongs.
       'git push origin --delete',
@@ -249,6 +259,23 @@ describe('code.merge-pr effective allowlist', () => {
     }
   });
 
+  // The whitelist above is only closed if `gh pr merge` is the ONLY way to merge. The `pull`
+  // group grants a blanket `gh api`, which is the REST spelling of every write on this repo —
+  // `PUT /pulls/:n/merge` merges (with --delete-branch's equivalent, `delete_branch_on_merge`,
+  // right there), and `DELETE /git/refs/heads/main` is the branch refusal walked around. So
+  // this action takes `[read]` plus its own `gh pr view` rule instead of the whole group.
+  it('cannot reach a merge — or any other write — through gh api', () => {
+    for (const c of [
+      'gh api -X PUT repos/livekit/outpost/pulls/12/merge',
+      'gh api --method PUT repos/livekit/outpost/pulls/12/merge -f merge_method=squash',
+      'gh api -X DELETE repos/livekit/outpost/git/refs/heads/main',
+      'gh api --method POST repos/livekit/outpost/issues/12/comments -f body=hi',
+      'gh api repos/livekit/outpost/pulls/12',
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
+  });
+
   it('declares the external write the daemon force-gates on', () => {
     expect(registry.getAction('code.merge-pr')?.frontmatter.outpost.side_effects).toBe('external-write');
   });
@@ -289,8 +316,11 @@ describe('code.reply-pr-comments effective allowlist', () => {
       'gh pr create --fill',
       'gh release create v1',
       // Not a PR-review-comment endpoint — the grant is scoped to replies, not to gh api.
+      // (This action declares `[read]`, so it never inherits `pull`'s blanket `gh api` — the
+      // hole that made code.merge-pr's merge whitelist bypassable. Same closure, pinned here.)
       'gh api --method POST repos/livekit/outpost/issues/12/labels -f labels=bug',
       'gh api --method DELETE repos/livekit/outpost/git/refs/heads/main',
+      'gh api -X PUT repos/livekit/outpost/pulls/12/merge',
     ]) {
       expect(allows(c), c).toBe(false);
     }

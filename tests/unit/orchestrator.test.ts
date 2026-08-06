@@ -1099,6 +1099,58 @@ describe('WorkEngine — orchestrated terminal cleanup', () => {
   });
 });
 
+// A bound work round runs on the CONTROLLER's own session, under the controller's stepId — so
+// an action whose SKILL ends in submit_step_output (code.review-diff, code.review-ui,
+// code.security-review all do) reports through onStepResolved with the parent step's id.
+// Resolving on its behalf would settle the whole step and archive its worktree
+// (`git worktree remove --force` + `branch -D`) — a review round deleting the branch it was
+// reviewing. Resolution is the controller's decision, expressed as a `resolve` move.
+describe('WorkEngine.onStepResolved — a bound work round is not the controller', () => {
+  for (const action of ['code.review-diff', 'code.review-ui', 'code.security-review']) {
+    it(`ignores submit_step_output from a round bound to ${action}`, async () => {
+      const h = makeGovernedEngine();
+      h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'self-round', action } });
+      await flushLaunch();
+
+      h.engine.onStepResolved(h.jobId, h.stepId, { output: '3 findings, 1 blocking' });
+      await flushLaunch();
+
+      const s = h.queue.get(h.jobId)!.steps[0] as OrchestratedStep;
+      expect(s.state).toBe('running');
+      expect(h.archived).toEqual([]);
+      expect(h.closed).toEqual([]);
+    });
+  }
+
+  // The other half of the seam: the controller's own resolve move must still settle and
+  // archive, and it reaches the same code. Telling them apart by entry point is the fix.
+  it('still resolves and archives on the controller\'s resolve move', async () => {
+    const h = makeGovernedEngine();
+    h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'resolve', output: 'merged' } });
+    await flushLaunch();
+    expect((h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).state).toBe('resolved');
+    expect(h.archived).toEqual([h.stepId]);
+  });
+
+  // A dispatch child's own submit_step_output must keep routing to its Dispatch record.
+  it('still routes a dispatch child\'s output to the dispatch, not the parent', async () => {
+    const h = makeGovernedEngine();
+    h.engine.onStepProgress(h.jobId, h.stepId, {
+      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'review it' }] },
+    });
+    await flushLaunch();
+    const dispatchId = (h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).dispatches[0]!.id;
+
+    h.engine.onStepResolved(h.jobId, dispatchId, { output: 'looks good' });
+    await flushLaunch();
+
+    const s = h.queue.get(h.jobId)!.steps[0] as OrchestratedStep;
+    expect(s.dispatches[0]).toMatchObject({ status: 'done', output: 'looks good' });
+    expect(s.state).not.toBe('resolved');
+    expect(h.archived).toEqual([]);
+  });
+});
+
 // resumeControllerRound awaits provision() — real git work, seconds — BEFORE it submits the
 // launch, so nothing has been parked yet for settleOrchestratedStep's cancelStep to drop. A
 // mark-resolved landing in that window has to be caught by the launch's own fire-time guard,
