@@ -151,6 +151,14 @@ function humanizeKey(k) {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+// An artifact key is whatever string the controller passed to submit_step_progress —
+// arbitrary, not a CSS identifier. Derive a safe class token from it so the renderer
+// never has to sanitize (or, worse, trust) a key it interpolates into `class="..."`.
+function slugOf(k) {
+  const slug = String(k).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || 'artifact';
+}
+
 function phaseChipOf(s) {
   if (!s.phase) return null;
   const tone = s.state === 'failed' || s.phase === 'failed' ? 'danger'
@@ -164,10 +172,10 @@ export function orchestratedRows(step) {
   const s = step ?? {};
   const artifacts = s.artifacts ?? {};
   const artifactRows = [
-    ...(s.memo ? [{ key: 'memo', label: ARTIFACT_LABEL.memo, body: s.memo }] : []),
+    ...(s.memo ? [{ key: 'memo', slug: slugOf('memo'), label: ARTIFACT_LABEL.memo, body: s.memo }] : []),
     ...Object.entries(artifacts)
       .filter(([, body]) => typeof body === 'string' && body.trim())
-      .map(([key, body]) => ({ key, label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
+      .map(([key, body]) => ({ key, slug: slugOf(key), label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
   ];
 
   return {

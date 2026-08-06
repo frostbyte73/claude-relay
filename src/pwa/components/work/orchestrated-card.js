@@ -94,7 +94,7 @@ function dispatchesHtml(vm) {
 // survives repaints via detail.js's snapshotUi, keyed on the artifact class.
 function artifactsHtml(vm) {
   return vm.artifactRows.map((a) => `
-    <details class="plan-findings tl-findings orc-artifact-${escapeHtml(a.key)}">
+    <details class="plan-findings tl-findings orc-artifact-${a.slug}">
       <summary class="tl-findings-sum">
         <span class="plan-findings-label o-microhead">${escapeHtml(a.label)}</span>
         <span class="tl-findings-caret" aria-hidden="true">▾</span>

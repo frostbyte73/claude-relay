@@ -184,6 +184,20 @@ describe('orchestratedRows', () => {
     expect(orchestratedRows(step({ artifacts: { spec: '   ' } })).artifactRows).toEqual([]);
   });
 
+  it('slugs an artifact key into a safe CSS class token, keeping key for the label lookup', () => {
+    const rows = orchestratedRows(step({
+      artifacts: { 'weird key! with/slashes': 'body', '': 'body2', '!!!': 'body3' },
+    })).artifactRows;
+    expect(rows.map((a: any) => [a.key, a.slug])).toEqual([
+      ['weird key! with/slashes', 'weird-key-with-slashes'],
+      ['', 'artifact'],
+      ['!!!', 'artifact'],
+    ]);
+    // Every slug is a lone token match for the CSS class regex — no injected space, no
+    // leftover punctuation that would break out of `orc-artifact-<slug>`.
+    for (const a of rows) expect((a as any).slug).toMatch(/^[a-z0-9-]+$/);
+  });
+
   it('exposes the gate only while parked on it', () => {
     const gated = step({
       state: 'gate_pending_approval',
