@@ -257,6 +257,14 @@ export class PrWatcher {
   // a minute instead of on the next hourly sweep. A new change resets the ladder.
   private readonly escalationTimers = new Map<string, NodeJS.Timeout[]>();
   private static readonly ESCALATION_MS = [60_000, 5 * 60_000, 15 * 60_000];
+  // PR discovery (`gh pr list --head`) runs on every sweep for a step with no known PR yet.
+  // A step doing non-PR work on a branch never opens one, so without a bound this is a `gh`
+  // subprocess forever. Give up after a bounded run of consecutive misses, keyed per step;
+  // re-arm the moment `roundsSpent` moves — any accepted controller move (a self-round, a
+  // dispatch) is the only thing that could plausibly have pushed a commit and opened a PR
+  // since the last check, and it's already on the step record, so re-arming costs nothing.
+  private readonly discoveryMisses = new Map<string, { misses: number; roundsSpent: number }>();
+  private static readonly MAX_DISCOVERY_MISSES = 5;
 
   constructor(private readonly opts: PrWatcherOpts) {
     this.runGh = opts.runGh ?? defaultRunGh;
@@ -320,8 +328,20 @@ export class PrWatcher {
       // PR discovery: nothing in the catalog opens the PR — code.implement leaves uncommitted
       // edits and the user pushes and opens it by hand — so matching the step's branch is the
       // only way the daemon ever learns the URL.
+      const discoveryKey = `${jobId}:${s.id}`;
+      const rec = this.discoveryMisses.get(discoveryKey);
+      const rearmed = !rec || rec.roundsSpent !== s.roundsSpent;
+      if (!rearmed && rec!.misses >= PrWatcher.MAX_DISCOVERY_MISSES) return;
+
       prUrl = await this.discoverPr(cwd, branch);
-      if (!prUrl) return;
+      if (!prUrl) {
+        this.discoveryMisses.set(discoveryKey, {
+          misses: rearmed ? 1 : rec!.misses + 1,
+          roundsSpent: s.roundsSpent,
+        });
+        return;
+      }
+      this.discoveryMisses.delete(discoveryKey);
       facts.prUrl = prUrl;
     }
 
