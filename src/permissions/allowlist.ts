@@ -220,37 +220,37 @@ const FD_TARGET = /^(\d+-?|-)$/;
 // the redirection targets it writes to. Null on unbalanced quotes / parens. Does not
 // understand heredocs, `eval`, or `bash -c "…"` — the mitigation is to not allowlist
 // those interpreters.
+function findBalancedParen(s: string, openIdx: number): number {
+  let depth = 0;
+  let sq = false;
+  let dq = false;
+  for (let i = openIdx; i < s.length; i++) {
+    const c = s[i];
+    if (sq) { if (c === "'") sq = false; continue; }
+    if (dq) {
+      if (c === '\\' && i + 1 < s.length) { i++; continue; }
+      if (c === '"') dq = false;
+      continue;
+    }
+    if (c === '\\' && i + 1 < s.length) { i++; continue; }
+    if (c === "'") { sq = true; continue; }
+    if (c === '"') { dq = true; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+function findBacktickEnd(s: string, openIdx: number): number {
+  for (let i = openIdx + 1; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) { i++; continue; }
+    if (s[i] === '`') return i;
+  }
+  return -1;
+}
+
 export function splitShellClauses(cmd: string): ShellClause[] | null {
   const clauses: ShellClause[] = [];
-
-  function findBalancedParen(s: string, openIdx: number): number {
-    let depth = 0;
-    let sq = false;
-    let dq = false;
-    for (let i = openIdx; i < s.length; i++) {
-      const c = s[i];
-      if (sq) { if (c === "'") sq = false; continue; }
-      if (dq) {
-        if (c === '\\' && i + 1 < s.length) { i++; continue; }
-        if (c === '"') dq = false;
-        continue;
-      }
-      if (c === '\\' && i + 1 < s.length) { i++; continue; }
-      if (c === "'") { sq = true; continue; }
-      if (c === '"') { dq = true; continue; }
-      if (c === '(') depth++;
-      else if (c === ')') { depth--; if (depth === 0) return i; }
-    }
-    return -1;
-  }
-
-  function findBacktickEnd(s: string, openIdx: number): number {
-    for (let i = openIdx + 1; i < s.length; i++) {
-      if (s[i] === '\\' && i + 1 < s.length) { i++; continue; }
-      if (s[i] === '`') return i;
-    }
-    return -1;
-  }
 
   function walk(s: string): boolean {
     let buf = '';
@@ -414,8 +414,74 @@ export function resolvableWriteTargets(cmd: string): string[] {
   return out;
 }
 
+// Skip the double-quoted string starting at `s[i] === '"'`, returning the index just past its
+// closing quote (or s.length when unterminated). Substitutions inside carry quotes of their
+// own, so they have to be skipped whole or the quote state comes out inverted.
+function skipDoubleQuoted(s: string, i: number): number {
+  i++;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\\' && i + 1 < s.length) { i += 2; continue; }
+    if (c === '"') return i + 1;
+    if (c === '`') { const e = findBacktickEnd(s, i); if (e < 0) return s.length; i = e + 1; continue; }
+    if (c === '$' && s[i + 1] === '(') { const e = findBalancedParen(s, i + 1); if (e < 0) return s.length; i = e + 1; continue; }
+    i++;
+  }
+  return s.length;
+}
+
+// True when the clause expands something outside quotes. Bash word-splits the value of an
+// unquoted expansion, so `curl $X https://…` with `X='-o /etc/cron.d/pwn'` set by an earlier
+// clause of the SAME Bash call reaches curl as two extra argv words — arbitrary flag
+// injection into any allowlisted program, out of command text every anchored pattern reads
+// as one harmless operand. `"$VAR"` passes exactly one word and is left alone; it can still
+// carry a single `--flag=value`, which is why the anchored rules also refuse a leading `-`.
+function hasUnquotedExpansion(clause: string): boolean {
+  let i = 0;
+  while (i < clause.length) {
+    const c = clause[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === "'") { const e = clause.indexOf("'", i + 1); i = e < 0 ? clause.length : e + 1; continue; }
+    if (c === '"') { i = skipDoubleQuoted(clause, i); continue; }
+    if (c === '`') return true;
+    if (c === '$' && /[A-Za-z_{(@*]/.test(clause[i + 1] ?? '')) return true;
+    i++;
+  }
+  return false;
+}
+
+// Names a leading `NAME=value` may not carry. The prefix is peeled off before the clause is
+// pattern-matched and every clause of one Bash call shares a shell, so a name the shell or an
+// allowlisted program consults for program resolution turns `^cat ` into "run my binary" and
+// `^git diff` into "run my diff driver". The influence surface is unbounded in general —
+// every program reads its own environment — so this is the conservative shape: shell
+// specials, the dynamic loaders, the tool families the permission groups actually grant, and
+// the suffixes that name a path, a command, or an option list.
+const UNSAFE_ASSIGN_EXACT = new Set([
+  'PATH', 'IFS', 'ENV', 'CDPATH', 'GLOBIGNORE', 'HOME', 'PWD', 'OLDPWD', 'TMPDIR', 'TMP', 'TEMP',
+  'SHELL', 'SHELLOPTS', 'BASHOPTS', 'PROMPT_COMMAND', 'PS1', 'PS2', 'PS4', 'POSIXLY_CORRECT',
+  'EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'LESS', 'LESSOPEN', 'LESSCLOSE',
+  'GOFLAGS', 'GOROOT', 'GOBIN', 'GOCACHE', 'GOENV', 'GOPROXY', 'GOPRIVATE', 'GOMODCACHE', 'GOTMPDIR',
+]);
+const UNSAFE_ASSIGN_PREFIX = [
+  'LD_', 'DYLD_', 'BASH_', 'GIT_', 'GH_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'JAVA_',
+  'NPM_', 'YARN_', 'CURL_', 'SSL_', 'SSH_', 'GPG_', 'RIPGREP_', 'GREP_',
+];
+const UNSAFE_ASSIGN_SUFFIX = [
+  'PATH', 'OPTS', 'OPTIONS', 'PRELOAD', 'LIBRARIES', 'CONFIG', 'HOME', 'CMD', 'COMMAND',
+  'SHELL', 'EDITOR', 'PAGER',
+];
+
+function isSafeAssignName(name: string): boolean {
+  return !UNSAFE_ASSIGN_EXACT.has(name)
+    && !UNSAFE_ASSIGN_PREFIX.some((p) => name.startsWith(p))
+    && !UNSAFE_ASSIGN_SUFFIX.some((s) => name.endsWith(s));
+}
+
 // Peel leading bash NAME=value words off a clause so the allowlist gates on
 // the command, not on the assignment prefix. Pure-assignment clauses return ''.
+// Peeling stops at the first name that could redirect program resolution, so the clause is
+// then matched with that assignment still in it — which no anchored pattern accepts.
 export function stripLeadingAssignments(clause: string): string {
   let i = 0;
   while (i < clause.length) {
@@ -426,6 +492,7 @@ export function stripLeadingAssignments(clause: string): string {
     i++;
     while (i < clause.length && /[A-Za-z0-9_]/.test(clause.charAt(i))) i++;
     if (clause[i] !== '=') { i = nameStart; break; }
+    if (!isSafeAssignName(clause.slice(nameStart, i))) { i = nameStart; break; }
     i++; // consume '='
     // consume one shell word as value: until unquoted whitespace.
     let sq = false;
@@ -464,6 +531,16 @@ export function stripLeadingAssignments(clause: string): string {
     }
   }
   return clause.slice(i).trimStart();
+}
+
+// A second bar on top of matching a bash pattern, applied to every clause: what a pattern
+// reads as one operand must actually reach the program as one operand. Independent of which
+// scope granted the clause, because the weakness is in the command text, not the rule — an
+// action's own anchored `allowlist.json` rule leaks flags through `$X` exactly like a group's.
+function clausesShellSafe(cmd: string): boolean {
+  const clauses = splitShellClauses(cmd);
+  if (clauses === null) return false;
+  return clauses.every((c) => !hasUnquotedExpansion(stripLeadingAssignments(c.text)));
 }
 
 function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
@@ -606,6 +683,7 @@ export class Allowlist {
       // be theatre. The gate exists to stop *pattern*-matched clauses from smuggling one.
       if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
         if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+        if (!clausesShellSafe(cmd)) return false;
       }
     }
     if (scopes.some((s) => rulesAllow(s, toolName, toolInput))) return true;

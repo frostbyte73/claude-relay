@@ -192,7 +192,6 @@ describe('code.merge-pr effective allowlist', () => {
       `gh pr merge ${PR} --squash --auto`,
       `gh pr merge ${PR} --squash --subject "fix: the thing" --body "why it changed"`,
       'gh pr merge "$PR_URL" --squash',
-      'gh pr merge $PR_URL --squash',
       'gh pr merge 12 --squash',
       'git push origin --delete -- "$BRANCH"',
       'git push origin --delete "$BRANCH"',
@@ -274,6 +273,12 @@ describe('code.merge-pr effective allowlist', () => {
       'gh pr merge "$PR_URL" --squash -d$X',
       // Clustered -d + -b msg.
       'gh pr merge "$PR_URL" --squash -db"msg"',
+      // An UNQUOTED operand is not one operand. Every clause of a Bash call shares a shell,
+      // so `F=--delete-branch; gh pr merge $F "$PR_URL" --squash` word-splits the flag back
+      // in — SKILL.md warns about exactly this, and the checker now refuses it. The
+      // double-quoted spelling every documented example uses is unaffected.
+      'gh pr merge $PR_URL --squash',
+      'F=--delete-branch; gh pr merge $F "$PR_URL" --squash',
       // A line continuation stays inside one clause, so the guard can't be `.*` — `.`
       // doesn't cross the newline and the flag would sail through on the next line.
       `gh pr merge ${PR} \\\n  --delete-branch`,
@@ -479,7 +484,7 @@ describe('code.submit-pr-verdict effective allowlist', () => {
       `gh pr review ${PR} --approve --body "looks good"`,
       'gh pr review 7 --request-changes --body-file /tmp/outpost-verdict-7.md',
       'gh pr review "$PR_URL" --approve --body-file /tmp/outpost-verdict-7.md',
-      'gh pr review $PR_URL --request-changes --body "two of the four comments are unaddressed"',
+      'gh pr review "$PR_URL" --request-changes --body "two of the four comments are unaddressed"',
       "gh pr review 7 --approve --body 'ship it'",
     ];
     expect(documented.filter((c) => !allows(c))).toEqual([]);
@@ -516,6 +521,9 @@ describe('code.submit-pr-verdict effective allowlist', () => {
       // --repo retargets the verdict at a PR in a different repo entirely.
       'gh pr review 7 --approve --repo evil/repo',
       'gh pr review --repo evil/repo 7 --approve',
+      // …including through an unquoted operand, which bash word-splits back into flags.
+      'gh pr review $PR_URL --approve',
+      "X='--repo evil/repo'; gh pr review $X --approve",
       // The REST spelling of the same write, unpinned — and of every other write.
       'gh api --method POST repos/o/r/pulls/7/reviews --input /tmp/x.json',
       'gh api -X PUT repos/o/r/pulls/7/merge',
