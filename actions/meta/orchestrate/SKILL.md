@@ -86,17 +86,22 @@ the deployment config repo.
 
 If `mode === "replan"`, read `userFeedback` first — it overrides everything else. Then read the `output` on any resolved steps in `currentSteps` — those are usually why the user reopened the orchestrator, and they're what lets you extend a previously partial plan.
 
-Else read `job.description`. For Linear-sourced jobs, this is the issue body. If the body is light, pull the full ticket from Linear (the `linearUuid` is in the envelope):
+Else read `job.description`. For Linear-sourced jobs, this is the issue body. If the body is light, pull the full ticket from Linear. Read the UUID out of the envelope first, then **type it into the query literally**:
+
+```bash
+jq -r '.job.externalRef.linearUuid' "$OUTPOST_ENVELOPE"
+```
 
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_TOKEN" \
   -H 'content-type: application/json' \
-  --data "$(jq -n --arg id "$(jq -r '.job.externalRef.linearUuid' "$OUTPOST_ENVELOPE")" '{
-    query: "query($id: String!) { issue(id: $id) { title description labels { nodes { name } } comments { nodes { body createdAt } } children { nodes { identifier title } } } }",
-    variables: { id: $id }
-  }')"
+  -d '{"query":"query { issue(id: \"<LINEAR_UUID>\") { title description labels { nodes { name } } comments { nodes { body createdAt } } children { nodes { identifier title } } } }"}'
 ```
+
+This is the only network write you have, and it is granted as one narrow shape. The `-d` value must be a **single-quoted literal** whose `query` is a GraphQL *query* — no `$(…)`, no backticks, no `$VAR`, no `@file`, and the words `mutation` and `subscription` are refused outright. That is deliberate and it is what makes "strictly read-only" true rather than aspirational: an opaque body is both an arbitrary Linear write (`issueDelete`) and a way to read a local file onto the network. The same applies to `-H` values — a header is a body by another name.
+
+So: substitute the UUID yourself, don't ask the shell to. If a denial fires here, you interpolated something; re-read the block above.
 
 Linear MCP tools work too if you have them — probe via `ToolSearch` first.
 
