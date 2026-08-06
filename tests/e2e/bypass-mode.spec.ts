@@ -14,17 +14,6 @@ test.beforeAll(() => {
 });
 
 test('bypass mode allows mcp__incident-io__incident_update without any approval card', async ({ daemon, outpostPage }) => {
-  // Set bypass as the default-for-new-sessions via the Settings surface's "Model
-  // defaults" section. This segmented control sets state.defaultApprovalMode only
-  // (single-click, no confirm) — the per-session two-tap confirm lives in the
-  // in-session header chip popover, not here. When the session WS connects below
-  // it inherits this default.
-  await outpostPage.locator('.o-sidebar-item[data-surface="settings"]').click();
-  await outpostPage.locator('.settings-nav-item[data-key="model-defaults"]').click();
-  const approvalSection = outpostPage.locator('.settings-segmented[data-role="approval"]');
-  await approvalSection.locator('button[data-value="bypass"]').click();
-  await expect(approvalSection.locator('button[data-value="bypass"]')).toHaveClass(/active/);
-
   // Open a session.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
@@ -37,8 +26,11 @@ test('bypass mode allows mcp__incident-io__incident_update without any approval 
     { timeout: 10_000 }
   );
 
-  // Wait for bypass to be server-confirmed. Segmented-control buttons are only in DOM
-  // while settings is open — in session view they're absent. Poll JS state directly.
+  // Switch this session to bypass via the in-session toolbar's mode select (the
+  // actual per-session control — desktop's `<select>` applies a pick immediately,
+  // no two-tap confirm; that confirm-tap dance is mobile-only, in the header chip's
+  // popover). Then wait for the daemon to echo it back before sending.
+  await outpostPage.locator('.sv-mode-select').selectOption('bypass');
   await outpostPage.waitForFunction(
     // @ts-expect-error — globalThis helper from app.js test instrumentation
     () => globalThis.__outpostGetState?.()?.approvalMode === 'bypass',
