@@ -14,28 +14,22 @@ test.beforeAll(() => {
 });
 
 test('accept-edits ON: Edit tool flows through without manual approval', async ({ daemon, outpostPage }) => {
-  // Switch to accept-edits mode via the Settings surface's "Model defaults" section,
-  // BEFORE opening a session, so the client-side auto-approve mirror is armed when
-  // the fixture's first Edit tool_use lands.
-  await outpostPage.locator('.o-sidebar-item[data-surface="settings"]').click();
-  await outpostPage.locator('.settings-nav-item[data-key="model-defaults"]').click();
-  const approvalSection = outpostPage.locator('.settings-segmented[data-role="approval"]');
-  await approvalSection.locator('button[data-value="accept-edits"]').click();
-  await expect(approvalSection.locator('button[data-value="accept-edits"]')).toHaveClass(/active/);
-
   // Open a new session.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
 
-  // Wait for the WS to come up + server to confirm accept-edits mode. The optimistic
-  // local mode was set in list view; the push-back-on-attach syncs it server-side.
+  // Wait for the WS to come up, then switch this session to accept-edits via the
+  // in-session toolbar's mode select (the actual per-session control — the Settings
+  // surface's "Model defaults" segmented control only seeds NEW sessions launched
+  // through the ⌘K palette, not a session opened directly via the test harness).
   await outpostPage.waitForFunction(
     () => document.documentElement.getAttribute('data-conn') === 'connected',
     undefined,
     { timeout: 10_000 },
   );
+  await outpostPage.locator('.sv-mode-select').selectOption('accept-edits');
   await outpostPage.waitForFunction(
     // @ts-expect-error — globalThis helper from app.js test instrumentation
     () => globalThis.__outpostGetState?.()?.approvalMode === 'accept-edits',

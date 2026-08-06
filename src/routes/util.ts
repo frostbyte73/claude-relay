@@ -1,3 +1,5 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
+
 export function readBody(req: NodeJS.ReadableStream): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -7,10 +9,44 @@ export function readBody(req: NodeJS.ReadableStream): Promise<string> {
   });
 }
 
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// `JSON.parse("null")` succeeds, so a bare `try/catch` around it is not a shape check.
+export function parseJsonObject(body: string): Record<string, unknown> | null {
+  if (!body.trim()) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(body); } catch { return null; }
+  return isPlainObject(parsed) ? parsed : null;
+}
+
 export async function readJsonBody<T>(req: NodeJS.ReadableStream): Promise<T | null> {
-  const body = await readBody(req);
-  if (!body) return null;
-  try { return JSON.parse(body) as T; } catch { return null; }
+  return parseJsonObject(await readBody(req)) as T | null;
+}
+
+export interface JsonObjectOpts {
+  // Routes that spell `body ? JSON.parse(body) : {}` accept a MISSING body. Deliberately not
+  // `!raw.trim()`: a whitespace-only body is truthy, so it used to reach JSON.parse and 400.
+  // Widening it to "empty" would let `POST .../git/discard` with a body of " " fall through to
+  // paths=undefined, i.e. `git reset --hard` + `git clean -fd` on a request that used to bounce.
+  allowEmpty?: boolean;
+  // Routes whose 400 carries a JSON error body rather than the plain-text default.
+  onInvalid?: () => void;
+}
+
+export async function readJsonObject<T>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: JsonObjectOpts = {},
+): Promise<T | null> {
+  const raw = await readBody(req);
+  if (!raw && opts.allowEmpty) return {} as T;
+  const parsed = parseJsonObject(raw);
+  if (parsed) return parsed as T;
+  if (opts.onInvalid) opts.onInvalid();
+  else { res.statusCode = 400; res.end('invalid json'); }
+  return null;
 }
 
 // "24h", "7d", "90m", or a bare millisecond count. Anything else (including

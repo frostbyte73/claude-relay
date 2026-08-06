@@ -6,7 +6,7 @@ import type { PrWatcher } from '../integrations/pr-watcher.js';
 import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
-import { readBody, readJsonBody } from './util.js';
+import { readJsonBody, readJsonObject } from './util.js';
 import { serializeJob } from '../work/job-liveness.js';
 import { readJobEvents } from '../storage/job-event-log.js';
 
@@ -76,9 +76,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs', async (req, res) => {
-    const body = await readBody(req);
-    let payload: { title?: string; description?: string; externalUrl?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ title?: string; description?: string; externalUrl?: string }>(req, res);
+    if (!payload) return;
     if (typeof payload.title !== 'string' || !payload.title.trim()) { res.statusCode = 400; res.end('title required'); return; }
     const j = engine.createJob({
       source: 'manual',
@@ -121,9 +120,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/approve$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
-    const body = await readBody(req);
-    let payload: { gate?: string; stepId?: string; note?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ gate?: string; stepId?: string; note?: string }>(req, res);
+    if (!payload) return;
     try {
       switch (payload.gate) {
         case 'plan':
@@ -151,9 +149,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reject$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
-    const body = await readBody(req);
-    let payload: { gate?: string; stepId?: string; feedback?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ gate?: string; stepId?: string; feedback?: string }>(req, res);
+    if (!payload) return;
     switch (payload.gate) {
       case 'plan':
         if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
@@ -245,9 +242,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('POST', '/api/work/jobs/:id/replan', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/replan$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { feedback?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ feedback?: string }>(req, res);
+    if (!payload) return;
     engine.reopenOrchestrator(m[1]!, payload.feedback ?? '');
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -275,9 +271,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('POST', '/api/work/jobs/:id/steps', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: Record<string, unknown>;
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<Record<string, unknown>>(req, res);
+    if (!payload) return;
     const { afterStepId, ...stepFields } = payload;
     let step;
     try {
@@ -299,9 +294,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('PATCH', '/api/work/jobs/:id/steps/:stepId', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: Record<string, unknown>;
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<Record<string, unknown>>(req, res);
+    if (!payload) return;
     const EDITABLE_FIELDS = ['title', 'description', 'goal', 'inputs', 'action', 'workspace'];
     const patch: Record<string, unknown> = {};
     for (const field of EDITABLE_FIELDS) if (field in payload) patch[field] = payload[field];
@@ -335,9 +329,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('POST', '/api/work/jobs/:id/steps/reorder', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/reorder$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { ids?: unknown };
-    try { payload = body ? JSON.parse(body) : {}; } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ ids?: unknown }>(req, res, { allowEmpty: true });
+    if (!payload) return;
     if (!Array.isArray(payload.ids) || !payload.ids.every((x) => typeof x === 'string')) {
       res.statusCode = 400; res.end('body.ids must be string[]'); return;
     }
@@ -355,9 +348,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   server.route('POST', '/api/work/jobs/:id/steps/:stepId/resolve', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/resolve$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { output?: string };
-    try { payload = body ? JSON.parse(body) : {}; } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ output?: string }>(req, res, { allowEmpty: true });
+    if (!payload) return;
     // A user resolving an orchestrated step is a force-close, not the controller reporting that
     // the work landed — route it to markStepResolved, which keeps the worktree (it may still
     // hold uncommitted work on an unpushed branch). Archiving is reserved for the controller's
@@ -390,9 +382,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, jobId, stepId] = m;
     if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { body?: unknown };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ body?: unknown }>(req, res);
+    if (!payload) return;
     if (typeof payload.body !== 'string' || !payload.body.trim()) { res.statusCode = 400; res.end('body (non-empty string) required'); return; }
     engine.pushStepInbox(jobId!, stepId!, { kind: 'user-message', body: payload.body });
     res.statusCode = 204; res.end();
@@ -403,9 +394,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, jobId, stepId] = m;
     if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { approved?: unknown; feedback?: unknown };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
+    const payload = await readJsonObject<{ approved?: unknown; feedback?: unknown }>(req, res);
+    if (!payload) return;
     if (typeof payload.approved !== 'boolean') { res.statusCode = 400; res.end('approved (boolean) required'); return; }
     if (payload.feedback !== undefined && typeof payload.feedback !== 'string') { res.statusCode = 400; res.end('feedback must be a string'); return; }
     engine.resolveStepGate(jobId!, stepId!, payload.approved, payload.feedback);

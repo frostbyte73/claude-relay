@@ -145,12 +145,70 @@ function compileFromConfig(cfg: AllowlistConfig): CompiledRules {
   };
 }
 
+export interface ShellClause {
+  // Clause text as written, redirections included — what the bash patterns match against.
+  text: string;
+  // Verbatim (still quoted/escaped) target words of the clause's file-creating
+  // redirections. fd duplications (`2>&1`, `>&2`) and input redirections contribute
+  // nothing: neither can create or truncate a file.
+  writeTargets: string[];
+}
+
+type RedirKind = 'write' | 'dup-out';
+
+// Longest-first, so `&>>` wins over `&>` and `>>` over `>`. `<`, `<<`, `<<<` and `<&`
+// are absent on purpose — they read. `<>` is not listed either: its `<` falls through
+// to the buffer and the `>` is then matched here as a plain write, which is the
+// conservative reading of a read-write open.
+const REDIR_OPS: ReadonlyArray<readonly [string, RedirKind]> = [
+  ['&>>', 'write'], ['&>', 'write'],
+  ['>>', 'write'], ['>|', 'write'], ['>&', 'dup-out'], ['>', 'write'],
+];
+
+function matchRedirect(s: string, i: number): { len: number; kind: RedirKind } | null {
+  const c = s[i];
+  if (c !== '>' && !(c === '&' && s[i + 1] === '>')) return null;
+  for (const [op, kind] of REDIR_OPS) {
+    if (s.startsWith(op, i)) return { len: op.length, kind };
+  }
+  return null;
+}
+
+// Read one shell word out of `s` starting at `start`, keeping its quoting verbatim.
+// Stops at unquoted whitespace or the next metacharacter — the same boundaries the
+// splitter uses, so a target never swallows the operator that follows it.
+function readWordAt(s: string, start: number): string {
+  let out = '';
+  let i = start;
+  let sq = false;
+  let dq = false;
+  while (i < s.length) {
+    const c = s.charAt(i);
+    if (sq) { out += c; if (c === "'") sq = false; i++; continue; }
+    if (dq) {
+      if (c === '\\' && i + 1 < s.length) { out += c + s[i + 1]; i += 2; continue; }
+      out += c; if (c === '"') dq = false; i++; continue;
+    }
+    if (c === '\\' && i + 1 < s.length) { out += c + s[i + 1]; i += 2; continue; }
+    if (c === "'") { sq = true; out += c; i++; continue; }
+    if (c === '"') { dq = true; out += c; i++; continue; }
+    if (/[\s;|&<>()]/.test(c)) break;
+    out += c; i++;
+  }
+  return out;
+}
+
+// `>&1`, `>&-`, `2>&3` name a file descriptor. Anything else after `>&` is bash's
+// legacy spelling of `&>file` and is a real path write.
+const FD_TARGET = /^(\d+-?|-)$/;
+
 // Split a bash command into the per-clause list an allowlist must independently
-// allow: top-level statements + inner commands of $(…), `…`, <(…), >(…). Null
-// on unbalanced quotes / parens. Does not understand heredocs, `eval`, or
-// `bash -c "…"` — the mitigation is to not allowlist those interpreters.
-export function splitShellCommand(cmd: string): string[] | null {
-  const clauses: string[] = [];
+// allow: top-level statements + inner commands of $(…), `…`, <(…), >(…), each with
+// the redirection targets it writes to. Null on unbalanced quotes / parens. Does not
+// understand heredocs, `eval`, or `bash -c "…"` — the mitigation is to not allowlist
+// those interpreters.
+export function splitShellClauses(cmd: string): ShellClause[] | null {
+  const clauses: ShellClause[] = [];
 
   function findBalancedParen(s: string, openIdx: number): number {
     let depth = 0;
@@ -186,10 +244,22 @@ export function splitShellCommand(cmd: string): string[] | null {
     let sq = false;
     let dq = false;
     let i = 0;
+    // Offsets into `buf` where a redirection target word begins. Recorded rather than
+    // consumed so the main loop still recurses into a `$(…)` sitting in the target.
+    let marks: Array<{ start: number; kind: RedirKind }> = [];
     const flush = () => {
       const t = buf.trim();
-      if (t) clauses.push(t);
+      if (t) {
+        const writeTargets: string[] = [];
+        for (const m of marks) {
+          const word = readWordAt(buf, m.start);
+          if (m.kind === 'dup-out' && FD_TARGET.test(word)) continue;
+          writeTargets.push(word);
+        }
+        clauses.push({ text: t, writeTargets });
+      }
       buf = '';
+      marks = [];
     };
     while (i < s.length) {
       const c = s[i];
@@ -235,13 +305,24 @@ export function splitShellCommand(cmd: string): string[] | null {
         if (!walk(s.slice(i + 2, end))) return false;
         buf += s.slice(i, end + 1); i = end + 1; continue;
       }
+      // Output redirection. Consuming the operator keeps `>|` from splitting on its `|`
+      // and keeps `&>` from splitting on its `&`; the target word itself is left to the
+      // main loop so substitutions inside it still get walked.
+      const redir = matchRedirect(s, i);
+      if (redir) {
+        buf += s.slice(i, i + redir.len); i += redir.len;
+        while (i < s.length && (s[i] === ' ' || s[i] === '\t')) { buf += s[i]; i++; }
+        marks.push({ start: buf.length, kind: redir.kind });
+        continue;
+      }
       if (c === ';' || c === '\n') { flush(); i++; continue; }
       if (c === '&' && s[i + 1] === '&') { flush(); i += 2; continue; }
       if (c === '|' && s[i + 1] === '|') { flush(); i += 2; continue; }
       if (c === '|') { flush(); i++; continue; }
       // `&` is only a job-control separator when it stands alone. Adjacent to `<`/`>`
-      // it's part of an fd redirection (`2>&1`, `>&2`, `&>file`, `&>>file`, `<&3`) —
-      // append it to the current clause instead of splitting.
+      // it's part of an fd redirection — append it to the current clause instead of
+      // splitting. matchRedirect above already swallows the output forms (`2>&1`,
+      // `>&2`, `&>file`, `&>>file`); what still reaches here is `<&3`.
       if (c === '&' && (buf.endsWith('<') || buf.endsWith('>') || s[i + 1] === '>')) {
         buf += c; i++; continue;
       }
@@ -255,6 +336,58 @@ export function splitShellCommand(cmd: string): string[] | null {
 
   if (!walk(cmd)) return null;
   return clauses;
+}
+
+export function splitShellCommand(cmd: string): string[] | null {
+  return splitShellClauses(cmd)?.map((c) => c.text) ?? null;
+}
+
+// The literal filesystem path a redirection target names, or null when it can't be
+// known statically. Expansions ($VAR, $(…), `…`, ~), globs, and relative paths all
+// answer null: the daemon sees the command text, never the expanded value, and never
+// the cwd the shell will actually be in by the time the clause runs (an earlier
+// `cd` in the same command would move it). Unknowable means denied.
+export function literalRedirectPath(word: string): string | null {
+  let out = '';
+  let i = 0;
+  let sq = false;
+  let dq = false;
+  while (i < word.length) {
+    const c = word.charAt(i);
+    if (sq) {
+      if (c === "'") { sq = false; i++; continue; }
+      out += c; i++; continue;
+    }
+    if (dq) {
+      if (c === '\\' && i + 1 < word.length) { out += word[i + 1]; i += 2; continue; }
+      if (c === '"') { dq = false; i++; continue; }
+      if (c === '$' || c === '`') return null;
+      out += c; i++; continue;
+    }
+    if (c === '\\' && i + 1 < word.length) { out += word[i + 1]; i += 2; continue; }
+    if (c === "'") { sq = true; i++; continue; }
+    if (c === '"') { dq = true; i++; continue; }
+    if (c === '$' || c === '`' || c === '~' || c === '*' || c === '?' || c === '[') return null;
+    out += c; i++;
+  }
+  if (!out.startsWith('/')) return null;
+  return resolve(out);
+}
+
+// Every path a Bash command would create or truncate by redirection, skipping the ones
+// that can't be resolved statically. Used to suggest a grant after a denial; the gate
+// itself treats an unresolvable target as fatal, which this can't express.
+export function resolvableWriteTargets(cmd: string): string[] {
+  const clauses = splitShellClauses(cmd);
+  if (!clauses) return [];
+  const out: string[] = [];
+  for (const c of clauses) {
+    for (const w of c.writeTargets) {
+      const p = literalRedirectPath(w);
+      if (p !== null) out.push(p);
+    }
+  }
+  return out;
 }
 
 // Peel leading bash NAME=value words off a clause so the allowlist gates on
@@ -328,7 +461,11 @@ function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown):
   // Path-scoped rule: tool name must match AND the path-shaped input matches the regex.
   if (PATH_INPUT_FIELDS[toolName]) {
     const path = readPathInput(toolName, toolInput);
-    if (path !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(path))) {
+    // `..` must not walk out from under an anchored prefix rule: `Write:^/tmp/` should not
+    // admit `/tmp/../etc/crontab`. A relative path is tested as written — the daemon can't
+    // know the cwd it resolves against, and every path rule is absolute-anchored, so it denies.
+    const probe = path !== undefined && path.startsWith('/') ? resolve(path) : path;
+    if (probe !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(probe))) {
       return true;
     }
   }
@@ -394,25 +531,58 @@ export class Allowlist {
       + this.global.mcpPatterns.length;
   }
 
-  allows(toolName: string, toolInput: unknown, projectCwd?: string, actionName?: string, sessionWorktreePath?: string, sessionId?: string): boolean {
-    if (rulesAllow(this.global, toolName, toolInput)) return true;
-    if (projectCwd && rulesAllow(this.loadProject(projectCwd), toolName, toolInput)) return true;
+  // Every rule set that applies to this call, in no particular order — the checks
+  // below are an OR across them.
+  private scopesFor(projectCwd?: string, actionName?: string, sessionId?: string): CompiledRules[] {
+    const scopes: CompiledRules[] = [this.global];
+    if (projectCwd) scopes.push(this.loadProject(projectCwd));
     if (sessionId) {
       const rules = this.sessionRules.get(sessionId);
-      if (rules && rulesAllow(rules, toolName, toolInput)) return true;
+      if (rules) scopes.push(rules);
     }
     if (actionName) {
       // Bundled action defaults come first (colocated allowlist.json under actions/).
-      if (this.actionRegistry) {
-        const action = this.actionRegistry.getAction(actionName);
-        if (action && rulesAllow(compileFromConfig(action.allowlist), toolName, toolInput)) return true;
-      }
+      const action = this.actionRegistry?.getAction(actionName);
+      if (action) scopes.push(compileFromConfig(action.allowlist));
       // Then hot-added user overrides (~/.outpost/actions.json).
-      if (this.actionsStore) {
-        const cfg = this.actionsStore.get(actionName);
-        if (rulesAllow(compileFromConfig(cfg.allowlist), toolName, toolInput)) return true;
+      if (this.actionsStore) scopes.push(compileFromConfig(this.actionsStore.get(actionName).allowlist));
+    }
+    return scopes;
+  }
+
+  // A bash pattern gates a clause by its leading command, which says nothing about a
+  // redirection riding along inside it — `cat x > ~/.zshrc` matches `^cat `. So a clause
+  // that creates or truncates a file has to clear a second bar: every target must be a
+  // file the same caller could have written with the Write tool. No Write grant, no
+  // redirection. Fd dups and input redirections aren't targets and don't reach here.
+  private redirectsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    const clauses = splitShellClauses(cmd);
+    if (clauses === null) return false;
+    for (const clause of clauses) {
+      for (const word of clause.writeTargets) {
+        const path = literalRedirectPath(word);
+        if (path === null) return false;
+        const asWrite = { file_path: path };
+        if (scopes.some((s) => rulesAllow(s, 'Write', asWrite))) continue;
+        if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) continue;
+        return false;
       }
     }
+    return true;
+  }
+
+  allows(toolName: string, toolInput: unknown, projectCwd?: string, actionName?: string, sessionWorktreePath?: string, sessionId?: string): boolean {
+    const scopes = this.scopesFor(projectCwd, actionName, sessionId);
+    if (toolName === 'Bash') {
+      const cmd = (toolInput as { command?: string })?.command;
+      // A whole-tool `Bash` grant is an explicit "run anything" — it already implies
+      // arbitrary writes via `cp`/`rm`/an interpreter, so gating its redirections would
+      // be theatre. The gate exists to stop *pattern*-matched clauses from smuggling one.
+      if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
+        if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+      }
+    }
+    if (scopes.some((s) => rulesAllow(s, toolName, toolInput))) return true;
     // Session scope: path-shaped tool inputs inside the session's own worktree auto-allow.
     // Applies only when the daemon told us the session has a worktree — action-step sessions
     // provisioned by the orchestrator. Interactive PWA sessions don't have a worktree record

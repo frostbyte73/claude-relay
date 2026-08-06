@@ -14,15 +14,6 @@ test.beforeAll(() => {
 });
 
 test('plan mode denies a Bash call without enqueuing an approval', async ({ daemon, outpostPage }) => {
-  // Set plan mode via the Settings surface's "Model defaults" section, BEFORE opening
-  // a session. The optimistic client-side update fires immediately; when the session
-  // WS opens the client pushes approval_mode_set and waits for the echo.
-  await outpostPage.locator('.o-sidebar-item[data-surface="settings"]').click();
-  await outpostPage.locator('.settings-nav-item[data-key="model-defaults"]').click();
-  const approvalSection = outpostPage.locator('.settings-segmented[data-role="approval"]');
-  await approvalSection.locator('button[data-value="plan"]').click();
-  await expect(approvalSection.locator('button[data-value="plan"]')).toHaveClass(/active/);
-
   // Open a session.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
@@ -38,10 +29,11 @@ test('plan mode denies a Bash call without enqueuing an approval', async ({ daem
     { timeout: 10_000 },
   );
 
-  // Wait for the plan mode to be server-confirmed. The segmented-control buttons live in
-  // the settings sheet which is only open in list view — in session view they're absent
-  // from the DOM. Poll state.approvalMode directly via the __outpostGetState helper
-  // (which reads from the module-scoped state object that the WS echo updates).
+  // Switch this session to plan mode via the in-session toolbar's mode select (the
+  // actual per-session control — the Settings surface's segmented control only seeds
+  // NEW sessions launched through the ⌘K palette). The select's change handler pushes
+  // approval_mode_set immediately; wait for the daemon's echo before sending.
+  await outpostPage.locator('.sv-mode-select').selectOption('plan');
   await outpostPage.waitForFunction(
     // @ts-expect-error — globalThis helper from app.js test instrumentation
     () => globalThis.__outpostGetState?.()?.approvalMode === 'plan',

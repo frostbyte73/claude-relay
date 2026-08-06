@@ -19,12 +19,13 @@ import {
   type ActionEdit, type ActionProposal,
 } from '../storage/action-edits-store.js';
 import { intakeProposal, ledgerActionFor, onSessionGone } from '../actions/proposal-intake.js';
+import { resolvableWriteTargets } from '../permissions/allowlist.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { DaemonConfig } from '../config.js';
 import { ensureActionsInstalled, bundledRepoDir } from '../setup-actions.js';
-import { parseWindowMs, readJsonBody } from './util.js';
+import { parseJsonObject, parseWindowMs, readJsonBody } from './util.js';
 
 export interface ActionsRoutesDeps {
   outpostActionsDir: string;
@@ -219,6 +220,14 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   function suggestRule(toolName: string, toolInput: unknown): ActionDenial['suggested'] {
     if (toolName === 'Bash') {
       const cmd = (toolInput as { command?: string })?.command ?? '';
+      // A shell redirection is gated as a Write, so no bash rule alone can unblock a
+      // command that writes to an ungranted path. Suggest the path grant its target
+      // needs — the leading command is usually already covered by the action's groups.
+      const target = resolvableWriteTargets(cmd)[0];
+      if (target) {
+        const dir = target.replace(/\/[^/]*$/, '') || '/';
+        return { kind: 'path', value: `Write:^${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/` };
+      }
       // Anchor on the first whitespace-delimited token (the binary). Narrow enough
       // to avoid blanket Bash grants while obvious enough to one-click approve.
       const head = cmd.split(/\s+/)[0] ?? '';
@@ -310,9 +319,8 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   }
 
   const onActionProposalHandler: ActionsRoutesHandlers['onActionProposalHandler'] = async (body) => {
-    let payload: Parameters<typeof intakeProposal>[0];
-    try { payload = JSON.parse(body); }
-    catch { console.error('[hook] /work/action-proposal: invalid json'); return; }
+    const payload = parseJsonObject(body) as Parameters<typeof intakeProposal>[0] | null;
+    if (!payload) throw new Error('invalid json body');
     if (!payload.sessionId) {
       console.warn('[hook] /work/action-proposal: missing sessionId');
       return;

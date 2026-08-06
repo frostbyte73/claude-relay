@@ -34,8 +34,12 @@ async function registerProject(outpostPage: import('@playwright/test').Page, dae
 
 // Drives the real ⌘K palette: open it, search for `cwd`, and pick the one
 // matching row — leaves the palette on step 2 ("What") with that cwd selected.
+// The persistent topbar (and its #tb-cmdbar trigger) was removed by the shell
+// redesign (see css/shell-desktop.css's header comment) — ⌘K is the only way
+// to open the palette on desktop now, so drive it via the real shortcut
+// (shell.togglePalette, default binding mod+k) rather than a click.
 async function openPaletteToCwd(outpostPage: import('@playwright/test').Page, cwd: string): Promise<void> {
-  await outpostPage.locator('#tb-cmdbar').click();
+  await outpostPage.keyboard.press('Meta+k');
   await expect(outpostPage.locator('.o-palette')).toBeVisible();
   await outpostPage.locator('#p-search-input').fill(cwd);
   const row = outpostPage.locator('.search-row', { hasText: cwd });
@@ -47,10 +51,12 @@ async function openPaletteToCwd(outpostPage: import('@playwright/test').Page, cw
 // Desktop hides the step-2 Send/Track/Schedule buttons (palette.css: `.p-launch-row
 // { display: none; }`, only shown on `data-layout="mobile"`) — desktop drives launch
 // via the ⌘↵ / ⌘⇧↵ / ⇧⌘S keyboard shortcuts instead, so that's what a desktop-viewport
-// test has to press.
+// test has to press. palette.launchSession's default binding is mod+enter, which
+// normalizes to metaKey (not ctrlKey) on a Mac platform — Playwright's Chromium
+// reports navigator.platform as "MacIntel" here, so this must be Meta, not Control.
 async function launchSessionViaKeyboard(outpostPage: import('@playwright/test').Page): Promise<void> {
   await outpostPage.locator('#p-prompt').focus();
-  await outpostPage.keyboard.press('Control+Enter');
+  await outpostPage.keyboard.press('Meta+Enter');
 }
 
 async function waitForWorktreeRecord(daemon: { runtimeDir: string }, timeoutMs = 5000): Promise<{
@@ -174,8 +180,11 @@ seededTest('archiving a worktree session via the session header menu removes the
   await row.click();
   await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
 
-  await outpostPage.locator('.sv-header-menu-btn').click();
-  await outpostPage.locator('.sv-header-menu-item[data-action="archive"]').click();
+  // Archive is a top-level header button, not a ⋯ menu item — the overflow menu
+  // keeps only "Open diff" + the destructive "Delete" (session-view/index.js's
+  // headerMenuItemsHtml comment: "Archive is a top-level header button (see
+  // .sv-header-archive), not a menu item").
+  await outpostPage.locator('.sv-header-archive').click();
 
   await expect.poll(() => existsSync(wtPath), { timeout: 5_000 }).toBe(false);
   const branches = execFileSync('git', ['-C', seedRepo, 'branch', '--list', SEED_BRANCH]).toString();

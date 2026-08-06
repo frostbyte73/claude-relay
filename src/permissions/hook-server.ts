@@ -39,6 +39,10 @@ export class HookServer {
     });
   }
 
+  close(): Promise<void> {
+    return new Promise((resolve) => this.http.close(() => resolve()));
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const KNOWN_ROUTES = new Set([
       '/hook/pretool',
@@ -140,9 +144,11 @@ export class HookServer {
         const msg = (e as Error).message;
         console.error(`[hook-server] handler error (${url}):`, (e as Error).stack);
         if (url === '/hook/pretool') {
+          // A PreToolUse hook that errors must not read as "allowed".
           res.statusCode = 500;
           res.end('error');
-        } else if (url === '/work/plan-ready' || url === '/work/create-job') {
+        } else if (url?.startsWith('/work/')) {
+          // A submitting session must learn its submit failed, not read a 204 as success.
           res.statusCode = 400;
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify({ error: msg }));
