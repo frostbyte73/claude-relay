@@ -89,10 +89,15 @@ a failure, the step never leaves its merge gate, and the PWA shows nothing happe
 the PR watcher reconciles the merge much later. The merge and the branch cleanup must be
 two separate commands so a cleanup failure can never be mistaken for a merge failure.
 
-This is not left to your good intentions. The allowlist does not *blocklist* `-d` — a flag
-parser accepts too many spellings of it (`-d`, `-sd`, `-d=true`, `-db"msg"`, `"-d"`, `-d$X`)
-for a blocklist to hold. It **whitelists**: `gh pr merge` is granted only when every word
-after it is one the action is meant to use, and anything else is denied by default. What is
+The allowlist denies every *literal* spelling of `-d`/`--delete-branch` — `-d`, `-sd`,
+`-d=true`, `-db"msg"`, `"-d"`, `-d$X` are all denied, because it **whitelists**: `gh pr
+merge` is granted only when every word after it is one the action is meant to use, and
+anything else is denied by default. What it cannot see through is a value smuggled behind
+a shell variable — `F=--delete-branch; gh pr merge $F "$PR_URL" --squash` reads, on the
+command text, like an ordinary `$VAR` operand, and only becomes `--delete-branch` once the
+shell expands it. A command-text allowlist checks the text you wrote, not what it expands
+to (see CLAUDE.md) — so the instruction above is the actual guardrail, not the allowlist:
+never write `--delete-branch`, in any spelling, direct or behind a variable. What is
 allowed:
 
 | Allowed | Notes |
