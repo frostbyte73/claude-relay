@@ -151,6 +151,22 @@ function humanizeKey(k) {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+// An artifact key is whatever string the controller passed to submit_step_progress —
+// arbitrary, not a CSS identifier. Derive a safe class token from it so the renderer
+// never has to sanitize (or, worse, trust) a key it interpolates into `class="..."`.
+// Artifact keys are arbitrary strings the controller supplies, so they reach the DOM as a
+// class token only after normalising. Collisions have to be broken too: tracked/detail.js
+// keys each <details>'s open/closed state off its className, so two keys normalising to the
+// same slug would share one disclosure and toggle each other.
+function slugOf(k, taken) {
+  const base = String(k).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'artifact';
+  if (!taken) return base;
+  let slug = base;
+  for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+  taken.add(slug);
+  return slug;
+}
+
 function phaseChipOf(s) {
   if (!s.phase) return null;
   const tone = s.state === 'failed' || s.phase === 'failed' ? 'danger'
@@ -163,11 +179,12 @@ function phaseChipOf(s) {
 export function orchestratedRows(step) {
   const s = step ?? {};
   const artifacts = s.artifacts ?? {};
+  const takenSlugs = new Set();
   const artifactRows = [
-    ...(s.memo ? [{ key: 'memo', label: ARTIFACT_LABEL.memo, body: s.memo }] : []),
+    ...(s.memo ? [{ key: 'memo', slug: slugOf('memo', takenSlugs), label: ARTIFACT_LABEL.memo, body: s.memo }] : []),
     ...Object.entries(artifacts)
       .filter(([, body]) => typeof body === 'string' && body.trim())
-      .map(([key, body]) => ({ key, label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
+      .map(([key, body]) => ({ key, slug: slugOf(key, takenSlugs), label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
   ];
 
   return {
