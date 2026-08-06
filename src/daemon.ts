@@ -38,6 +38,7 @@ import { UsagePoller, type AccountUsageSnapshot } from './integrations/usage-pol
 import { loadConfig } from './config.js';
 import { loadEnvFile } from './env-file.js';
 import { parseJsonObject } from './routes/util.js';
+import { handleNotificationsMessage, handleSessionMessage } from './ws/client-messages.js';
 import { registerGitRoutes } from './routes/git.js';
 import { registerJobsRoutes } from './routes/jobs.js';
 import { registerSessionsRoutes } from './routes/sessions.js';
@@ -1031,14 +1032,7 @@ async function main() {
       // Accept approval_decide here too: notifications WS survives iOS backgrounding,
       // session WS often doesn't. Without this, decisions sent while session WS is
       // closed are dropped and the hook eventually times out.
-      ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
-        let msg: { type?: string };
-        try { msg = JSON.parse(String(raw)); } catch { return; }
-        if (msg.type === 'approval_decide') {
-          const m2 = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };
-          queue.decide(m2.approvalId, { allow: m2.decision === 'allow', reason: m2.reason });
-        }
-      });
+      ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => handleNotificationsMessage(raw, { queue }));
       ws.on('close', () => notificationClients.delete(ws));
       return;
     }
@@ -1093,39 +1087,9 @@ async function main() {
     // Replay last statusline so the meter renders before claude's next fire; PWA handler is idempotent.
     const cachedSl = latestStatuslineBySession.get(sessionId);
     if (cachedSl) ws.send(JSON.stringify(cachedSl));
-    ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
-      let msg: { type?: string };
-      try {
-        msg = JSON.parse(String(raw));
-      } catch {
-        return;
-      }
-      if (msg.type === 'user_message') {
-        const m2 = msg as { content: string };
-        manager.send(sessionId, {
-          type: 'user',
-          message: { role: 'user', content: m2.content },
-        });
-      } else if (msg.type === 'approval_decide') {
-        const m2 = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };
-        queue.decide(m2.approvalId, { allow: m2.decision === 'allow', reason: m2.reason });
-      } else if (msg.type === 'interrupt') {
-        console.log(`[api] interrupt requested for session ${sessionId.slice(0, 8)}`);
-        manager.interrupt(sessionId);
-      } else if (msg.type === 'approval_mode_set') {
-        const { mode } = msg as { mode?: string };
-        if (typeof mode === 'string') {
-          try {
-            // ApprovalModeStore.set() throws on invalid mode.
-            modes.set(sessionId, mode as ApprovalMode);
-            manager.broadcast(sessionId, { type: 'approval_mode', sessionId, mode });
-            console.log(`[api] approval mode for ${sessionId.slice(0, 8)} → ${mode}`);
-          } catch {
-            // Invalid mode — ignore.
-          }
-        }
-      }
-    });
+    ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) =>
+      handleSessionMessage(raw, sessionId, { queue, manager, modes, log: (l) => console.log(l) }),
+    );
   });
 
   servePwa(server, PWA_DIR);
