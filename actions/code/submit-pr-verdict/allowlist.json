@@ -1,0 +1,10 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh pr review(?:\\s+(?:--approve|--request-changes|--body(?:\\s+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:\\s+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*[\"']?|[\"']?(?:\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?|https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+|[0-9]+)[\"']?))*\\s*$"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": [
+    "Write:^/tmp/"
+  ]
+}

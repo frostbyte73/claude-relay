@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.submit-pr-verdict input",
+  "description": "The orchestrated step envelope as code.submit-pr-verdict sees it. This is a self-round target: `code.orchestrate-review` rebinds its own session for one turn, so the envelope is the controller's, with `boundAction` set. The verdict is derived from `artifacts.resolutions`, not chosen — any `not-addressed` blocks an APPROVE unless `boundNote` records an explicit user waiver.",
+  "type": "object",
+  "required": ["jobId", "stepId", "artifacts"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "type": { "const": "orchestrated" },
+    "controller": { "const": "code.orchestrate-review" },
+    "goal": { "type": "string" },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "prUrl": { "type": "string" },
+        "until": { "enum": ["approved", "closed"] }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "readonly", "writable"] },
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "phase": { "type": "string" },
+    "memo": { "type": "string" },
+    "artifacts": {
+      "type": "object",
+      "description": "`resolutions` is what the verdict is derived from; `postedReview` is the comment set it is a verdict on.",
+      "required": ["resolutions"],
+      "additionalProperties": { "type": "string" }
+    },
+    "boundAction": {
+      "const": "code.submit-pr-verdict",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "What the controller asked for this round — including any explicit user waiver of an unresolved comment. This is the text the user read at the gate."
+    },
+    "gateApproved": {
+      "type": "boolean",
+      "description": "True once the user approved the daemon's forced gate on this external write."
+    },
+    "gateFeedback": { "type": "array", "items": { "type": "string" } },
+    "recentLessons": { "type": "array", "items": { "type": "object" } },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher.",
+      "properties": {
+        "prUrl": { "type": "string" },
+        "prState": { "enum": ["open", "merged", "closed"] },
+        "comments": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

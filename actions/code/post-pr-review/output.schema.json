@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.post-pr-review output",
+  "description": "This round hands the session back with `next: {kind:\"self-round\"}` rather than resolving the step, so it emits no step output. What it posted is recorded in `memo` and in the `postedReview` artifact — the review id, then one line per comment: path, line, outcome (`posted` | `degraded-to-body` | `failed`), and the body's first 80 chars. `code.verify-resolutions` reads that artifact comment by comment, so keep it one comment per line.",
+  "type": "string"
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.verify-resolutions input",
+  "description": "The orchestrated step envelope as code.verify-resolutions sees it. This is a self-round target: `code.orchestrate-review` rebinds its own session for one turn, so the envelope is the controller's, with `boundAction` set. `artifacts.postedReview` is the comment set to verify — one line per comment.",
+  "type": "object",
+  "required": ["jobId", "stepId", "artifacts"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "type": { "const": "orchestrated" },
+    "controller": { "const": "code.orchestrate-review" },
+    "goal": { "type": "string" },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "prUrl": { "type": "string" }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "readonly", "writable"] },
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "phase": { "type": "string" },
+    "memo": { "type": "string" },
+    "artifacts": {
+      "type": "object",
+      "description": "`postedReview` is what code.post-pr-review actually posted; `resolutions` is an earlier pass's verdicts, to be carried forward.",
+      "required": ["postedReview"],
+      "additionalProperties": { "type": "string" }
+    },
+    "boundAction": {
+      "const": "code.verify-resolutions",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "Optional narrowing: which comments the controller wants re-checked this round."
+    },
+    "recentLessons": { "type": "array", "items": { "type": "object" } },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher. The author's replies live here — context only; the verdict comes from the diff.",
+      "properties": {
+        "prUrl": { "type": "string" },
+        "prState": { "enum": ["open", "merged", "closed"] },
+        "comments": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

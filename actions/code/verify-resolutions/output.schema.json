@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.verify-resolutions output",
+  "description": "This round hands the session back with `next: {kind:\"self-round\"}` rather than resolving the step, so it emits no step output. Its result is the `resolutions` artifact: one line per comment from `postedReview`, in the same order, each `addressed` | `not-addressed` | `unclear` plus the evidence commit and hunk. `code.submit-pr-verdict` derives the verdict from it — any `not-addressed` blocks an APPROVE.",
+  "type": "string"
+}

@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.submit-pr-verdict output",
+  "description": "This round hands the session back with `next: {kind:\"self-round\"}` rather than resolving the step — the controller owns whether the step ends here or keeps watching the PR (`inputs.until`). So it emits no step output. The verdict is recorded in `memo` and in the `verdict` artifact: `APPROVE` or `REQUEST_CHANGES` on the first line, then the body exactly as submitted.",
+  "type": "string"
+}

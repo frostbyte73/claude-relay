@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.post-pr-review input",
+  "description": "The orchestrated step envelope as code.post-pr-review sees it. This is a self-round target: `code.orchestrate-review` rebinds its own session for one turn, so the envelope is the controller's, with `boundAction` and `boundNote` set. `boundNote` is the approved payload — which comments to post and the exact body for each.",
+  "type": "object",
+  "required": ["jobId", "stepId", "boundNote"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "type": { "const": "orchestrated" },
+    "controller": { "const": "code.orchestrate-review" },
+    "goal": { "type": "string" },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "prUrl": { "type": "string", "description": "The PR under review, when the step was created from a url rather than a watched PR." }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "readonly", "writable"] },
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "phase": { "type": "string" },
+    "memo": { "type": "string" },
+    "artifacts": {
+      "type": "object",
+      "description": "`findings` holds the review round's full findings; `postedReview` records what an earlier round already posted.",
+      "additionalProperties": { "type": "string" }
+    },
+    "boundAction": {
+      "const": "code.post-pr-review",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "The approved comment set, verbatim: one entry per comment with file path, line, and the exact body to post. This is the text the user read at the gate."
+    },
+    "gateApproved": {
+      "type": "boolean",
+      "description": "True once the user approved the daemon's forced gate on this external write."
+    },
+    "gateFeedback": { "type": "array", "items": { "type": "string" } },
+    "recentLessons": { "type": "array", "items": { "type": "object" } },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher.",
+      "properties": {
+        "prUrl": { "type": "string" },
+        "prState": { "enum": ["open", "merged", "closed"] },
+        "comments": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh api (?:--method|-X)(?:\\s+|=)POST\\s+[\"']?repos/(?:\\{owner\\}|\\{repo\\}|\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?|[A-Za-z0-9_][A-Za-z0-9._-]*)/(?:\\{owner\\}|\\{repo\\}|\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?|[A-Za-z0-9_][A-Za-z0-9._-]*)/pulls/(?:[0-9]+|\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?)/reviews[\"']?\\s+--input(?:\\s+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*[\"']?\\s*$"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": [
+    "Write:^/tmp/"
+  ]
+}
