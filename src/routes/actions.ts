@@ -311,7 +311,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
 
   const onActionProposalHandler: ActionsRoutesHandlers['onActionProposalHandler'] = async (body) => {
     const payload = parseJsonObject(body) as Parameters<typeof intakeProposal>[0] | null;
-    if (!payload) { console.error('[hook] /work/action-proposal: invalid json'); return; }
+    if (!payload) throw new Error('invalid json body');
     if (!payload.sessionId) {
       console.warn('[hook] /work/action-proposal: missing sessionId');
       return;

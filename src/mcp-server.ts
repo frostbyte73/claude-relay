@@ -3,6 +3,8 @@
 // HTTP transport: one POST /mcp per JSON-RPC message (or batch), synchronous JSON
 // response. No SSE — every tool here is a short synchronous write to daemon state.
 
+import { isPlainObject } from './routes/util.js';
+
 export interface McpTool {
   name: string;
   description: string;
@@ -34,7 +36,14 @@ export async function handleMcpRequest(rawBody: string, tools: McpTool[], dispat
   try { parsed = JSON.parse(rawBody); }
   catch { return jsonResponse(400, jsonRpcError(null, -32700, 'parse error')); }
 
-  const messages = Array.isArray(parsed) ? parsed as JsonRpcMessage[] : [parsed as JsonRpcMessage];
+  const candidates = Array.isArray(parsed) ? parsed : [parsed];
+  // `handleOne` reads `msg.id`/`msg.method` — a literal `null`/array/primitive element
+  // (top-level or inside a batch) would throw there instead of degrading gracefully.
+  // Reject the whole batch with the same shape a parse failure already returns.
+  if (candidates.some((m) => !isPlainObject(m))) {
+    return jsonResponse(400, jsonRpcError(null, -32700, 'parse error'));
+  }
+  const messages = candidates as JsonRpcMessage[];
   const responses: unknown[] = [];
   for (const msg of messages) {
     const reply = await handleOne(msg, tools, dispatch);
