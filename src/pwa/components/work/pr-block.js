@@ -3,7 +3,7 @@
 // orchestrated-card.js mounts it directly inside the step's row once there's
 // something to show, adapting the step's `pr` facts onto the flat shape read here.
 
-import { groupThreads, renderThreadCard, wireThreadCard } from './thread-card.js';
+import { groupThreads, renderThreadCard } from './thread-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { discardAll } from '../../state/git.js';
 import { work } from '../../state/work.js';
@@ -203,7 +203,7 @@ export function renderPrBlockHtml(job, s) {
 
     ${openThreads.length === 0 ? '' : `
       <div class="threads">
-        ${openThreads.map((chain) => renderThreadCard(chain, draftFor(chain), s)).join('')}
+        ${openThreads.map((chain) => renderThreadCard(chain, draftFor(chain))).join('')}
       </div>
     `}
     ${docDisclosureHtml('Spec', 'pr-spec', spec)}
@@ -213,7 +213,7 @@ export function renderPrBlockHtml(job, s) {
       <details class="pr-disclosure pr-threads-resolved">
         ${disclosureSummary('Comments', `${resolvedThreads.length} resolved`)}
         <div class="threads">
-          ${resolvedThreads.map((chain) => renderThreadCard(chain, undefined, s)).join('')}
+          ${resolvedThreads.map((chain) => renderThreadCard(chain)).join('')}
         </div>
       </details>
     ` : ''}`;
@@ -265,5 +265,4 @@ export function wirePrBlockActions(el, job, s) {
       btn.disabled = false;
     }
   });
-  el.querySelectorAll('.thread').forEach((threadEl) => wireThreadCard(threadEl, job, s));
 }

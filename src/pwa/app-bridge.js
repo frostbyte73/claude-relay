@@ -21,7 +21,7 @@ let bridge = {
   // Reserved for P2 — keys exist now so surface stubs can import the wrapper
   // functions below without waiting on whoever lands the real implementation,
   // and so no P2 agent has to touch this shared file to register their impl.
-  //   openDiffForStep({jobId, stepId, sessionId, mode}) — diff-overlay agent's
+  //   openDiffForStep({jobId, stepId, sessionId}) — diff-overlay agent's
   //     mount-parameterized API (D2/P2 contract); Tracked calls it from a
   //     step's CTA instead of reaching into diff-overlay internals.
   //   openScheduleDetail(scheduleId) — schedules agent; jumps the schedules

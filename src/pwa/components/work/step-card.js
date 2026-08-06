@@ -259,7 +259,7 @@ export function wireTimelineStep(el, job, s) {
     if (btn.tagName === 'A') return; // external link — no JS needed
     btn.addEventListener('click', () => {
       const kind = btn.getAttribute('data-ref');
-      if (kind === 'diff') void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId, mode: 'review' });
+      if (kind === 'diff') void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId });
     });
   });
   el.querySelectorAll('[data-step-action]').forEach((btn) => {

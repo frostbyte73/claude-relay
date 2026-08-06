@@ -43,11 +43,6 @@ export const workApi = {
   resetJob(id)                     { return request(`${jobPath(id)}/reset`, { method: 'POST', body: '{}' }); },
   syncNow()                        { return request('/sync', { method: 'POST', body: '{}' }); },
   syncJob(id)                      { return request(`${jobPath(id)}/sync`, { method: 'POST', body: '{}' }); },
-  resolveReply(id, stepId, body)   { return request(`${stepPath(id, stepId)}/replies/resolve`, { method: 'POST', body: JSON.stringify(body) }); },
-  enqueueEdit(id, stepId, body)    { return request(`${stepPath(id, stepId)}/edits/enqueue`, { method: 'POST', body: JSON.stringify(body) }); },
-  lockReply(id, stepId, body)      { return request(`${stepPath(id, stepId)}/replies/lock`, { method: 'POST', body: JSON.stringify(body) }); },
-  react(id, stepId, body)          { return request(`${stepPath(id, stepId)}/reactions`, { method: 'POST', body: JSON.stringify(body) }); },
-  regenerateReply(id, stepId, body) { return request(`${stepPath(id, stepId)}/replies/regenerate`, { method: 'POST', body: JSON.stringify(body) }); },
   launchStep(id, stepId)           { return request(`${stepPath(id, stepId)}/launch`, { method: 'POST', body: '{}' }); },
   messageStep(id, stepId, body)    { return request(`${stepPath(id, stepId)}/message`, { method: 'POST', body: JSON.stringify({ body }) }); },
   resolveStepGate(id, stepId, approved, feedback) {

@@ -133,14 +133,6 @@ export const work = {
   async retryStep(id, stepId)    { return call(() => workApi.retryStep(id, stepId)); },
   async rerunLatest(id)          { return call(() => workApi.rerunLatest(id)); },
   async resetJob(id)             { return call(() => workApi.resetJob(id)); },
-  async resolveReply(id, stepId, body) { return call(() => workApi.resolveReply(id, stepId, body)); },
-  async enqueueEdit(id, stepId, body)  { return call(() => workApi.enqueueEdit(id, stepId, body)); },
-  async lockReply(id, stepId, body)    {
-    try { await workApi.lockReply(id, stepId, body); }
-    catch (e) { store.set((s) => ({ ...s, error: e.message })); }
-  },
-  async react(id, stepId, body)        { return call(() => workApi.react(id, stepId, body)); },
-  async regenerateReply(id, stepId, body) { return call(() => workApi.regenerateReply(id, stepId, body)); },
   // Launch a queued step now: force-fires its parked launch. No job/step payload comes
   // back (just `{launched}`) — the badge update rides the WS work_launch_changed refetch,
   // not a hand-mutate here.

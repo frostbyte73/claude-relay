@@ -953,9 +953,6 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 .thread.thread-has-reply::before { background: var(--accent); }
 .thread.thread-has-edit::before { background: var(--accent-2); }
 .thread.thread-has-ignore::before { background: var(--text-dim); }
-.thread.thread-has-pending::before {
-  background: linear-gradient(to bottom, var(--accent-soft), var(--line) 80%);
-}
 .thread-card { background: transparent; }
 
 /* Thread header — file location is the headline; author + recommendation chip on a second row. */
@@ -1084,7 +1081,8 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 .thread-msg-body .md-pre { margin: 8px 0; }
 .thread-msg-body .md-h { margin: 12px 0 6px; }
 
-/* Reactions row. */
+/* Reactions row — display-only; the reaction endpoint went away with the
+   open-pr step type, so migrated threads render chips and nothing to click. */
 .thread-reactions {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: 8px;
@@ -1100,46 +1098,8 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   padding: 0; border: 0; background: transparent;
   font-size: 15px; line-height: 1;
 }
-.thread-reaction-add {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--text-mute);
-  border-radius: var(--r-control);
-  padding: 0;
-  width: 22px; height: 22px;
-  font-size: 13px; line-height: 1;
-  cursor: pointer;
-  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
-}
-.thread-reaction-add:hover,
-.thread-reaction-add:active {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: transparent;
-}
-.thread-reaction-picker {
-  display: inline-flex; gap: 4px; flex-wrap: wrap;
-  padding: 6px 8px;
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: var(--r-container);
-  box-shadow: var(--shadow-pop);
-  flex-basis: auto;
-}
-.thread-reaction-picker[hidden] { display: none; }
-.thread-reaction-pick {
-  background: transparent;
-  border: 0;
-  border-radius: var(--r-control);
-  padding: 4px;
-  font-size: 16px; line-height: 1;
-  cursor: pointer;
-  transition: background var(--dur-1) var(--ease);
-}
-.thread-reaction-pick:hover { background: var(--accent-soft); }
-.thread-reaction-pick:disabled { opacity: 0.5; cursor: default; }
 
-/* Agent rationale and status banners. */
+/* Agent rationale. */
 .thread-rationale {
   margin: 12px 0 0;
   padding: 10px 0 0;
@@ -1149,43 +1109,8 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   background: transparent;
   overflow-wrap: anywhere;
 }
-.thread-rationale-pending {
-  color: var(--text-dim);
-  font-style: italic;
-}
-.thread-banner {
-  margin: 12px 0 0;
-  padding: 8px 12px;
-  font-size: 12px; line-height: 1.5;
-  background: transparent;
-  border-left: 2px solid;
-  border-radius: 0 var(--r-control) var(--r-control) 0;
-  overflow-wrap: anywhere;
-}
-.thread-banner-reopened {
-  color: var(--accent);
-  border-left-color: var(--accent);
-  background: var(--accent-soft);
-}
-.thread-banner-locked {
-  color: var(--accent-2);
-  border-left-color: var(--accent-2);
-  background: var(--accent-2-soft);
-}
 
-/* Action row + composers. Reply/Edit/Ignore/⋯ are .o-btn (§7.1) — sized to
-   share the row evenly instead of the default inline width. */
-.thread-actions {
-  display: flex; flex-wrap: wrap; gap: 8px;
-  padding: 0;
-  margin: 14px 0 0;
-  border: 0; background: transparent;
-}
-.thread-actions .o-btn {
-  flex: 1 1 0;
-  min-width: 100px;
-  justify-content: center;
-}
+/* Step composers (gate feedback, controller message). */
 .thread-composer {
   margin-top: 12px;
   padding: 12px 0 0;
@@ -1194,11 +1119,6 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   background: transparent;
 }
 .thread-composer[hidden] { display: none; }
-.thread-composer-status {
-  flex-direction: row; align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
 .thread-compose-input {
   width: 100%; box-sizing: border-box;
   padding: 10px 12px;
@@ -1212,28 +1132,6 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 }
 .thread-compose-input:focus { outline: none; border-color: var(--accent); }
 .thread-composer-row { display: flex; justify-content: flex-end; }
-.thread-ignore-note {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-mute);
-}
-.thread-edit-status {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-size: 12px;
-  color: var(--accent);
-}
-.thread-edit-status::before {
-  content: '';
-  width: 6px; height: 6px;
-  border-radius: var(--r-pill);
-  background: var(--accent);
-  animation: tl-pulse var(--pulse) ease-in-out infinite;
-}
-.thread-edit-failure {
-  font-size: 13px;
-  color: var(--danger);
-  overflow-wrap: anywhere;
-}
 
 /* Empty state inside chapter bodies. */
 .work-section-body > .work-empty {

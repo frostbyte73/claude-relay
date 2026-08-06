@@ -1,7 +1,7 @@
 // Diff overlay + source-control state. The overlay is still a single-instance
 // modal (only one review can be open at a time), so these remain mutable
 // singletons — but `diffState.ctx` now carries the explicit
-// {sessionId, jobId, stepId, mode} context passed to openDiffOverlay/openDiffForStep
+// {sessionId, jobId, stepId} context passed to openDiffOverlay/openDiffForStep
 // instead of the overlay reaching into `sessions.get().currentSessionId` pervasively.
 //
 // sourceCtl.headerBySessionId and sourceCtl.busyBySessionId are the exception —
@@ -11,7 +11,7 @@
 
 export const diffState = {
   // Context for the currently open overlay; null when closed.
-  // { sessionId, jobId, stepId, mode: 'edit-review'|'pr-comment-edit', job, step, editJob, comment }
+  // { sessionId, jobId, stepId, job, step }
   ctx: null,
   mode: 'branch', // compare mode: 'branch' | 'worktree' | 'log'
   files: [],

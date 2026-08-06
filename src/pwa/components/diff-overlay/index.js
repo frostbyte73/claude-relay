@@ -7,7 +7,7 @@
 // Consumers:
 //   - app.js calls initDiffOverlay({ renderSession, startThinking,
 //     scrollTranscriptBottom, leaveSession }) once at startup.
-//   - app-bridge's openDiffForStep({sessionId, jobId?, stepId?, mode?}) — filled
+//   - app-bridge's openDiffForStep({sessionId, jobId?, stepId?}) — filled
 //     here via installAppBridge() — is how Tracked's step CTA opens a review
 //     scoped to a specific job/step without importing this module directly.
 //   - openDiffOverlay(opts) also accepts no-args (falls back to the current
@@ -31,11 +31,7 @@ import {
   getBusy as getGitBusy,
   setBusy as setGitBusy,
 } from '../../state/git.js';
-import {
-  formatDiffReviewMessage as formatDiffReviewMessageShared,
-  isDiffReviewMessage,
-  parseDiffReviewMessage,
-} from '../diff-review-format.js';
+import { formatDiffReviewMessage as formatDiffReviewMessageShared } from '../diff-review-format.js';
 import { makeSheetDismissible, noteSheetOpen, noteSheetClose, confirmInSheet } from '../sheet-utils.js';
 
 let _deps = {
@@ -56,36 +52,25 @@ function cssEscape(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 function diffCommentKey(file, side, line) { return `${file}:${side}:${line}`; }
 
 // ── Context resolution ───────────────────────────────────────────────────
-// Resolves the job/step (and, for a PR-comment fix-up session, the editQueue
-// entry + originating PrComment) behind a sessionId/jobId/stepId triple so the
-// header and commit-message draft can speak in terms of "step 2 · Draft the
-// fix" instead of a bare branch name.
+// Resolves the job/step behind a sessionId/jobId/stepId triple so the header and
+// commit-message draft can speak in terms of "step 2 · Draft the fix" instead of
+// a bare branch name.
 function findStepContext({ jobId, stepId, sessionId }) {
   const { byId, jobs } = work.get();
   let job = jobId ? byId.get(jobId) ?? null : null;
   let step = job && stepId ? job.steps.find((s) => s.id === stepId) ?? null : null;
-  let editJob = null;
 
   if (!job) {
     outer: for (const j of jobs) {
       for (const s of j.steps) {
         if (s.sessionId === sessionId) { job = j; step = s; break outer; }
-        if (s.type === 'orchestrated') {
-          const eq = (s.editQueue ?? []).find((e) => e.sessionId === sessionId);
-          if (eq) { job = j; step = s; editJob = eq; break outer; }
-        }
       }
     }
-  } else if (step?.type === 'orchestrated' && step.sessionId !== sessionId) {
-    editJob = (step.editQueue ?? []).find((e) => e.sessionId === sessionId) ?? null;
   }
-  const comment = editJob && step?.type === 'orchestrated'
-    ? (step.pr?.comments ?? []).find((c) => c.id === editJob.commentId) ?? null
-    : null;
-  return { job, step, editJob, comment };
+  return { job, step };
 }
 
-function buildDiffContext({ sessionId, jobId, stepId, mode }) {
+function buildDiffContext({ sessionId, jobId, stepId }) {
   const found = findStepContext({ jobId, stepId, sessionId });
   return {
     sessionId,
@@ -93,9 +78,6 @@ function buildDiffContext({ sessionId, jobId, stepId, mode }) {
     stepId: found.step?.id ?? stepId ?? null,
     job: found.job ?? null,
     step: found.step ?? null,
-    editJob: found.editJob ?? null,
-    comment: found.comment ?? null,
-    mode: mode ?? (found.editJob ? 'pr-comment-edit' : 'edit-review'),
   };
 }
 
@@ -112,18 +94,6 @@ function firstLine(s) { return (s ?? '').split('\n').find((l) => l.trim().length
 function draftCommitMessage(ctx, variant) {
   if (!ctx) return '';
   const closes = ctx.job?.externalRef?.issueIdentifier ? `\n\nCloses ${ctx.job.externalRef.issueIdentifier}` : '';
-  if (ctx.mode === 'pr-comment-edit') {
-    const quoted = firstLine(ctx.comment?.body).slice(0, 100);
-    const title = quoted ? `Address review comment: ${quoted}` : 'Address review comment';
-    const rawNote = ctx.editJob?.userNote ?? ctx.comment?.body ?? '';
-    // A queued diff-review userNote carries the raw `<!-- outpost:diff-review -->`
-    // marker + citation blocks meant for the fix session, not a commit body —
-    // reduce it to just the drafted note text.
-    const body = isDiffReviewMessage(rawNote)
-      ? (parseDiffReviewMessage(rawNote) ?? []).map((b) => b.note).filter(Boolean).join('\n\n')
-      : rawNote.trim();
-    return [title, body].filter(Boolean).join('\n\n');
-  }
   const step = ctx.step;
   if (!step) return '';
   const title = step.title || 'Update';
@@ -150,7 +120,7 @@ function defaultCommit(ctx, status) {
     // Once a PR is open on this branch, a round appends — "open PR" would re-squash to
     // base and diverge from the pushed head. Default it off so the action is a plain
     // commit-on-top + fast-forward push.
-    openPr: ctx?.mode !== 'pr-comment-edit' && !(ctx?.step?.pr?.prUrl || status?.prUrl),
+    openPr: !(ctx?.step?.pr?.prUrl || status?.prUrl),
     mergeMode: 'squash-to-branch',
     newBranch: base === currentBranch || !currentBranch ? suggested : currentBranch,
   };
@@ -175,7 +145,7 @@ async function openDiffOverlay(opts = {}) {
   unregisterDiffBack?.();
   unregisterDiffBack = registerBackHandler(closeDiffOverlay);
 
-  diffState.ctx = buildDiffContext({ sessionId, jobId: opts.jobId, stepId: opts.stepId, mode: opts.mode });
+  diffState.ctx = buildDiffContext({ sessionId, jobId: opts.jobId, stepId: opts.stepId });
   diffState.comments.clear();
   diffState.openDraftKey = null;
   diffState.collapsed.clear();
@@ -196,8 +166,8 @@ async function openDiffOverlay(opts = {}) {
   fetchAndRenderDiff();
 }
 
-function openDiffForStep({ jobId, stepId, sessionId, mode } = {}) {
-  return openDiffOverlay({ jobId, stepId, sessionId, mode });
+function openDiffForStep({ jobId, stepId, sessionId } = {}) {
+  return openDiffOverlay({ jobId, stepId, sessionId });
 }
 
 function currentSessionBranchHint(sessionId) {
@@ -237,9 +207,7 @@ function mount() {
 function overlayShellHtml() {
   const ctx = diffState.ctx;
   const stepRef = ctx?.step ? `<span class="o-ref">Step ${stepOrdinal(ctx.job, ctx.step) ?? '?'}</span>` : '';
-  const titleLead = ctx?.mode === 'pr-comment-edit'
-    ? `Review edit for thread #${escapeHtml(String(ctx.comment?.id ?? ''))}`
-    : ctx?.step ? `Review changes · ${escapeHtml(ctx.step.title)}` : 'Review changes';
+  const titleLead = ctx?.step ? `Review changes · ${escapeHtml(ctx.step.title)}` : 'Review changes';
   return `
   <div class="dr-scrim" data-act="scrim">
     <div class="dr-overlay" role="dialog" aria-modal="true" aria-label="Diff review">
@@ -963,7 +931,7 @@ function computePrimaryLabel({ ignoreReview = false } = {}) {
     const bits = [];
     bits.push(willCommit ? 'Commit' : null);
     bits.push(commit.push ? 'push' : null);
-    bits.push(commit.openPr && diffState.ctx?.mode !== 'pr-comment-edit' && !s.prUrl && !onDefault ? 'open PR' : null);
+    bits.push(commit.openPr && !s.prUrl && !onDefault ? 'open PR' : null);
     const parts = bits.filter(Boolean);
     return parts.length ? parts[0] + (parts.length > 1 ? ` & ${parts.slice(1).join(' & ')}` : '') : 'Push';
   }
@@ -1003,7 +971,7 @@ function buildCommitDialogHtml() {
   // 409 on `gh pr create` — so drop the checkbox entirely and link the existing
   // PR instead. A disabled-but-still-checked box reads as "this will open a
   // second PR" and paralyzes the user right when they need to just commit & push.
-  const openPrRow = (!isWorktree || commit.mergeMode === 'squash-to-branch') && diffState.ctx.mode !== 'pr-comment-edit'
+  const openPrRow = (!isWorktree || commit.mergeMode === 'squash-to-branch')
     && !(!isWorktree && onDefaultBranch)
     ? (s?.prUrl
       ? `<a class="dr-pr-open o-pill code" href="${escapeHtml(s.prUrl)}" target="_blank" rel="noopener">PR already open ↗</a>`
@@ -1425,7 +1393,7 @@ async function runCommitAction() {
     if (commit.push && !(await doPush(sessionId))) return;
     const live = sourceCtl.status ?? s;
     const onDefault = Boolean(live.branch && live.defaultBranch && live.branch === live.defaultBranch);
-    if (commit.openPr && ctx.mode !== 'pr-comment-edit' && !live.prUrl && !onDefault) await doOpenPr(sessionId);
+    if (commit.openPr && !live.prUrl && !onDefault) await doOpenPr(sessionId);
     return;
   }
 

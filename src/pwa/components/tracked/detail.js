@@ -152,22 +152,8 @@ function detailsKey(d) {
 }
 
 function snapshotUi(root) {
-  const snap = { details: new Map(), threads: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null };
+  const snap = { details: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null };
   root.querySelectorAll('details').forEach((d) => snap.details.set(detailsKey(d), d.open));
-  root.querySelectorAll('.thread[data-comment-id]').forEach((t) => {
-    const openEl = [...t.querySelectorAll('[data-composer]')].find((c) =>
-      !c.hasAttribute('hidden') && !c.classList.contains('thread-composer-status'));
-    const values = {};
-    t.querySelectorAll('[data-composer] textarea').forEach((ta) => {
-      // defaultValue is the rendered prefill — only carry over what the user
-      // actually typed, so a fresh draft from the server isn't clobbered.
-      if (ta.value !== ta.defaultValue) values[ta.closest('[data-composer]').getAttribute('data-composer')] = ta.value;
-    });
-    const open = openEl?.getAttribute('data-composer') ?? null;
-    if (open || Object.keys(values).length) {
-      snap.threads.set(t.getAttribute('data-comment-id'), { open, values });
-    }
-  });
   const replan = root.querySelector('.replan-composer');
   if (replan) {
     snap.replan = {
@@ -181,8 +167,6 @@ function snapshotUi(root) {
   const ae = document.activeElement;
   if (ae && root.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
     snap.focus = {
-      commentId: ae.closest('.thread[data-comment-id]')?.getAttribute('data-comment-id') ?? null,
-      composer: ae.closest('[data-composer]')?.getAttribute('data-composer') ?? null,
       replan: !!ae.closest('.replan-composer'),
       launchContext: !!ae.closest('.launch-context'),
       start: ae.selectionStart,
@@ -199,20 +183,6 @@ function restoreUi(root, snap) {
     const k = detailsKey(d);
     if (snap.details.has(k)) d.open = snap.details.get(k);
   });
-  for (const [commentId, t] of snap.threads) {
-    const el = root.querySelector(`.thread[data-comment-id="${CSS.escape(commentId)}"]`);
-    if (!el) continue;
-    for (const [kind, value] of Object.entries(t.values)) {
-      const ta = el.querySelector(`[data-composer="${CSS.escape(kind)}"] textarea`);
-      if (ta) ta.value = value;
-    }
-    if (t.open) {
-      el.querySelectorAll('[data-composer]').forEach((c) => {
-        if (c.classList.contains('thread-composer-status')) return;
-        c.toggleAttribute('hidden', c.getAttribute('data-composer') !== t.open);
-      });
-    }
-  }
   if (snap.replan && (snap.replan.open || snap.replan.value)) {
     const composer = root.querySelector('.replan-composer');
     const ta = composer?.querySelector('.replan-textarea');
@@ -233,9 +203,6 @@ function restoreUi(root, snap) {
       ta = root.querySelector('.replan-textarea');
     } else if (snap.focus.launchContext) {
       ta = root.querySelector('.launch-context-textarea');
-    } else if (snap.focus.commentId && snap.focus.composer) {
-      ta = root.querySelector(
-        `.thread[data-comment-id="${CSS.escape(snap.focus.commentId)}"] [data-composer="${CSS.escape(snap.focus.composer)}"] textarea`);
     }
     if (ta) {
       ta.focus();
