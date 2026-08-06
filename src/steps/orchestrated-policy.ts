@@ -1,6 +1,10 @@
 import type { NextMove, OrchestratedStep } from '../work/work-types.js';
 
 export const MAX_ROUNDS = 40;
+// Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor added an
+// artifact (see isProductive in orchestrated-runner). A controller marching spec → plan →
+// implement has something to show for every round and never approaches this; one resuming
+// itself with nothing to show for it three times running is the runaway this bounds.
 export const MAX_CONSECUTIVE_SELF_ROUNDS = 3;
 export const MAX_DISPATCH_ATTEMPTS = 2;
 
@@ -44,8 +48,8 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
     if (step.consecutiveSelfRounds >= MAX_CONSECUTIVE_SELF_ROUNDS) {
       return {
         kind: 'reject',
-        reason: `${MAX_CONSECUTIVE_SELF_ROUNDS} self-rounds in a row with no dispatch or new event — `
-          + 'dispatch, wait, gate, resolve, or fail instead',
+        reason: `${MAX_CONSECUTIVE_SELF_ROUNDS} self-rounds in a row that moved neither phase nor `
+          + 'artifacts — show progress on the next round, or dispatch, wait, gate, resolve, or fail instead',
       };
     }
     if (move.action) {

@@ -28,7 +28,7 @@ function host(initial: OrchestratedStep, working = false) {
     actionInfo: {
       sideEffects: (a) => ({
         'code.implement': 'worktree-edit', 'code.fix-ci': 'external-write',
-        'code.review-diff': 'none',
+        'code.review-diff': 'none', 'code.spec': 'none', 'code.plan': 'none',
       } as Record<string, 'none' | 'worktree-edit' | 'external-write'>)[a],
       humanGate: () => false,
     },
@@ -45,6 +45,63 @@ describe('applyMove', () => {
     expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.implement', 'go');
     expect(get().consecutiveSelfRounds).toBe(2);
     expect(get().state).toBe('running');
+  });
+
+  // The documented phase ladder in code.orchestrate-pr's SKILL.md. Every move here is
+  // legitimate work, so none of them may be rejected and the step must never fail.
+  it('runs the spec → gate → approve → plan → implement ladder end to end', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { phase: 'spec', next: { kind: 'self-round', action: 'code.spec' } });
+    applyMove(h, 'j1', 's1', {
+      phase: 'spec', artifacts: { spec: '# Spec' },
+      next: { kind: 'gate', draft: '# Spec', question: 'Approve the spec?' },
+    });
+    resolveGate(h, 'j1', 's1', true);
+    applyMove(h, 'j1', 's1', { phase: 'plan', next: { kind: 'self-round', action: 'code.plan' } });
+    applyMove(h, 'j1', 's1', {
+      phase: 'implement', artifacts: { implPlan: '# Plan' },
+      next: { kind: 'self-round', action: 'code.implement' },
+    });
+
+    expect(h.failStep).not.toHaveBeenCalled();
+    expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBeFalsy();
+    expect(get().pendingPolicyStrike).toBe(false);
+    expect(get().state).toBe('running');
+    expect(h.resumeController).toHaveBeenLastCalledWith('j1', 's1', 'code.implement', undefined);
+  });
+
+  it('a gate resets the consecutive-self-round count', () => {
+    const { h, get } = host(step({ consecutiveSelfRounds: 2 }));
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
+    expect(get().consecutiveSelfRounds).toBe(0);
+  });
+
+  it('self-rounds that change neither phase nor artifacts still hit the cap', () => {
+    const { h, get } = host(step({ phase: 'implement', artifacts: { spec: '# S' } }));
+    for (let i = 0; i < MAX_CONSECUTIVE_SELF_ROUNDS; i++) {
+      // Same phase, same artifact key with a rewritten value: nothing new to show for the round.
+      applyMove(h, 'j1', 's1', {
+        phase: 'implement', artifacts: { spec: `# S${i}` },
+        next: { kind: 'self-round', action: 'code.implement' },
+      });
+    }
+    expect(get().consecutiveSelfRounds).toBe(MAX_CONSECUTIVE_SELF_ROUNDS);
+
+    applyMove(h, 'j1', 's1', { phase: 'implement', next: { kind: 'self-round', action: 'code.implement' } });
+    expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBe(true);
+  });
+
+  it('a self-round that moves the phase or adds an artifact resets the count', () => {
+    const a = host(step({ phase: 'spec', consecutiveSelfRounds: 2 }));
+    applyMove(a.h, 'j1', 's1', { phase: 'plan', next: { kind: 'self-round', action: 'code.plan' } });
+    expect(a.get().consecutiveSelfRounds).toBe(0);
+
+    const b = host(step({ phase: 'spec', artifacts: { spec: '# S' }, consecutiveSelfRounds: 2 }));
+    applyMove(b.h, 'j1', 's1', {
+      phase: 'spec', artifacts: { implPlan: '# P' },
+      next: { kind: 'self-round', action: 'code.implement' },
+    });
+    expect(b.get().consecutiveSelfRounds).toBe(0);
   });
 
   it('persists memo, artifacts, and phase before acting', () => {

@@ -100,8 +100,9 @@ fan-out: reviews, investigations, second opinions across several files at once.
 
 Because those rounds are sequential, a batch of review comments is a `code.fix-pr-comment`
 round per group of related comments, not one per comment — put the comments verbatim, their
-files and lines, and the change each needs into `boundNote`, and keep to the three-self-rounds-
-in-a-row cap by grouping rather than by racing it.
+files and lines, and the change each needs into `boundNote`. Those rounds all sit in the same
+`phase` and add no artifact, so they are exactly what the unproductive-self-round cap (below)
+counts — group them rather than racing it.
 
 **Phase vocabulary — use exactly these eight strings**, no others, no variants:
 `spec`, `plan`, `implement`, `pr_open`, `pr_comments`, `conflict`, `merged`, `failed`.
@@ -154,10 +155,13 @@ label, they are the state. Re-derive your position from the ladder against `arti
 `artifacts.implPlan` and `pr`, then write the memo you wish you had found.
 
 **Budgets.** `roundsRemaining` counts down from 40; at zero the daemon accepts only `resolve`
-or `fail`, so leave headroom rather than discovering the wall. At most **three** `self-round`s
-in a row: a `dispatch`, `wait`, `gate`, or a fresh delivery resets the count. If you are on
-your third and the work isn't done, that is the signal to park on a `wait`, gate it, or
-dispatch it — not to push a fourth.
+or `fail`, so leave headroom rather than discovering the wall. Separately, at most **three**
+*unproductive* `self-round`s in a row. A round counts as productive when the submit that ends
+it moves `phase` or adds a key to `artifacts` that wasn't there before; anything else — same
+phase, no new artifact — charges the count. A `dispatch`, `wait`, `gate`, or a fresh delivery
+resets it outright. Walking the ladder (`spec` → `plan` → `implement`) never approaches the
+cap; three rounds that show nothing new do, and that is the signal to park on a `wait`, gate
+it, or dispatch it — not to push a fourth.
 
 ## 4. Events wake you; facts tell you what happened
 

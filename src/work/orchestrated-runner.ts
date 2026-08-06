@@ -47,6 +47,15 @@ function recordProgress(s: OrchestratedStep, p: ProgressPayload): OrchestratedSt
   };
 }
 
+// Did this round have anything to show for itself? Must be answered against the step as it
+// stood BEFORE recordProgress folded the payload in — afterwards the payload's phase and
+// artifacts are already stored and every round looks unchanged.
+function isProductive(before: OrchestratedStep, p: ProgressPayload): boolean {
+  if (p.phase !== undefined && p.phase !== before.phase) return true;
+  const had = before.artifacts ?? {};
+  return Object.keys(p.artifacts ?? {}).some((k) => !(k in had));
+}
+
 export function applyMove(host: OrchestratedHost, jobId: string, stepId: string, p: ProgressPayload): void {
   const step = host.getStep(jobId, stepId);
   // A controller's turn can outlive the step: mark-resolved (or any other force-settle) can
@@ -56,6 +65,7 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   // `.failure` is checked too, not just `state === 'failed'` — some failure paths land
   // `.failure` without (yet) updating `state`, and this must hold even then.
   if (!step || step.state === 'resolved' || step.state === 'failed' || step.failure) return;
+  const productive = isProductive(step, p);
   host.mutateStep(jobId, stepId, (s) => recordProgress(s, p));
 
   const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo);
@@ -84,7 +94,7 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
     return;
   }
 
-  runMove(host, jobId, stepId, verdict.move);
+  runMove(host, jobId, stepId, verdict.move, productive);
 }
 
 function describeMove(move: NextMove): string {
@@ -107,7 +117,9 @@ function openGate(
   }));
 }
 
-function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: NextMove): void {
+// `productive` is false for a deferred move replayed from a gate: the payload that proposed it
+// was folded in rounds ago, so there is nothing left to compare against — charge the round.
+function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: NextMove, productive = false): void {
   // An accepted move is what earns forgiveness — clear before acting, whether this move was
   // immediately allowed or is a force-gated move running now on the user's approval.
   host.mutateStep(jobId, stepId, (s) => ({ ...s, pendingPolicyStrike: false }));
@@ -115,7 +127,7 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
     case 'self-round':
       host.mutateStep(jobId, stepId, (s) => ({
         ...s, state: 'running', waitingOn: undefined,
-        consecutiveSelfRounds: s.consecutiveSelfRounds + 1,
+        consecutiveSelfRounds: productive ? 0 : s.consecutiveSelfRounds + 1,
       }));
       host.resumeController(jobId, stepId, move.action, move.note);
       return;
@@ -156,6 +168,9 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
       return;
 
     case 'gate':
+      // A gate is the strongest yield there is — the step parks and a human decides — so it
+      // forgives the self-round budget at least as much as a dispatch or a wait does.
+      host.mutateStep(jobId, stepId, (s) => ({ ...s, consecutiveSelfRounds: 0 }));
       openGate(host, jobId, stepId, {
         draft: move.draft, question: move.question,
         deferredMove: { kind: 'self-round' },

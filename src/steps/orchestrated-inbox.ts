@@ -57,7 +57,7 @@ export function drainForDelivery(step: OrchestratedStep): { step: OrchestratedSt
 // items into `lastDelivered` (anything else already queued in `inbox` stays there for the next
 // natural delivery) and spends a round (MAX_ROUNDS is the backstop against an endless declined-
 // gate loop), but deliberately does NOT touch `consecutiveSelfRounds` — resetting it here would
-// let a controller dodge the "N self-rounds in a row" cap by tripping an unrelated rejection
+// let a controller dodge the unproductive-self-rounds-in-a-row cap by tripping an unrelated rejection
 // between rounds.
 export function deliverImmediate(step: OrchestratedStep, items: InboxItem[]): OrchestratedStep {
   const ids = new Set(items.map((i) => i.id));
