@@ -37,7 +37,7 @@ import { StopHookTracker } from './storage/stop-hook-tracker.js';
 import { UsagePoller, type AccountUsageSnapshot } from './integrations/usage-poller.js';
 import { loadConfig } from './config.js';
 import { loadEnvFile } from './env-file.js';
-import { readBody } from './routes/util.js';
+import { readJsonObject } from './routes/util.js';
 import { registerGitRoutes } from './routes/git.js';
 import { registerJobsRoutes } from './routes/jobs.js';
 import { registerSessionsRoutes } from './routes/sessions.js';
@@ -843,11 +843,8 @@ async function main() {
   // in-memory only — dies with the session, never touches disk. The bare-string
   // 'session' form pairs with a top-level sessionId field.
   server.route('POST', '/api/allowlist/rules', async (req, res) => {
-    const body = await readBody(req);
-    let payload: { kind?: string; value?: string; sessionId?: string; scope?: 'global' | 'session' | { project?: string } | { action?: string } | { session?: string } };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ kind?: string; value?: string; sessionId?: string; scope?: 'global' | 'session' | { project?: string } | { action?: string } | { session?: string } }>(req, res);
+    if (!payload) return;
     const { kind, value, scope } = payload;
     if (kind !== 'tool' && kind !== 'bash' && kind !== 'mcp' && kind !== 'path') {
       res.statusCode = 400; res.end('kind must be tool|bash|mcp|path'); return;

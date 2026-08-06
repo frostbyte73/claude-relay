@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type { Server } from '../server.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
-import { readBody } from './util.js';
+import { readJsonObject } from './util.js';
 
 export interface ProjectsRoutesDeps {
   sessionStore: SessionStore;
@@ -66,11 +66,8 @@ export function registerProjectsRoutes(server: Server, deps: ProjectsRoutesDeps)
 
   // Body: { cwd: <absolute path> }. Returns { added: boolean, cwd: string }.
   server.route('POST', '/api/projects', async (req, res) => {
-    const body = await readBody(req);
-    let payload: { cwd?: string };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ cwd?: string }>(req, res);
+    if (!payload) return;
     const { cwd } = payload;
     if (typeof cwd !== 'string' || !cwd.startsWith('/')) {
       res.statusCode = 400; res.end('cwd must be absolute'); return;
@@ -90,11 +87,8 @@ export function registerProjectsRoutes(server: Server, deps: ProjectsRoutesDeps)
   });
 
   server.route('DELETE', '/api/projects', async (req, res) => {
-    const body = await readBody(req);
-    let payload: { cwd?: string };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ cwd?: string }>(req, res);
+    if (!payload) return;
     if (typeof payload.cwd !== 'string') {
       res.statusCode = 400; res.end('cwd required'); return;
     }
