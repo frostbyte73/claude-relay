@@ -24,7 +24,7 @@ import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { DaemonConfig } from '../config.js';
 import { ensureActionsInstalled, bundledRepoDir } from '../setup-actions.js';
-import { parseWindowMs, readJsonBody } from './util.js';
+import { parseJsonObject, parseWindowMs, readJsonBody } from './util.js';
 
 export interface ActionsRoutesDeps {
   outpostActionsDir: string;
@@ -310,9 +310,8 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   }
 
   const onActionProposalHandler: ActionsRoutesHandlers['onActionProposalHandler'] = async (body) => {
-    let payload: Parameters<typeof intakeProposal>[0];
-    try { payload = JSON.parse(body); }
-    catch { console.error('[hook] /work/action-proposal: invalid json'); return; }
+    const payload = parseJsonObject(body) as Parameters<typeof intakeProposal>[0] | null;
+    if (!payload) throw new Error('invalid json body');
     if (!payload.sessionId) {
       console.warn('[hook] /work/action-proposal: missing sessionId');
       return;

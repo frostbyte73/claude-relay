@@ -11,7 +11,7 @@ import {
 } from '../git/git-ops.js';
 import type { GitCommandResult } from '../git/git-ops.js';
 import { handleDiffRoute } from '../git/diff-endpoint.js';
-import { readBody } from './util.js';
+import { readJsonObject } from './util.js';
 
 export interface GitRoutesDeps {
   sessionStore: SessionStore;
@@ -110,11 +110,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: 'session not found' }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { text?: unknown };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ text?: unknown }>(req, res);
+    if (!payload) return;
     if (typeof payload.text !== 'string' || payload.text.trim().length === 0) {
       res.statusCode = 400; res.end('text required'); return;
     }
@@ -136,11 +133,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { message?: string };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ message?: string }>(req, res);
+    if (!payload) return;
     const message = typeof payload.message === 'string' ? payload.message : '';
     if (message.trim().length === 0) {
       res.statusCode = 400; res.end('commit message required'); return;
@@ -166,11 +160,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { paths?: unknown; action?: unknown };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ paths?: unknown; action?: unknown }>(req, res);
+    if (!payload) return;
     const action = payload.action;
     if (action !== 'stage' && action !== 'unstage') {
       res.statusCode = 400; res.end('action must be "stage" or "unstage"'); return;
@@ -200,11 +191,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: 'discard is only valid for active worktree sessions' }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { paths?: unknown };
-    try { payload = body ? JSON.parse(body) : {}; } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ paths?: unknown }>(req, res, { allowEmpty: true });
+    if (!payload) return;
     let paths: string[] | undefined;
     if (payload.paths !== undefined) {
       if (!Array.isArray(payload.paths) || payload.paths.length === 0 || payload.paths.length > 500) {
@@ -230,11 +218,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { newBranch?: unknown };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ newBranch?: unknown }>(req, res);
+    if (!payload) return;
     if (typeof payload.newBranch !== 'string') {
       res.statusCode = 400; res.end('newBranch required'); return;
     }
@@ -256,11 +241,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: resolved.message }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { title?: string; body?: string; base?: string };
-    try { payload = body ? JSON.parse(body) : {}; } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ title?: string; body?: string; base?: string }>(req, res, { allowEmpty: true });
+    if (!payload) return;
     const result = await gitOpenPr(resolved.cwd, payload);
     let status;
     try { status = await gitStatus(resolved.cwd); } catch { status = null; }
@@ -284,11 +266,8 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: 'finalize is only valid for active worktree sessions' }));
       return;
     }
-    const body = await readBody(req);
-    let payload: { kind?: string; message?: string; newBranch?: string; push?: boolean };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ kind?: string; message?: string; newBranch?: string; push?: boolean }>(req, res);
+    if (!payload) return;
     const message = typeof payload.message === 'string' ? payload.message : '';
     if (message.trim().length === 0) {
       res.statusCode = 400; res.end('message required'); return;
@@ -351,9 +330,10 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       respond(400, { status: 'error', message: 'squash-to-base is only valid for active worktree sessions' });
       return;
     }
-    const body = await readBody(req);
-    let payload: { message?: string };
-    try { payload = JSON.parse(body); } catch { respond(400, { status: 'error', message: 'invalid json' }); return; }
+    const payload = await readJsonObject<{ message?: string }>(req, res, {
+      onInvalid: () => respond(400, { status: 'error', message: 'invalid json' }),
+    });
+    if (!payload) return;
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     if (!message) { respond(400, { status: 'error', message: 'message required' }); return; }
     if (message.length > 5000) { respond(400, { status: 'error', message: 'message too long (5000 char max)' }); return; }

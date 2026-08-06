@@ -2,7 +2,7 @@ import type { Server } from '../server.js';
 import type { SubscriptionStore } from '../push-subscriptions.js';
 import type { PushSender } from '../push-sender.js';
 import type { UserPrsWatcher } from '../integrations/user-prs-watcher.js';
-import { readBody } from './util.js';
+import { readJsonObject } from './util.js';
 
 export interface PushRoutesDeps {
   pushStore: SubscriptionStore;
@@ -16,11 +16,8 @@ export function registerPushRoutes(server: Server, deps: PushRoutesDeps): void {
   // Body: { subscription: { endpoint, keys: { p256dh, auth } }, userAgent? }.
   // Idempotent on endpoint (unique per browser/device/origin); returns current count.
   server.route('POST', '/api/push/subscribe', async (req, res) => {
-    const body = await readBody(req);
-    let payload: { subscription?: { endpoint?: string; keys?: { p256dh?: string; auth?: string } }; userAgent?: string };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ subscription?: { endpoint?: string; keys?: { p256dh?: string; auth?: string } }; userAgent?: string }>(req, res);
+    if (!payload) return;
     const sub = payload.subscription;
     if (!sub || typeof sub.endpoint !== 'string' || !sub.keys
         || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') {
@@ -45,11 +42,8 @@ export function registerPushRoutes(server: Server, deps: PushRoutesDeps): void {
 
   // Body: { endpoint: string }. 200 either way (no leaking presence).
   server.route('DELETE', '/api/push/subscribe', async (req, res) => {
-    const body = await readBody(req);
-    let payload: { endpoint?: string };
-    try { payload = JSON.parse(body); } catch {
-      res.statusCode = 400; res.end('invalid json'); return;
-    }
+    const payload = await readJsonObject<{ endpoint?: string }>(req, res);
+    if (!payload) return;
     if (typeof payload.endpoint !== 'string') {
       res.statusCode = 400; res.end('endpoint required'); return;
     }

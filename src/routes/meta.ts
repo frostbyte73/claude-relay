@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
 import type { PermissionGroupMap } from '../actions/types.js';
@@ -11,6 +12,7 @@ import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
+import { readJsonObject } from './util.js';
 
 export interface MetaRoutesDeps {
   actionRegistry: ActionRegistry;
@@ -155,6 +157,62 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ groups }));
   });
+
+  // Body: { kind: 'tool'|'bash'|'mcp', value: string, scope?: 'global' | { project: string } | { action: string } | { session: string } | 'session' }.
+  // Validates + dedupes + atomic-writes global allowlist.json or per-project file.
+  // Action scope persists via ActionsStore (actions.json). Session scope is
+  // in-memory only — dies with the session, never touches disk. The bare-string
+  // 'session' form pairs with a top-level sessionId field.
+  async function handlePostAllowlistRule(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const payload = await readJsonObject<{ kind?: string; value?: string; sessionId?: string; scope?: 'global' | 'session' | { project?: string } | { action?: string } | { session?: string } }>(req, res);
+    if (!payload) return;
+    const { kind, value, scope } = payload;
+    if (kind !== 'tool' && kind !== 'bash' && kind !== 'mcp' && kind !== 'path') {
+      res.statusCode = 400; res.end('kind must be tool|bash|mcp|path'); return;
+    }
+    if (typeof value !== 'string' || value.length === 0 || value.length > 500) {
+      res.statusCode = 400; res.end('value must be a 1..500 char string'); return;
+    }
+    let normalizedScope: 'global' | { project: string } | { action: string } | { session: string };
+    if (scope === undefined || scope === 'global') {
+      normalizedScope = 'global';
+    } else if (scope === 'session' && typeof payload.sessionId === 'string' && payload.sessionId.length > 0) {
+      normalizedScope = { session: payload.sessionId };
+    } else if (typeof scope === 'object' && scope !== null && typeof (scope as { session?: string }).session === 'string' && (scope as { session: string }).session.length > 0) {
+      normalizedScope = { session: (scope as { session: string }).session };
+    } else if (typeof scope === 'object' && scope !== null && typeof (scope as { project?: string }).project === 'string' && (scope as { project: string }).project.startsWith('/')) {
+      normalizedScope = { project: (scope as { project: string }).project };
+    } else if (typeof scope === 'object' && scope !== null && typeof (scope as { action?: string }).action === 'string' && (scope as { action: string }).action.length > 0) {
+      normalizedScope = { action: (scope as { action: string }).action };
+    } else {
+      res.statusCode = 400; res.end('scope must be "global" | {project: <absolute-cwd>} | {action: <name>} | {session: <id>} | "session" (+ sessionId)'); return;
+    }
+    let added: boolean;
+    try {
+      added = allowlist.addRule(kind, value, normalizedScope);
+    } catch (e) {
+      res.statusCode = 400; res.end(`invalid pattern: ${(e as Error).message}`); return;
+    }
+    if (added && normalizedScope === 'global') {
+      const tmp = `${allowlistPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
+      renameSync(tmp, allowlistPath);
+      console.log(`[api] allowlist[global]: added ${kind} rule ${JSON.stringify(value)} (total ${allowlist.ruleCount()})`);
+    } else if (added && typeof normalizedScope === 'object' && 'project' in normalizedScope) {
+      // Project file persistence lives inside Allowlist.addRule.
+      console.log(`[api] allowlist[project=${normalizedScope.project}]: added ${kind} rule ${JSON.stringify(value)}`);
+    } else if (added && typeof normalizedScope === 'object' && 'action' in normalizedScope) {
+      // Action persistence lives inside ActionsStore.addRule (chained via Allowlist).
+      console.log(`[api] allowlist[action=${normalizedScope.action}]: added ${kind} rule ${JSON.stringify(value)}`);
+    } else if (added && typeof normalizedScope === 'object' && 'session' in normalizedScope) {
+      console.log(`[api] allowlist[session=${normalizedScope.session.slice(0, 8)}]: added ${kind} rule ${JSON.stringify(value)} (in-memory)`);
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ added, ruleCount: allowlist.ruleCount() }));
+  }
+
+  server.route('POST', '/api/allowlist/rules', handlePostAllowlistRule);
 
   server.route('GET', '/api/allowlist/rules', (_req, res) => {
     type Row = { id: string; kind: RuleKind; value: string; scope: PersistedRuleScope; source: string };
