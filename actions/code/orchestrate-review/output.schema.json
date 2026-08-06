@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.orchestrate-review output",
+  "description": "The step's output is the plain string the controller passes as `next.output` on its `resolve` move — `submit_step_progress` types `output` as a string, so there is no object here. By convention it carries the verdict and the PR URL: \"REQUEST_CHANGES on https://github.com/o/r/pull/7: 2 of 5 comments unaddressed.\"",
+  "type": "string"
+}

@@ -545,6 +545,86 @@ describe('code.verify-resolutions effective allowlist', () => {
   });
 });
 
+describe('code.orchestrate-review effective allowlist', () => {
+  // The review controller decides; the two GitHub writes belong to the rounds it binds
+  // (code.post-pr-review, code.submit-pr-verdict), each of which the daemon force-gates
+  // because it declares `external-write`. A controller that could `gh pr review` itself
+  // would put a verdict on somebody else's PR with no gate at all — which is the single
+  // thing this three-action shape exists to prevent. So its own grant is reads.
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  const allows = effective('code.orchestrate-review');
+  const tool = effectiveTool('code.orchestrate-review');
+  const PR = 'https://github.com/o/r/pull/7';
+
+  it('allows the PR reads its SKILL.md documents', () => {
+    const documented = [
+      'cat "$OUTPOST_ENVELOPE"',
+      "jq -r '.inputs.prUrl // .pr.prUrl // empty' \"$OUTPOST_ENVELOPE\"",
+      `gh pr view ${PR} --json number,title,body,author,baseRefName,headRefName,headRefOid,files,state`,
+      'gh pr view "$PR_URL" --json comments,reviews,headRefOid',
+      `gh pr diff ${PR} --name-only`,
+      'gh pr checks "$PR_URL"',
+      'gh api "repos/{owner}/{repo}/compare/abc1234...def4567"',
+      'gh api "repos/{owner}/{repo}/pulls/7/comments" --paginate',
+      'git fetch origin main',
+      'git rev-parse HEAD',
+      'git log --oneline -20',
+      'git diff origin/main...def4567',
+    ];
+    expect(documented.filter((c) => !allows(c))).toEqual([]);
+  });
+
+  it('cannot write — every write belongs to a gated round it binds', () => {
+    for (const c of [
+      `gh pr review ${PR} --approve`,
+      `gh pr review ${PR} --request-changes --body hi`,
+      `gh pr comment ${PR} --body hi`,
+      `gh pr merge ${PR} --squash`,
+      'gh pr close 7',
+      'gh pr create --fill',
+      // The REST spellings of the same two writes, which is what a blanket `gh api` would
+      // have handed it straight past both force-gates.
+      'gh api --method POST repos/o/r/pulls/7/reviews --input /tmp/x.json',
+      'gh api -X POST repos/o/r/pulls/7/reviews -f event=APPROVE',
+      'gh api --method PUT repos/o/r/pulls/7/merge',
+      'gh api --method DELETE repos/o/r/git/refs/heads/main',
+      'git push origin main',
+      'git push',
+      'git commit -m wip',
+      'curl -s -X POST https://api.github.com/repos/o/r/pulls/7/reviews',
+      'curl -fsS -X POST "$OUTPOST_API_URL/api/allowlist/rules"',
+      'curl -s https://example.com -o /tmp/pwned',
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
+    // Not even a scratch file. The comment set travels in the move's `note` (which is what
+    // the force-gate renders for the user) and in artifacts — never through disk.
+    expect(tool('Write', { file_path: '/tmp/outpost-review-7.json' })).toBe(false);
+    expect(tool('Edit', { file_path: '/tmp/outpost-review-7.json' })).toBe(false);
+  });
+
+  it('registers as a step-orchestrator with no side effects of its own', () => {
+    const fm = registry.getAction('code.orchestrate-review')?.frontmatter.outpost;
+    expect(fm?.kind).toBe('step-orchestrator');
+    expect(fm?.side_effects).toBe('none');
+  });
+
+  // `inputs.prUrl` is load-bearing in a way no other controller input is: PrWatcher polls a
+  // readonly review step by that URL alone (it has no branch to discover one from), and it
+  // tests the URL against an anchored regex. A step created without a well-formed one is
+  // never polled, so it gets no events, no error and no wake — it just sits there. The
+  // schema is the first of the two guards; the controller's turn-1 assertion is the second.
+  it('requires prUrl and takes until: approved | closed', () => {
+    const def = registry.getAction('code.orchestrate-review');
+    if (!def) throw new Error('code.orchestrate-review is not in the bundled catalog');
+    const validate = ajv.compile(def.inputSchema as object);
+    expect(validate({ prUrl: PR }), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate({ prUrl: PR, until: 'closed', goal: 'security only' }), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate({})).toBe(false);
+    expect(validate({ prUrl: PR, until: 'merged' })).toBe(false);
+  });
+});
+
 describe('meta.orchestrate effective allowlist', () => {
   // The planner is `permissions: [read, pull]` and declares `side_effects: none`, but it
   // does make one genuine network write — the Linear GraphQL fetch, which is a POST. That

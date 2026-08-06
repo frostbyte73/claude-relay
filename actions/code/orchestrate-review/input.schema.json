@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.orchestrate-review input",
+  "type": "object",
+  "required": ["prUrl"],
+  "properties": {
+    "prUrl": {
+      "type": "string",
+      "description": "Full https://github.com/<owner>/<repo>/pull/<n> URL of the PR under review. Required, and required in exactly that shape: PrWatcher polls a readonly review step by this URL alone (it has no branch to discover one from) and tests it against an anchored regex, so a trailing /files or /commits, a query string, or a bare number means the step is never polled and never woken."
+    },
+    "until": {
+      "type": "string",
+      "enum": ["approved", "closed"],
+      "default": "approved",
+      "description": "'approved' resolves the step once the verdict is submitted. 'closed' keeps the step open after the verdict, waiting on pr-state until the PR merges or closes — for deployment PRs where the step is the live handle on the PR."
+    },
+    "goal": {
+      "type": "string",
+      "description": "What the reviewer is being asked to establish, when it is narrower than a general review."
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh pr view(\\s|$)",
+    "^gh pr checks(\\s|$)",
+    "^gh pr diff(\\s|$)"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}
