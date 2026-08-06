@@ -461,7 +461,11 @@ function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown):
   // Path-scoped rule: tool name must match AND the path-shaped input matches the regex.
   if (PATH_INPUT_FIELDS[toolName]) {
     const path = readPathInput(toolName, toolInput);
-    if (path !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(path))) {
+    // `..` must not walk out from under an anchored prefix rule: `Write:^/tmp/` should not
+    // admit `/tmp/../etc/crontab`. A relative path is tested as written — the daemon can't
+    // know the cwd it resolves against, and every path rule is absolute-anchored, so it denies.
+    const probe = path !== undefined && path.startsWith('/') ? resolve(path) : path;
+    if (probe !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(probe))) {
       return true;
     }
   }

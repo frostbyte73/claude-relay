@@ -105,3 +105,38 @@ describe('rule id encode/decode', () => {
     expect(decodeRuleId(Buffer.from(JSON.stringify(['tool', 'X', 'bogus:scope'])).toString('base64url'))).toBeNull();
   });
 });
+
+describe('Allowlist — path rules and traversal', () => {
+  function withWriteRule(): Allowlist {
+    const a = new Allowlist({
+      alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [],
+      alwaysAllowPathPatterns: ['Write:^/tmp/'],
+    });
+    return a;
+  }
+
+  it('normalises an absolute path before matching, so .. cannot walk out of the prefix', () => {
+    const a = withWriteRule();
+    expect(a.allows('Write', { file_path: '/tmp/scratch.json' })).toBe(true);
+    for (const p of [
+      '/tmp/../etc/crontab',
+      '/tmp/../../etc/crontab',
+      '/tmp/a/../../root/.ssh/authorized_keys',
+      '/tmp/./../etc/hosts',
+    ]) {
+      expect(a.allows('Write', { file_path: p }), p).toBe(false);
+    }
+  });
+
+  it('leaves a relative path as written — an absolute-anchored rule then denies it', () => {
+    const a = withWriteRule();
+    expect(a.allows('Write', { file_path: 'tmp/x' })).toBe(false);
+    expect(a.allows('Write', { file_path: '../etc/x' })).toBe(false);
+  });
+
+  it('still matches a path that only looks traversal-ish', () => {
+    const a = withWriteRule();
+    expect(a.allows('Write', { file_path: '/tmp/a..b/c' })).toBe(true);
+    expect(a.allows('Write', { file_path: '/tmp/nested/../other.txt' })).toBe(true);
+  });
+});
