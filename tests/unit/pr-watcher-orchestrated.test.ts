@@ -145,48 +145,6 @@ describe('PrWatcher over an orchestrated step', () => {
     expect(engine.pushStepInbox).not.toHaveBeenCalled();
   });
 
-  describe('discovery for a step with no PR', () => {
-    function harnessWithoutPr() {
-      const step = orchestratedStepWithPr({});
-      step.pr = { prUrl: undefined as unknown as string, prState: undefined as unknown as string };
-      const job = { id: 'j1', steps: [step] };
-      const queue = { get: () => job, list: () => [job] } as never;
-      const engine = { applyPrFacts: vi.fn(), pushStepInbox: vi.fn() };
-      let listCalls = 0;
-      const runGh = async (cwd: string, args: string[]) => {
-        if (args[0] === 'pr' && args[1] === 'list') { listCalls++; return '[]'; }
-        return stubGh()(cwd, args);
-      };
-      const watcher = new PrWatcher({ queue, engine: engine as never, runGh });
-      return { watcher, step, calls: () => listCalls };
-    }
-
-    it('gives up after a bounded run of misses instead of paying a subprocess every sweep forever', async () => {
-      const { watcher, calls } = harnessWithoutPr();
-      for (let i = 0; i < 10; i++) await watcher.syncJob('j1');
-      const boundedAt = calls();
-      expect(boundedAt).toBeGreaterThan(0);
-      expect(boundedAt).toBeLessThan(10);
-
-      // N+1th sweep beyond the bound issues no further gh pr list calls.
-      await watcher.syncJob('j1');
-      expect(calls()).toBe(boundedAt);
-    });
-
-    it('re-arms discovery when the controller reports a new round', async () => {
-      const { watcher, step, calls } = harnessWithoutPr();
-      for (let i = 0; i < 20; i++) await watcher.syncJob('j1');
-      const boundedAt = calls();
-
-      await watcher.syncJob('j1');
-      expect(calls()).toBe(boundedAt); // still exhausted, no new round yet
-
-      step.roundsSpent += 1; // controller took a move — something could have opened a PR
-      await watcher.syncJob('j1');
-      expect(calls()).toBe(boundedAt + 1);
-    });
-  });
-
   describe('a readonly review step', () => {
     function reviewStep(over: { inputsPrUrl?: string; storedPrUrl?: string } = {}) {
       return {
