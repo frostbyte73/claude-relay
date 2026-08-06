@@ -183,3 +183,145 @@ describe('an assignment cannot redirect program resolution', () => {
     }
   });
 });
+
+// F3 — `permissions: [read]` is documented as "local file reads + git-read-only", and eight
+// actions ship with it as their whole grant. It was neither: several of the tools it grants
+// take a flag that runs a program or names an output file, and every one of these was
+// verified to execute on a real machine. A blocklist spelled as a regex would not have held
+// (`find . '-delete'` and `find . -de""lete` reach argv as the same flag), so the gate reads
+// DEQUOTED argv words instead.
+describe('the read group cannot execute a program', () => {
+  const a = forGroups('read');
+
+  it('denies every exec vector, in every spelling', () => {
+    for (const c of [
+      // `env` is an exec wrapper, not a reader — printenv is the read spelling.
+      "env sh -c 'echo X > /tmp/p/a'",
+      'env FOO=1 sh -c id',
+      'env sh',
+      // find's action primaries. The escaped `\\;` does not split the clause.
+      'find . -maxdepth 0 -exec sh -c \'id\' \\;',
+      'find . -exec rm -rf {} \\;',
+      'find . -execdir sh -c id \\;',
+      'find . -ok rm {} \\;',
+      'find . -okdir rm {} \\;',
+      // …and the quoted spellings, which a regex blocklist reads as different strings.
+      "find . '-exec' sh -c id \\;",
+      'find . "-exec" sh -c id \\;',
+      'find . -exe""c sh -c id \\;',
+      "find . -exe''c sh -c id \\;",
+      'find . -e\\xec sh -c id \\;',
+      // git options that run a program.
+      "git fetch --upload-pack='touch /tmp/p/g' /tmp/p/gt",
+      'git fetch --upload-pack=touch /tmp/p/gt',
+      'git fetch "--upload-pack=touch /tmp/x" /tmp/gt',
+      'git push --receive-pack=touch origin',
+      'git --exec-path=/tmp/evil status',
+      'git -c core.pager=/tmp/e.sh log',
+      'git -c diff.external=/tmp/e.sh diff',
+      'git -c core.sshCommand=/tmp/e.sh fetch origin',
+      'git -C /repo -c core.pager=/tmp/e.sh log',
+      'git --config-env=core.pager=EVIL log',
+      'git grep -O/tmp/e.sh foo',
+      'git grep --open-files-in-pager=/tmp/e.sh foo',
+      // ripgrep runs a preprocessor per file.
+      'rg --pre /tmp/e.sh foo',
+      'rg --pre=/tmp/e.sh foo',
+    ]) {
+      expect(bash(a, c), c).toBe(false);
+    }
+  });
+
+  it('denies every arbitrary-file-write vector', () => {
+    for (const c of [
+      // sed is a script language with both a write command and (GNU) an exec command.
+      "sed -n 'w /tmp/p/c' src.txt",
+      'sed -n -i "" -e "s/a/b/" /etc/hosts',
+      "sed -n '1,20p' src.txt",
+      'sort -o /tmp/p/d src.txt',
+      'sort --output=/tmp/p/d src.txt',
+      'sort -uo /tmp/p/d src.txt',
+      'sort -o/tmp/p/d src.txt',
+      'sort --compress-program=/tmp/e.sh src.txt',
+      'find . -maxdepth 0 -fprintf /tmp/p/e "x"',
+      'find . -fprint /tmp/p/e',
+      'find . -fprint0 /tmp/p/e',
+      'find . -fls /tmp/p/e',
+      'find / -name id_rsa -delete',
+      "find / -name id_rsa '-delete'",
+      'git diff --output=/tmp/p/h',
+      'git log --output=/tmp/p/i',
+      'git log --output /tmp/p/i',
+      'git show "--output=/tmp/p/i"',
+      'tree -o /tmp/p/j',
+      'tree -o/tmp/p/j',
+      // The second file operand of these IS the output file.
+      'uniq /etc/hosts /tmp/p/k',
+      'uniq -c /etc/hosts /tmp/p/k',
+      'xxd /etc/hosts /tmp/p/l',
+      'xxd -r /tmp/p/hex /tmp/p/l',
+      // git branch's mutating half — `read` grants it for `--list`.
+      'git branch -D main',
+      'git branch -d feature/x',
+      'git branch --delete main',
+      'git branch -m main old-main',
+      'git branch -C main copy',
+    ]) {
+      expect(bash(a, c), c).toBe(false);
+    }
+  });
+
+  it('still allows the reads the group exists for', () => {
+    for (const c of [
+      'ls -la',
+      'printenv',
+      'printenv HOME',
+      'cat /etc/hosts',
+      'wc -l /etc/hosts',
+      'head -50 /etc/hosts',
+      'grep -rn foo src/',
+      'rg -n --hidden "foo -> bar" src/',
+      'rg -l foo',
+      "find . -name '*.ts' -type f",
+      'find . -maxdepth 2 -type d -not -name node_modules -print',
+      'find . -name "*.log" -mtime +7 -size +1M',
+      'find . -type f -print0',
+      'find . -name x -newer /etc/hosts -ls',
+      'sort -u /etc/hosts',
+      'sort -rn',
+      'sort -k 2,2 -t : /etc/passwd',
+      'uniq -c',
+      'uniq -c /etc/hosts',
+      'xxd /etc/hosts',
+      'tree -L 2 src',
+      'diff /etc/hosts /etc/hosts',
+      'git status',
+      'git log --oneline -20',
+      'git log --pretty=format:%H --no-merges',
+      'git diff origin/main...def4567',
+      'git diff --name-only --cached',
+      'git show def456 --stat',
+      'git blame src/x.ts',
+      'git branch --list',
+      'git branch -a -v',
+      'git branch --show-current',
+      'git branch --contains HEAD',
+      'git fetch origin main',
+      'git fetch --prune origin',
+      'git -C /repo log -1 --oneline',
+      'git rev-parse --abbrev-ref HEAD',
+      'git ls-files -z',
+      'git grep -n foo -- src/',
+      'git worktree list',
+      'git stash list',
+    ]) {
+      expect(bash(a, c), c).toBe(true);
+    }
+  });
+
+  it('leaves the interpreters unreachable, as they already were', () => {
+    for (const c of ['bash -c id', 'sh -c id', 'zsh -c id', 'eval id', 'xargs id', 'tee /tmp/x', 'python -c "import os"']) {
+      expect(bash(a, c), c).toBe(false);
+    }
+  });
+});

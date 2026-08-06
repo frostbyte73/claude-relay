@@ -14,7 +14,7 @@
   "read": {
     "alwaysAllow": ["Read", "Glob", "Grep", "LS", "NotebookRead"],
     "alwaysAllowBashPatterns": [
-      "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|env|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od|sed -n)(\\s|$)",
+      "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|printenv|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od)(\\s|$)",
       "^git (-C [^-\\s]\\S* )?(status|log|diff|show|blame|branch|remote -v|remote get-url|config --get|fetch|rev-parse|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list)(\\s|$)",
       "^(rg|grep)(\\s|$)",
       "^find(\\s|$)"
