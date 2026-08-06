@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
+import { Ajv } from 'ajv';
 import { Allowlist } from '../../src/permissions/allowlist.js';
 import { ActionRegistry } from '../../src/actions/index.js';
 import groups from '../../config/permission-groups.default.json' with { type: 'json' };
@@ -353,6 +354,36 @@ describe('write.run-github-workflow effective allowlist', () => {
   it('stays at one dispatch — no other external write', () => {
     for (const c of ['git push origin main', 'gh pr create --fill', 'gh release create v1', 'git commit -m x']) {
       expect(allows(c), c).toBe(false);
+    }
+  });
+});
+
+describe('review-lens diffRange input', () => {
+  // The review-* lenses default to reviewing the uncommitted working-tree diff, which is
+  // empty in a PR-head worktree (a clean detached checkout). `diffRange` lets the
+  // orchestrate-review-pr controller point a lens at the PR's actual range instead.
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  const reviewActions = ['code.review-diff', 'code.review-ui', 'code.security-review'];
+
+  it('accepts an optional diffRange without breaking existing callers that omit it', () => {
+    for (const name of reviewActions) {
+      const def = registry.getAction(name);
+      if (!def) throw new Error(`${name} is not in the bundled catalog`);
+      const validate = ajv.compile(def.inputSchema as object);
+
+      const withRange = { workspace: { repoCwd: '/repo', branch: 'feature/x' }, diffRange: 'abc123...def456' };
+      expect(validate(withRange), JSON.stringify(validate.errors)).toBe(true);
+
+      const withoutRange = { workspace: { repoCwd: '/repo', branch: 'feature/x' } };
+      expect(validate(withoutRange), JSON.stringify(validate.errors)).toBe(true);
+    }
+  });
+
+  it('allows the three-dot range-diff command each lens runs when diffRange is set, and the plain diff otherwise', () => {
+    for (const name of reviewActions) {
+      const allows = effective(name);
+      expect(allows('git diff abc123...def456'), name).toBe(true);
+      expect(allows('git diff'), name).toBe(true); // unchanged default: uncommitted diff
     }
   });
 });

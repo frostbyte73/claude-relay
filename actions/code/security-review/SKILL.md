@@ -22,10 +22,15 @@ Security review of an uncommitted/branch diff through an OWASP Top 10 + STRIDE l
 | `workspace.repoCwd` | yes | Parent repo path. |
 | `workspace.branch` | yes | Branch under review. |
 | `context` | no | Optional `{goal, approach, risks}` from the step that produced the diff. |
+| `diffRange` | no | Git diff range to review instead of the uncommitted diff — see below. |
 
 ## Ground the review in the trust model first
 
-Run `git status` + `git diff` to see the changes. Then read CLAUDE.md (and any `AGENTS.md` under the touched area) *before* you flag anything, so findings reflect the repo's actual trust boundaries instead of generic ones. Understand a defense before reporting its absence, and don't flag an intentional guard as a bug. Examples of deliberate guards in this repo:
+If `diffRange` is absent, run `git status` + `git diff` to see the changes — the default, unchanged behavior: an uncommitted working-tree diff. If `diffRange` is set, run `git diff <diffRange>` instead (e.g. `git diff abc123...def456`) and skip `git status`, since the range itself is the diff under review and there's nothing uncommitted to check.
+
+`diffRange` exists for reviewing a PR's worktree, which is a clean detached checkout with no uncommitted changes — `git diff` there finds nothing and this action would report "no findings" on a diff it never examined. Pass the three-dot form, `<merge-base>...<head>`, never `<base>..<head>` (two dots): three dots means "what this branch actually introduced since it forked" (`git diff A...B` is exactly `git diff $(git merge-base A B) B`), while two dots also drags in whatever landed on the base branch after the fork, and you'd flag someone else's commit as the PR author introducing a vulnerability they never wrote.
+
+Then read CLAUDE.md (and any `AGENTS.md` under the touched area) *before* you flag anything, so findings reflect the repo's actual trust boundaries instead of generic ones. Understand a defense before reporting its absence, and don't flag an intentional guard as a bug. Examples of deliberate guards in this repo:
 
 - The hook server is loopback + secret-header gated (`src/permissions/hook-server.ts`) — any new hook endpoint must validate the secret.
 - The `sessionId`/branch regexes in `src/git/worktree-manager.ts` are deliberate path-traversal / argv-flag-smuggling defenses, with `--` as a second layer.

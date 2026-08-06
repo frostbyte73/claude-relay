@@ -22,10 +22,15 @@ Self-review of an uncommitted working-tree diff. Does not modify files.
 | `workspace.repoCwd` | yes | Parent repo path. |
 | `workspace.branch` | yes | Branch under review. |
 | `context` | no | Optional `{goal, approach, risks}` from the step that produced the diff. |
+| `diffRange` | no | Git diff range to review instead of the uncommitted diff — see below. |
 
 ## What to look for
 
-Run `git status` + `git diff` to see the changes. Read CLAUDE.md (and any `AGENTS.md`) to ground the review in conventions before you flag style issues. Then scan for:
+If `diffRange` is absent, run `git status` + `git diff` to see the changes — this is the default, unchanged behavior: an uncommitted working-tree diff. If `diffRange` is set, run `git diff <diffRange>` instead (e.g. `git diff abc123...def456`) and skip `git status` — there's nothing uncommitted to report, the range itself is the diff under review.
+
+`diffRange` exists for reviewing a PR's worktree, which is a clean detached checkout with no uncommitted changes — reviewing `git diff` there finds nothing and this action would report "no issues" on a diff it never looked at. The caller is expected to pass the three-dot form, `<merge-base>...<head>`, not `<base>..<head>` (two dots). Three dots is "what this branch actually changed since it forked" — `git diff A...B` is exactly `git diff $(git merge-base A B) B`. Two dots would also pull in every commit that landed on the base branch after the fork, and you'd flag someone else's code as if the PR author wrote it.
+
+Read CLAUDE.md (and any `AGENTS.md`) to ground the review in conventions before you flag style issues. Then scan for:
 
 - Stray debug prints / commented-out code / "// removed: previously did X" epitaphs.
 - Comments that restate code, name-restate functions, or narrate task history (`// fix for ENG-123`).

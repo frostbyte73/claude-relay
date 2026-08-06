@@ -22,10 +22,15 @@ Read-only UI/UX + design-system review of PWA-facing changes. Does not modify fi
 | `workspace.repoCwd` | yes | Parent repo path. |
 | `workspace.branch` | yes | Branch under review. |
 | `context` | no | Optional `{goal, approach, risks}` from the step that produced the diff. |
+| `diffRange` | no | Git diff range to review instead of the uncommitted diff — see below. |
 
 ## Ground the review in the design system first
 
-Run `git status` + `git diff` to see the changes. Then, *before flagging anything*, read (when present):
+If `diffRange` is absent, run `git status` + `git diff` to see the changes — the default, unchanged behavior: an uncommitted working-tree diff. If `diffRange` is set, run `git diff <diffRange>` instead (e.g. `git diff abc123...def456`) and skip `git status` — the range itself is the diff under review, there's no uncommitted state to check.
+
+`diffRange` exists for reviewing a PR's worktree, which is a clean detached checkout with no uncommitted changes — `git diff` there finds nothing and this action would report "no issues" on a diff it never looked at. Pass the three-dot form, `<merge-base>...<head>`, never `<base>..<head>` (two dots): three dots is "what this branch actually changed since it forked" (`git diff A...B` == `git diff $(git merge-base A B) B`), while two dots also pulls in whatever landed on the base branch after the fork, and you'd flag other people's code as the PR author's.
+
+Then, *before flagging anything*, read (when present):
 
 - `src/pwa/DESIGN.md` — the design language, codename **Signal**: color is fully tokenized in `base.css` across 9 themes × {dark, light} (never a raw hex/`rgba()` in a component); `.o-*` is the canonical component namespace; the left-edge colored border is the load-bearing state-rail motif; `.o-microhead` is the eyebrow/micro-label; `.o-row` is the canonical list row; design dark-first, then verify light.
 - The **PWA section of the root `CLAUDE.md`** — surface/`vm` layout rules (one dir per surface under `components/`, a pure view-model per surface under `vm/`), the deps-injection / `app-bridge` patterns, and "keep modules small".

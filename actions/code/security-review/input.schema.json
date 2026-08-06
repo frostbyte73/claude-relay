@@ -19,6 +19,10 @@
         "approach": { "type": "string" },
         "risks": { "type": "string" }
       }
+    },
+    "diffRange": {
+      "type": "string",
+      "description": "Optional git diff range to review instead of the uncommitted working-tree diff, e.g. \"<merge-base>...<head>\" (three-dot form). Omit to review the uncommitted diff as before."
     }
   },
   "additionalProperties": false
