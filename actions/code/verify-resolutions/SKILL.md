@@ -26,10 +26,16 @@ you wrote it. A dispatched subagent gets the comment text and the diff and has t
 re-derive the intent, which is exactly where "they touched that line, close enough" comes
 from. **Do not "optimise" this into a dispatch.**
 
-You write nothing. Not to the PR, not to disk. Your entire output is the `resolutions`
-artifact. `gh pr review`, `gh pr comment`, `gh api --method POST`, `git push`,
-`git commit` — all denied here, and this action has no `allowlist.json` rules of its own at
-all. The verdict is a later round (`code.submit-pr-verdict`) behind its own user gate.
+You publish nothing and you change nothing that outlives the turn. `gh pr review`,
+`gh pr comment`, `gh api --method POST`, `git push`, `git commit` — all denied here, and this
+action has no `allowlist.json` rules of its own at all, so its grant is exactly
+`core + read + pull`. Not even `/tmp/` is writable to it. The one exception is this step's own
+worktree: paths under it auto-allow via session scope, so an `Edit`/`Write` there succeeds
+rather than denying. That is not an opening. The worktree is a throwaway detached PR-head
+checkout with no branch, `git worktree remove --force`d when the step settles — editing it
+changes nothing the author will ever see and nothing you will see next round, and it corrupts
+the very diff you are here to judge. Your entire durable output is the `resolutions` artifact.
+The verdict is a later round (`code.submit-pr-verdict`) behind its own user gate.
 
 ## Step 1 — Read the envelope
 
@@ -59,8 +65,11 @@ Do not verify comments you never posted.
 
 ## Step 2 — Find what changed since the review
 
-The review was anchored to a commit; `postedReview` records it. Everything that could
-address a comment is in the range from that commit to the PR's current head.
+The review was anchored to a commit; `postedReview`'s first line records it as
+`review: <id> (commit <sha>)`. Everything that could address a comment is in the range from
+that commit to the PR's current head. Note the head you read here — Step 4a writes it to
+`resolutions` and to the memo, and it is the only record the controller has of what it has
+already looked at.
 
 ```bash
 gh pr view "$PR_URL" --json headRefOid,commits,state,comments
@@ -120,16 +129,29 @@ ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__sub
 ```
 
 `artifacts.resolutions` is what the controller's ladder reads to know this rung is done —
-it is falsified only when every comment in `postedReview` has a verdict here. Keep it one
-comment per line, in `postedReview`'s order, so the two can be diffed by eye.
+it is falsified only when every comment in `postedReview` has a verdict here.
+
+**First line: `verified against <headRefOid>`** — the head you judged, from Step 2. Then one
+comment per line, in `postedReview`'s order, so the two can be diffed by eye. The head line is
+what lets the controller tell "the author pushed again" from "nothing has moved since I last
+looked": its rung fires on the PR's current head differing from the last head verified, and
+`pr` carries no head sha, so this line and `postedReview`'s are the only places that value ever
+gets written down.
+
+**Your `memo` replaces the controller's, wholesale.** The daemon overwrites `memo` with
+whatever this submit carries — it does not merge, and there is no second copy. Everything the
+controller was keeping there is gone unless you write it again: the head sha, what the review
+concluded and why, and any waiver the user gave it (which is the *only* thing that will let the
+verdict round approve over a `not-addressed` item). Put your counts first, then carry the
+controller's narrative forward.
 
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "resolutions_checked",
-  memo: "verified <n> comments against <k> new commits: <a> addressed, <b> not-addressed, <c> unclear",
-  artifacts: { resolutions: "- src/work/orchestrator.ts:412 — addressed — def4567 wraps the mutate() call in the queue drain, so the re-entrancy is gone\n- src/pwa/app.js:88 — not-addressed — author replied \"fixed in 9ab1234\", but 9ab1234 only renames the handler; removeEventListener is still never called\n- src/git/git-ops.ts:210 — unclear — the timeout moved to a constant, but nothing shows whether the 30s value was the point of the comment" },
+  memo: "verified <n> comments against <k> new commits: <a> addressed, <b> not-addressed, <c> unclear. Last verified head: <headRefOid>. <then the controller's narrative, carried forward: what the review concluded, and any user waiver it had recorded>",
+  artifacts: { resolutions: "verified against def4567\n- src/work/orchestrator.ts:412 — addressed — def4567 wraps the mutate() call in the queue drain, so the re-entrancy is gone\n- src/pwa/app.js:88 — not-addressed — author replied \"fixed in 9ab1234\", but 9ab1234 only renames the handler; removeEventListener is still never called\n- src/git/git-ops.ts:210 — unclear — the timeout moved to a constant, but nothing shows whether the 30s value was the point of the comment" },
   next: { kind: "self-round" }
 })
 ```
@@ -150,7 +172,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "resolutions_pending",
-  memo: "verified nothing: <postedReview was empty / no prUrl / gh said '<stderr>'>",
+  memo: "verified nothing: <postedReview was empty / no prUrl / gh said '<stderr>'>. <then the controller's narrative, carried forward — including the last verified head, which nothing else records>",
   next: { kind: "self-round" }
 })
 ```
@@ -178,12 +200,13 @@ field, not the category.
 - **Envelope missing or unreadable.** Say so in one line and exit; the engine settles the
   step on the next tick.
 - **No new commits since the review.** Every comment is `not-addressed` and that is a real
-  answer, not a failure. Say so in the memo so the controller does not immediately re-run
-  you.
+  answer, not a failure. Say so in the memo, and still write the head you checked — that is
+  what stops the controller re-running you on the next unrelated wake.
 - **The PR was force-pushed.** The review commit is gone and `compare` fails. Fall back to
   `gh pr diff` against the current head and judge the comments against the whole PR diff;
   note in the memo that history was rewritten, because line-anchored comments may now be
-  orphaned on GitHub too.
+  orphaned on GitHub too. Record the *new* head as `verified against` — the old one no longer
+  exists, and leaving it there makes every future wake look like a fresh push.
 - **`postedReview` lists a `degraded-to-body` comment.** It has no line anchor on GitHub,
   but it is still a comment the user approved and the author was asked to fix. Verify it
   like any other, against the file and line the body names.

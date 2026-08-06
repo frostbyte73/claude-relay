@@ -28,7 +28,7 @@ Read-only UI/UX + design-system review of PWA-facing changes. Does not modify fi
 
 If `diffRange` is absent, run `git status` + `git diff` to see the changes — the default, unchanged behavior: an uncommitted working-tree diff. If `diffRange` is set, run `git diff <diffRange>` instead (e.g. `git diff abc123...def456`) and skip `git status` — the range itself is the diff under review, there's no uncommitted state to check.
 
-`diffRange` exists for reviewing a PR's worktree, which is a clean detached checkout with no uncommitted changes — `git diff` there finds nothing and this action would report "no issues" on a diff it never looked at. Pass the three-dot form, `<merge-base>...<head>`, never `<base>..<head>` (two dots): three dots is "what this branch actually changed since it forked" (`git diff A...B` == `git diff $(git merge-base A B) B`), while two dots also pulls in whatever landed on the base branch after the fork, and you'd flag other people's code as the PR author's.
+`diffRange` exists for reviewing a PR's worktree, which is a clean detached checkout with no uncommitted changes — `git diff` there finds nothing and this action would report "no issues" on a diff it never looked at. Pass the three-dot form, `<merge-base>...<head>`, never `<base>..<head>` (two dots): three dots is "what this branch actually changed since it forked" (`git diff A...B` *means* `git diff $(git merge-base A B) B` — semantics, not a recipe: `git merge-base` is not in this action's grant and running it is denied, so write the three dots and let git find the base), while two dots also pulls in whatever landed on the base branch after the fork, and you'd flag other people's code as the PR author's.
 
 Then, *before flagging anything*, read (when present):
 

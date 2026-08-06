@@ -54,7 +54,7 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 
 | Field | What it is |
 |---|---|
-| `artifacts.resolutions` | **What the verdict is derived from.** One line per posted comment: `addressed` / `not-addressed` / `unclear` with evidence. |
+| `artifacts.resolutions` | **What the verdict is derived from.** First line is `verified against <sha>` — the head those verdicts were judged at; carry it into your memo (Step 5a). Then one line per posted comment: `addressed` / `not-addressed` / `unclear` with evidence. |
 | `artifacts.postedReview` | The comments this verdict is a verdict on. |
 | `boundNote` | What the controller asked for this round — including, when it applies, the user's explicit waiver of an unresolved comment. |
 | `gateFeedback` | Anything the user wrote when approving. If it changes the verdict, it wins — record that in the memo. |
@@ -91,9 +91,12 @@ shell variable in the path is denied):
 Write({ file_path: "/tmp/outpost-verdict-<PR_NUMBER>.md", content: "…" })
 ```
 
-`/tmp/` is the only place this action may write. `--body-file` is pinned to it for the same
-reason `--input` is on `code.post-pr-review`: an unpinned `--body-file` publishes any local
-file — `/etc/passwd`, `~/.outpost/.env` — as a review on somebody else's PR.
+Outside this step's own worktree, `/tmp/` is the only place this action may write. The
+worktree auto-allows via session scope — a `Write` under it succeeds rather than denying —
+but it is a throwaway detached PR-head checkout, `git worktree remove --force`d when the step
+settles, and `--body-file` will not read from it anyway. `--body-file` is pinned to `/tmp/`
+for the same reason `--input` is on `code.post-pr-review`: an unpinned `--body-file` publishes
+any local file — `/etc/passwd`, `~/.outpost/.env` — as a review on somebody else's PR.
 
 What the body should say, in this order:
 
@@ -151,12 +154,18 @@ ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__sub
 reads it to know the review is finished. Record the verdict *and* the body you submitted —
 what the PR author was told is the whole outcome of this job.
 
+**Your `memo` replaces the controller's, wholesale.** The daemon overwrites `memo` with
+whatever this submit carries — it does not merge. That matters even here, at the end: if the
+verdict does not land (Step 5b) the controller walks its ladder again, and the head sha it
+compares against, what the review concluded, and any user waiver it recorded all live only in
+the memo you are about to overwrite. Carry them forward on both paths.
+
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "verdict_submitted",
-  memo: "submitted REQUEST_CHANGES on <PR_URL>: 2 of 4 comments unaddressed",
+  memo: "submitted REQUEST_CHANGES on <PR_URL>: 2 of 4 comments unaddressed. Last verified head: <headRefOid from resolutions>. <then the controller's narrative, carried forward>",
   artifacts: { verdict: "REQUEST_CHANGES\n\n<the body exactly as submitted>" },
   next: { kind: "self-round" }
 })
@@ -177,7 +186,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "verdict_pending",
-  memo: "no verdict: <no resolutions artifact / gh said 'Can not approve your own pull request' / gh said '<stderr>'>",
+  memo: "no verdict: <no resolutions artifact / gh said 'Can not approve your own pull request' / gh said '<stderr>'>. Last verified head: <headRefOid from resolutions>. <then the controller's narrative, carried forward>",
   next: { kind: "self-round" }
 })
 ```
