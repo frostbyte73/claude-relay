@@ -221,11 +221,25 @@ describe('orchestratedRows', () => {
     expect(orchestratedRows(step({ gate: { draft: 'x', question: 'y' } })).gate).toBeNull();
   });
 
-  it('offers mark-resolved only while the step is still live', () => {
+  it('offers mark-resolved while the step is live, and as the escape from a failed one', () => {
     expect(orchestratedRows(step()).canMarkResolved).toBe(true);
     expect(orchestratedRows(step({ state: 'resolved' })).canMarkResolved).toBe(false);
-    expect(orchestratedRows(step({ state: 'failed' })).canMarkResolved).toBe(false);
+    // A failed step's sessionId is permanent (engine.ts never clears it outside Retry), which
+    // blocks Edit and Cancel server-side too — mark-resolved is the only working way to
+    // unblock the plan and add a corrected step. See markStepResolved's explicit
+    // `failure: undefined` in engine.ts.
+    expect(orchestratedRows(step({ state: 'failed' })).canMarkResolved).toBe(true);
     expect(orchestratedRows(step({ cancelled: true })).canMarkResolved).toBe(false);
+    expect(orchestratedRows(step({ cancelled: true, state: 'failed' })).canMarkResolved).toBe(false);
+  });
+
+  it('labels mark-resolved by why it applies: failed step, watching vigil, or the generic rescue', () => {
+    expect(orchestratedRows(step()).markResolved).toEqual({ label: 'Mark resolved', hint: '' });
+    expect(orchestratedRows(step({ state: 'failed' })).markResolved.label).toBe('Mark resolved — skip this step');
+    expect(orchestratedRows(step({ phase: 'watching' })).markResolved.label).toBe('Mark resolved — end review');
+    // A failed step's own reason wins even if it also carries a stale phase.
+    expect(orchestratedRows(step({ state: 'failed', phase: 'watching' })).markResolved.label)
+      .toBe('Mark resolved — skip this step');
   });
 });
 

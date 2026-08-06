@@ -106,7 +106,13 @@ export function renderPrBlockHtml(job, s) {
   const prNum = prMatch ? prMatch[2] : null;
   const isMerged = s.state === 'merged' || s.prState === 'merged';
   const prClosed = isMerged || s.prState === 'closed';
-  const reviewReady = !isMerged && !!s.sessionId;
+  // A review controller's workspace is a `readonly` detached checkout of somebody else's
+  // PR head — `s.sessionId` there is the controller's own persistent session id, set from
+  // turn 1 and never unset, and says nothing about whether a diff exists (it never will:
+  // the checkout is clean by construction). Gate the CTA on ownership of the branch, not
+  // merely on having a session. prClosed also covers "closed but not merged" — there's
+  // nothing to review or discard once the PR is dead either way.
+  const reviewReady = !prClosed && s.workspace?.kind !== 'readonly' && !!s.sessionId;
 
   // Once merged, "Merged" (in the stats row) says it all — the CI/approval pills
   // are implied and just add noise to the collapsed line; the full check
