@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { orchestratedHandler } from '../../src/steps/orchestrated.js';
+import { MAX_ROUNDS } from '../../src/steps/orchestrated-policy.js';
 import type { HandlerCtx } from '../../src/steps/types.js';
 import type { InboxItem, JobRecord, OrchestratedStep } from '../../src/work/work-types.js';
 
@@ -69,15 +70,15 @@ describe('orchestratedHandler.decide', () => {
 describe('orchestratedHandler.buildEnvelope', () => {
   it('carries controller identity, memo, artifacts, and the round budget', () => {
     const s = step({
-      memo: 'what I know', artifacts: { spec: '# Spec' }, phase: 'implementing', roundsSpent: 5,
+      memo: 'what I know', artifacts: { spec: '# Spec' }, phase: 'implement', roundsSpent: 5,
     });
     const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
     expect(env).toMatchObject({
       kind: 'step', type: 'orchestrated', controller: 'code.orchestrate-pr',
-      memo: 'what I know', phase: 'implementing',
+      memo: 'what I know', phase: 'implement',
     });
     expect(env.artifacts).toEqual({ spec: '# Spec' });
-    expect(env.roundsRemaining).toBe(35);
+    expect(env.roundsRemaining).toBe(MAX_ROUNDS - 5);
   });
 
   it('summarises dispatches without leaking runtime plumbing', () => {
@@ -107,5 +108,35 @@ describe('orchestratedHandler.buildEnvelope', () => {
     const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
     expect(env).not.toHaveProperty('gateApproved');
     expect(env).not.toHaveProperty('gateFeedback');
+  });
+
+  // Turn 1 is a cold spawn — it goes through this envelope, not the resume path. The SKILL
+  // leans on both fields (boundAction says which hat the controller wears, actionCatalog is
+  // how it learns what it may dispatch), so omitting them left the first turn blind.
+  it('carries boundAction and the action catalog on the cold-spawn turn', () => {
+    const actionRegistry = {
+      listActions: () => [{
+        name: 'code.review-diff',
+        frontmatter: {
+          description: 'review a diff',
+          outpost: { kind: 'action', category: 'code', runner: 'claude', side_effects: 'none' },
+        },
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+      }],
+    } as unknown as NonNullable<HandlerCtx['actionRegistry']>;
+    const s = step();
+    const env = orchestratedHandler.buildEnvelope(s, job(s), { ...ctx, actionRegistry }) as Record<string, unknown>;
+    expect(env.boundAction).toBe('code.orchestrate-pr');
+    expect(env.actionCatalog).toEqual([{
+      name: 'code.review-diff', description: 'review a diff', kind: 'action', category: 'code',
+      runner: 'claude', side_effects: 'none', human_gate: false,
+      input_schema: { type: 'object' }, output_schema: { type: 'object' },
+    }]);
+  });
+
+  it('omits the action catalog when no registry is wired', () => {
+    const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
+    expect(env).not.toHaveProperty('actionCatalog');
   });
 });

@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.reply-pr-comments input",
+  "description": "The orchestrated step envelope as code.reply-pr-comments sees it. `boundNote` is the approved payload: which comments to reply to and the exact body for each. `pr.comments` supplies each thread's file/line/url.",
+  "type": "object",
+  "required": ["jobId", "stepId", "boundNote", "pr"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "type": { "const": "orchestrated" },
+    "controller": { "const": "code.orchestrate-pr" },
+    "goal": { "type": "string" },
+    "workspace": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["none", "readonly", "writable"] },
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "phase": { "type": "string" },
+    "memo": { "type": "string" },
+    "artifacts": {
+      "type": "object",
+      "description": "`draftedReplies` holds the triage round's drafts; `postedReplies` records what earlier rounds already posted.",
+      "additionalProperties": { "type": "string" }
+    },
+    "boundAction": {
+      "const": "code.reply-pr-comments",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "The approved replies, verbatim: one entry per comment id with the exact body to post. This is the text the user read at the gate."
+    },
+    "gateApproved": {
+      "type": "boolean",
+      "description": "True once the user approved the daemon's forced gate on this external write."
+    },
+    "gateFeedback": { "type": "array", "items": { "type": "string" } },
+    "recentLessons": { "type": "array", "items": { "type": "object" } },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher.",
+      "properties": {
+        "prUrl": { "type": "string" },
+        "prState": { "enum": ["open", "merged", "closed"] },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "author", "body"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "`issue:<n>` for a conversation comment, `review:<node-id>` for a review or inline comment."
+              },
+              "author": { "type": "string" },
+              "body": { "type": "string" },
+              "file": { "type": "string" },
+              "line": { "type": "integer" },
+              "diffHunk": { "type": "string" },
+              "url": { "type": "string" },
+              "inReplyTo": { "type": "string" },
+              "createdAt": { "type": "number" },
+              "respondedAt": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

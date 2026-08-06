@@ -26,8 +26,16 @@ const MAX_EVENT_LIMIT = 5000;
 // Every orchestrated-step route 404s the same way for a missing job/step or a step that
 // isn't type 'orchestrated' — message/gate/mark-resolved only make sense for a controller-
 // owned step.
+//
+// A terminated job is refused here too. terminateJobResources closes the job's sessions and
+// archives its worktrees but leaves each step's own state untouched, so an abandoned job's step
+// still reads non-terminal — and delivering to it resumes the controller, which respawns the
+// session that was just closed. `failed` is NOT terminal: it's a halt the user is expected to
+// talk the step out of. (A deleted job leaves the queue entirely, so the lookup above misses.)
 function orchestratedStep(jobQueue: JobQueue, jobId: string, stepId: string): OrchestratedStep | undefined {
-  const step = jobQueue.get(jobId)?.steps.find((s) => s.id === stepId);
+  const job = jobQueue.get(jobId);
+  if (!job || job.state === 'abandoned' || job.state === 'done') return undefined;
+  const step = job.steps.find((s) => s.id === stepId);
   return step?.type === 'orchestrated' ? step : undefined;
 }
 
@@ -350,7 +358,12 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     const body = await readBody(req);
     let payload: { output?: string };
     try { payload = body ? JSON.parse(body) : {}; } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    engine.onStepResolved(m[1]!, m[2]!, payload);
+    // A user resolving an orchestrated step is a force-close, not the controller reporting that
+    // the work landed — route it to markStepResolved so it keeps the worktree (which may still
+    // hold uncommitted work on an unpushed branch) instead of archiving it. onStepResolved's
+    // archive is reserved for the controller's own resolve move.
+    if (orchestratedStep(jobQueue, m[1]!, m[2]!)) engine.markStepResolved(m[1]!, m[2]!);
+    else engine.onStepResolved(m[1]!, m[2]!, payload);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));

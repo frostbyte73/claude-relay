@@ -18,7 +18,7 @@ This is the same session that implemented the PR and triaged its comments, resum
 ## Step 1 — Read the envelope
 
 ```bash
-test -r "$OUTPOST_ENVELOPE" || { echo "missing envelope: $OUTPOST_ENVELOPE"; exit 1; }
+cat "$OUTPOST_ENVELOPE"
 ```
 
 Fields you'll use:
@@ -50,7 +50,7 @@ COMMENTS=$(jq -c '.pr.comments // []' "$OUTPOST_ENVELOPE")
 Make the minimum change that addresses the reviewer's concern. Same constraints as the implementer:
 
 - Edit files in place; never `git add` / `git commit` / `git push`.
-- Never run `gh pr comment` / `gh pr review` / any GitHub mutation. Replies are a separate path.
+- Never run `gh pr comment` / `gh pr review` / any GitHub mutation. Replies are a separate path — `code.reply-pr-comments` posts them, on a round the user approves separately.
 - Don't write scratch JSON or notes files anywhere in the worktree. Use `/tmp/` for anything you need to materialize.
 
 The `comment.diffHunk` (when present) anchors the comment to a specific span of code; combined with `comment.file` and `comment.line` you have enough to find the spot in the worktree.

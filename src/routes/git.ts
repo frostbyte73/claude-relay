@@ -191,7 +191,9 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   server.route('POST', '/api/sessions/:id/git/discard', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/discard$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const rec = worktreeManager.get(m[1]!);
+    // Step sessions key their worktree by stepId, so resolve through the engine
+    // first (session → stepId → record); direct lookup covers plain sessions.
+    const rec = engine.worktreeRecordForSession(m[1]!) ?? worktreeManager.get(m[1]!);
     if (!rec || rec.archivedAt || !rec.worktreePath) {
       res.statusCode = 400;
       res.setHeader('content-type', 'application/json');

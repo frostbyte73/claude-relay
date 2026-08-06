@@ -151,8 +151,19 @@ export function openAddStepDialog(jobId, opts = {}) {
   const refreshFields = () => { fieldsHost.innerHTML = renderFields(typeEl.value, editStep); };
   typeEl.addEventListener('change', refreshFields);
   refreshFields();
-  // Re-render the action / controller dropdowns once the catalog finishes loading.
-  const unsub = actions.subscribe(refreshFields);
+  // Re-render the action / controller dropdowns once the catalog finishes loading, then
+  // stop listening: refreshFields wipes fieldsHost, so a later store event (a concurrent
+  // action-builder session pushes activity every few seconds) would erase whatever the
+  // user has typed into Goal / Approach / Risks.
+  let unsub = null;
+  if (!actions.get()?.loaded) {
+    unsub = actions.subscribe(() => {
+      if (!actions.get()?.loaded) return;
+      refreshFields();
+      unsub?.();
+      unsub = null;
+    });
+  }
 
   const showError = (msg) => {
     const err = wrap.querySelector('#as-error');

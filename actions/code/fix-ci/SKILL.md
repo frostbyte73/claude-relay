@@ -24,7 +24,7 @@ problem), do NOT guess — report it unfixable and hand it back.
 ## Step 1 — Read the envelope
 
 ```bash
-test -r "$OUTPOST_ENVELOPE" || { echo "missing envelope: $OUTPOST_ENVELOPE"; exit 1; }
+cat "$OUTPOST_ENVELOPE"
 JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
 STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
 jq -r '.pr.ciChecks[]? | select(.state == "failure") | "\(.name)\t\(.url // "")"' "$OUTPOST_ENVELOPE"

@@ -20,7 +20,7 @@ import type {
   StepEventKind,
   WorkspaceRef,
 } from './work-types.js';
-import { augmentEnvelopeWithLessons, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
+import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
 import { readonlyView, workspaceError } from './workspace.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
@@ -66,8 +66,10 @@ export interface StepEditPatch {
 // Rounds that continue an already-open PR (CI red, merge conflict, review comment/edit).
 // These launch immediately — they resume an in-flight unit of work rather than starting a
 // new one, so the token-headroom + concurrency gate that throttles fresh launches doesn't
-// apply. (A controller's own self-rounds are NOT here: they route as `queued` and
-// self-unblock when the prior turn's Stop frees the slot — see releaseLaunchSlot.)
+// apply. A controller's self-round rebound to one of these (the common shape of the reactive
+// workflow) is included by design: submitLaunch reads the BOUND action, so the round that
+// actually fixes the red CI jumps the queue. An unbound self-round routes as `queued` and
+// self-unblocks when the prior turn's Stop frees the slot — see releaseLaunchSlot.
 const REACTIVE_ACTIONS = new Set([
   'code.fix-ci', 'code.resolve-conflicts', 'code.fix-pr-comment', 'code.triage-pr-comments',
 ]);
@@ -329,17 +331,36 @@ export class WorkEngine {
   // the job hangs forever. Action steps are read-only and single-turn: clear the sessionId
   // so decide() re-spawns a fresh session on the next tick, reusing the stepId-keyed
   // worktree. The bounce becomes non-destructive to the investigation.
+  //
+  // An orchestrated step in `running` is owed nothing by anyone — no inbox item is queued and
+  // no timer is armed — so it gets the same treatment: clearing sessionId cold-spawns a fresh
+  // controller, which reads phase/memo/artifacts/pr off its envelope and picks up where the
+  // dead round left off. A `waiting` controller is NOT touched: whatever it parked on (a
+  // watcher event, a dispatch, the user, a soak timer re-armed by reconcileWaits) resumes it,
+  // and sendOrResume respawns the dead session with --resume rather than losing it.
   reconcileInterruptedSteps(): void {
     for (const j of this.opts.queue.list()) {
       for (const s of j.steps) {
-        if (s.cancelled || s.failure || !s.sessionId) continue;
-        if (s.type === 'action' && s.state === 'running') {
+        if (s.cancelled || s.failure) continue;
+        // Clear the dead session BEFORE settling any dispatch below: a settle that delivers to
+        // a still-`running` parent would resume the session we are about to drop, leaving two
+        // controller sessions on one step.
+        if (s.sessionId && s.state === 'running') {
           const label = this.stepLabel(j.id, s.id);
           this.mutateStep(j.id, s.id, (st) => ({ ...st, sessionId: undefined, updatedAt: this.ctx.now() }));
           this.mutate(j.id, (jj) => this.appendEvent(jj, {
             kind: 'step_retried', who: 'system', stepId: s.id,
             body: `${label} — session interrupted by daemon restart; re-running`,
           }));
+        }
+        // A dispatch child is a one-shot action session — nothing resumes it, and left
+        // `running` it holds its parent's untilAllDispatchesDone wait open forever. Fail it so
+        // the controller sees the gap and can retry it (settleDispatch pushes the done marker,
+        // which is what wakes the parent).
+        if (s.type !== 'orchestrated') continue;
+        for (const d of s.dispatches) {
+          if (d.status !== 'running') continue;
+          this.settleDispatch(j.id, s.id, d.id, 'failed', { failure: 'session interrupted by daemon restart' });
         }
       }
     }
@@ -462,6 +483,7 @@ export class WorkEngine {
         break;
       case 'deliver-inbox':
         deliverInbox(this.orchestratedHost(), a.jobId, a.stepId);
+        this.syncOrchestratedWake(a.jobId, a.stepId);
         break;
       case 'write-linear-in-progress':
       case 'write-linear-in-review':
@@ -969,7 +991,7 @@ export class WorkEngine {
       return this.appendStepEvent(next, 'resolved', 'session');
     });
     if (didResolve) {
-      this.settleOrchestratedStep(jobId, stepId, 'succeeded');
+      this.settleOrchestratedStep(jobId, stepId, 'archive');
       this.mutate(jobId, (j) => this.appendEvent(j, {
         kind: 'step_resolved', who: 'session', stepId, body: this.stepLabel(jobId, stepId),
       }));
@@ -1055,18 +1077,34 @@ export class WorkEngine {
   // Called once at daemon startup: soak timers don't survive a restart. Re-arm every
   // parked meta.wait — resolve immediately if its deadline already passed, otherwise
   // schedule a fresh wake for the remaining time. Indefinite holds (no resumeAt) just
-  // stay parked until the user resumes.
+  // stay parked until the user resumes. Orchestrated waits carrying `resumeAt` are re-armed
+  // the same way (a due one fires on the next macrotask rather than resolving the step —
+  // the tick is what delivers it; see syncOrchestratedWake).
   reconcileWaits(): void {
     const now = this.ctx.now();
     for (const j of this.opts.queue.list()) {
       if (j.state !== 'executing' && j.state !== 'failed') continue;
       for (const s of j.steps) {
-        if (s.type !== 'action' || s.cancelled || s.failure || s.state !== 'waiting') continue;
-        if (s.resumeAt == null) continue;
+        if (s.cancelled || s.failure || s.state !== 'waiting') continue;
+        if (s.type === 'orchestrated') { this.syncOrchestratedWake(j.id, s.id); continue; }
+        if (s.type !== 'action' || s.resumeAt == null) continue;
         if (now >= s.resumeAt) this.resolveWaitStep(j.id, s.id, 'timer');
         else this.scheduleWaitWake(j.id, s.id, s.resumeAt - now);
       }
     }
+  }
+
+  // A parked controller has nothing else that would ever tick it: the daemon runs no periodic
+  // tick, and an empty inbox is not deliverable. So a `wait` carrying `resumeAt` needs a real
+  // armed timer, dropped again the moment the step stops waiting on the clock. The tick it
+  // fires reaches orchestratedHandler.decide → deliver-inbox → deliverInbox, which materializes
+  // the `timer` item the delivery carries.
+  private syncOrchestratedWake(jobId: string, stepId: string): void {
+    const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+    if (s?.type !== 'orchestrated') return;
+    const at = !s.cancelled && !s.failure && s.state === 'waiting' ? s.waitingOn?.resumeAt : undefined;
+    if (at == null) { this.clearWaitTimer(jobId, stepId); return; }
+    this.scheduleWaitWake(jobId, stepId, at - this.ctx.now());
   }
 
   // ─────────────────────────────────────────────────────────
@@ -1199,7 +1237,7 @@ export class WorkEngine {
       if (next.type === 'orchestrated') next.state = 'failed';
       return this.appendStepEvent(next, 'failed', 'session');
     });
-    this.settleOrchestratedStep(jobId, stepId, 'failed');
+    this.settleOrchestratedStep(jobId, stepId, 'keep');
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_failed', who: 'session', stepId, body: `${this.stepLabel(jobId, stepId)} — ${reason}`,
     }));
@@ -1258,16 +1296,36 @@ export class WorkEngine {
     };
   }
 
+  // A job the user threw away or closed out is over, but terminateJobResources leaves each
+  // step's own state untouched — so every one of these entry points would happily deliver to a
+  // step that still reads `waiting`, resume its controller, and have sendOrResume respawn the
+  // session the teardown just closed. The routes guard this too, but they are not the only
+  // caller: PrWatcher.syncNow walks the whole queue with no state filter, so an abandoned job
+  // with an open PR keeps pushing watcher events in here. `failed` is deliberately live — it's
+  // a recoverable halt (see tickOne), and `planning` covers a step-review in flight.
+  private jobAcceptsStepWork(jobId: string): boolean {
+    const state = this.opts.queue.get(jobId)?.state;
+    return state !== undefined && state !== 'abandoned' && state !== 'done';
+  }
+
+  // Each of these can park the step on a timed wait, or take it off one — re-sync the armed
+  // wake after every move rather than trusting each branch to remember.
   onStepProgress(jobId: string, stepId: string, p: ProgressPayload): void {
+    if (!this.jobAcceptsStepWork(jobId)) return;
     applyMove(this.orchestratedHost(), jobId, stepId, p);
+    this.syncOrchestratedWake(jobId, stepId);
   }
 
   pushStepInbox(jobId: string, stepId: string, item: NewItem): void {
+    if (!this.jobAcceptsStepWork(jobId)) return;
     pushInbox(this.orchestratedHost(), jobId, stepId, item);
+    this.syncOrchestratedWake(jobId, stepId);
   }
 
   resolveStepGate(jobId: string, stepId: string, approved: boolean, feedback?: string): void {
+    if (!this.jobAcceptsStepWork(jobId)) return;
     resolveGate(this.orchestratedHost(), jobId, stepId, approved, feedback);
+    this.syncOrchestratedWake(jobId, stepId);
   }
 
   // The cleanup every terminal transition of an orchestrated step owes, whichever route got
@@ -1284,13 +1342,16 @@ export class WorkEngine {
   // in flight; its eventual settleDispatch/submit_step_progress just updates a dispatch record
   // nobody reads anymore, because applyMove refuses to act on an already-terminal step.
   //
-  // Only a SUCCESSFUL terminal reaps the worktree. Archiving runs `git worktree remove --force`
-  // + `branch -D` (see WorktreeManager.tearDown), so doing it on failure destroys the uncommitted
-  // work and the branch that are the primary evidence for WHY the step failed — and 404s the
-  // diff view. A failed step's worktree is held until the job itself is abandoned/deleted, where
-  // terminateJobResources reaps it, so nothing leaks permanently. Its session is still closed:
-  // the transcript lives in the event log, so ending the process costs nothing.
-  private settleOrchestratedStep(jobId: string, stepId: string, outcome: 'succeeded' | 'failed'): void {
+  // `reap: 'archive'` is for the ONE terminal that means the work landed — the controller's own
+  // resolve move, i.e. the PR merged. Archiving runs `git worktree remove --force` + `branch -D`
+  // (see WorktreeManager.tearDown), so anywhere else it destroys uncommitted work and a local
+  // branch that was never pushed: on a failure that's the only evidence of WHY (and it 404s the
+  // diff view), and on a user's mark-resolved it's worse — the PWA recommends that button for a
+  // controller whose session died mid-step, so the escape hatch would eat the implementation.
+  // A kept worktree still gets reaped by terminateJobResources when the job is abandoned or
+  // deleted, so nothing leaks permanently. The session is closed either way: the transcript
+  // lives in the event log, so ending the process costs nothing.
+  private settleOrchestratedStep(jobId: string, stepId: string, reap: 'archive' | 'keep'): void {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (step?.type !== 'orchestrated') return;
     this.opts.governor?.cancelStep(jobId, stepId);
@@ -1304,10 +1365,10 @@ export class WorkEngine {
       };
       return next;
     });
-    const reap = outcome === 'succeeded'
+    const cleanup = reap === 'archive'
       ? this.archiveStepResources(jobId, stepId)
       : this.closeSessions(step.sessionId ? [step.sessionId] : []);
-    void reap.catch((e) =>
+    void cleanup.catch((e) =>
       console.error(`[work] settle ${stepId.slice(0, 8)}: ${(e as Error).message}`));
   }
 
@@ -1316,7 +1377,10 @@ export class WorkEngine {
   markStepResolved(jobId: string, stepId: string): void {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (!step || step.type !== 'orchestrated' || step.state === 'resolved') return;
-    this.settleOrchestratedStep(jobId, stepId, 'succeeded');
+    // 'keep', not 'archive': this is the user closing out a step the controller never finished
+    // — often one whose session died mid-implement — so the worktree still holds uncommitted
+    // work on an unpushed branch. Only the controller's own resolve move means it landed.
+    this.settleOrchestratedStep(jobId, stepId, 'keep');
     this.mutateStep(jobId, stepId, (s) => {
       if (s.type !== 'orchestrated') return s;
       const next: OrchestratedStep = {
@@ -1381,7 +1445,15 @@ export class WorkEngine {
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: boundAction, label: boundAction,
       run: () => {
         const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        // `cancelled` alone is not enough: it's the plan-editor flag, never set by a settle. The
+        // step can go terminal while this resume is suspended in provision() above (seconds of
+        // real git work) or parked in the governor — a mark-resolved landing there would
+        // otherwise spawn a fresh turn on a session the settle just closed. Mirrors the
+        // status re-read in spawnDispatchSession's run().
         if (!cur || cur.type !== 'orchestrated' || cur.cancelled) return false;
+        if (cur.failure || cur.state === 'resolved' || cur.state === 'failed') return false;
+        // The job can be abandoned/deleted between the resume and the fire, too.
+        if (!this.jobAcceptsStepWork(jobId)) return false;
         this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
         this.bindAction(sessionId, boundAction);
         this.opts.sessionManager.sendOrResume(
@@ -1761,19 +1833,7 @@ export class WorkEngine {
   }
 
   private buildActionCatalog(): ActionCatalogEntry[] | undefined {
-    const reg = this.opts.actionRegistry;
-    if (!reg) return undefined;
-    return reg.listActions().map((a) => ({
-      name: a.name,
-      description: a.frontmatter.description,
-      kind: a.frontmatter.outpost.kind,
-      category: a.frontmatter.outpost.category,
-      runner: a.frontmatter.outpost.runner,
-      side_effects: a.frontmatter.outpost.side_effects,
-      human_gate: a.frontmatter.outpost.human_gate ?? false,
-      input_schema: a.inputSchema,
-      output_schema: a.outputSchema,
-    }));
+    return buildActionCatalog(this.opts.actionRegistry);
   }
 
   // Cwd for orchestrator sessions: the daemon's cwd (Outpost repo) is fine — the
@@ -1926,6 +1986,12 @@ export class WorkEngine {
         return { ...rest, id, workspace: ws, state: initialStateForType('action'), createdAt: now, updatedAt: now } as Step;
       }
       case 'orchestrated': {
+        // Same boundary check the action branch gets: a typo'd controller materializes fine,
+        // then binds a session to a name with no allowlist and sends a slash command that
+        // activates no skill — the step burns a session and dies on the grace timer.
+        if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(p.controller)) {
+          throw new Error(`unknown controller ${JSON.stringify(p.controller)} — not in registry`);
+        }
         const { keepId: _, ...rest } = p;
         return {
           ...rest, id, workspace: p.workspace ?? { kind: 'none' as const },

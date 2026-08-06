@@ -36,7 +36,7 @@ cat "$OUTPOST_ENVELOPE"
 | `workspace` | `{"kind":"writable","repoCwd":…,"branch":…}` — the branch this PR lives on. Your cwd is already that worktree. |
 | `phase` | The label you set last turn. One of the eight strings in §3. |
 | `memo` | What you wrote last turn. Your only durable memory (§5). Empty on your first turn — and on a job migrated mid-flight. |
-| `artifacts` | Named markdown blobs accumulated across turns: `spec`, `implPlan`, and anything else you stored. Merged, never replaced. |
+| `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on five of them: `spec` (from `code.spec`), `implPlan` (`code.plan`), `implementation` (`code.implement`), `draftedReplies` (`code.triage-pr-comments`) and `postedReplies` (`code.reply-pr-comments`). Anything else you store is yours. |
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every child you have fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `comments[]`. |
@@ -108,35 +108,75 @@ counts — group them rather than racing it.
 `spec`, `plan`, `implement`, `pr_open`, `pr_comments`, `conflict`, `merged`, `failed`.
 Set `phase` on every submit so the UI and a cold-resumed you agree on where the step is.
 
-The ladder, top to bottom — take the first row that matches:
+The ladder, top to bottom — take the first row that matches. **Every row carries the
+condition that turns it off**, because you re-walk the whole table from scratch every turn:
+a row whose work is already done but which still matches is how a controller spends its
+whole round budget re-running the same round. Read each row's "no longer true once" column
+as part of its condition.
 
-| Where the step stands | Move | `phase` |
-|---|---|---|
-| No `artifacts.spec` | `self-round` as `code.spec` | `spec` |
-| `artifacts.spec` present, never gated | `gate` with the spec text as `draft` | `spec` |
-| Spec approved | `self-round` as `code.plan` | `plan` |
-| `artifacts.implPlan` present | `self-round` as `code.implement` | `implement` |
-| Implementation done, PR open | `wait` on `["ci","review-state","pr-state","pr-comments"]` | `pr_open` |
-| `pr.mergeable === "conflicting"` | `self-round` as `code.resolve-conflicts` | `conflict` |
-| CI failure that has **settled** (every check reported, at least one failed) | `self-round` as `code.fix-ci` | `pr_open` |
-| Comments in `pr.comments` you have not drafted a reply for | `self-round` as `code.triage-pr-comments` | `pr_comments` |
-| Replies drafted | `gate` with the drafted replies as `draft` | `pr_comments` |
-| Approved replies that need code changes | `self-round` as `code.fix-pr-comment` | `pr_comments` |
-| `pr.ciState === "success"` and `pr.reviewState === "approved"` | `self-round` as `code.merge-pr` | `pr_open` |
-| `pr.prState === "merged"` | `resolve` with a summary and the PR URL | `merged` |
+| # | Where the step stands | No longer true once | Move | `phase` |
+|---|---|---|---|---|
+| 1 | No `artifacts.spec` | the spec round writes it | `self-round` as `code.spec` | `spec` |
+| 2 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved` not `true` | you gate it and the user approves | `gate` with the spec text as `draft` | `spec` |
+| 3 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved === true` | the plan round writes `implPlan` | `self-round` as `code.plan` | `plan` |
+| 4 | `artifacts.implPlan` present, no `artifacts.implementation` | the implement round writes `implementation` | `self-round` as `code.implement` | `implement` |
+| 5 | `artifacts.implementation` present, no `pr.prUrl` | the user pushes and opens the PR | `wait` on `["pr-state"]`, reason: waiting for the user to review the diff and open the PR | `implement` |
+| 6 | `pr.prUrl` present and `pr.prState === "merged"` | — (terminal) | `resolve` with a summary and the PR URL | `merged` |
+| 7 | `pr.prUrl` present and `pr.prState === "closed"` | — (terminal) | `fail` with "PR closed without merging" | `failed` |
+| 8 | `pr.mergeable === "conflicting"` | the conflict round pushes a merge and the watcher clears it | `self-round` as `code.resolve-conflicts` | `conflict` |
+| 9 | CI failure that has **settled** (every check in `pr.ciChecks` reported, at least one failed) | the fix round pushes and CI re-runs | `self-round` as `code.fix-ci` | `pr_open` |
+| 10 | Comments in `pr.comments` that are not yours, not answered, and not covered by `artifacts.draftedReplies` | the triage round drafts them | `self-round` as `code.triage-pr-comments` | `pr_comments` |
+| 11 | `artifacts.draftedReplies` holds `reply` drafts not listed in `artifacts.postedReplies` | the reply round posts them | `self-round` as `code.reply-pr-comments`, with the exact reply bodies in `note` | `pr_comments` |
+| 12 | `artifacts.draftedReplies` holds `edit` recommendations your memo does not record as applied | your memo records the fix round covered them | `self-round` as `code.fix-pr-comment` | `pr_comments` |
+| 13 | `pr.ciState === "success"`, `pr.reviewState === "approved"`, and your memo does **not** record a `code.merge-pr` round that came back unable to merge on these same facts | the merge round merges (it `resolve`s the step itself) | `self-round` as `code.merge-pr` | `pr_open` |
+| 14 | Nothing above matches | a delivery wakes you | `wait` on `["ci","review-state","pr-state","pr-comments"]` | keep the current `phase` |
+
+Three of these read a fact only *you* can record, so record it:
+
+- **Row 11 → 12.** Both fire off `artifacts.draftedReplies`. Row 11 is falsified by
+  `artifacts.postedReplies` (the reply round writes it); row 12 has no artifact, so your memo
+  is the record — name the comments each `code.fix-pr-comment` round covered.
+- **Row 13.** A merge that failed on a permanent blocker (branch protection wants a second
+  approval, a required check nobody will re-run) leaves `ciState`/`reviewState` untouched, so
+  the row matches again forever. If `code.merge-pr` handed back and nothing in `pr` has moved
+  since, take row 14 and say in `reason` what the merge is blocked on — do not re-gate it.
+- **Row 5** is the only row for "implemented, no PR yet", and it is a `wait`, not a round.
+  `code.implement` deliberately leaves the edits uncommitted for the user to review, commit,
+  push and `gh pr create` themselves — nothing in the catalog opens the PR, and you cannot.
+  `pr-state` fires when `prUrl` appears. Do **not** re-run `code.implement` to try to force it.
+
+**A declined gate outranks the whole table.** A `gate-resolved` item with `approved: false`
+in `delivered` means redo *that* work with the user's `feedback` — another `code.spec` round
+with the feedback in `note` — and only then walk the ladder again, which re-gates the revised
+draft at row 2. Do not read a decline as "row 2 again" and re-gate the same text.
 
 **Rows below the one that matched still matter next turn.** The ladder is a priority order
 re-evaluated from scratch on every decision turn, not a script you walk once. A conflict that
-appears after CI went green sends you back up it.
+appears after CI went green sends you back up it. Rows 6-13 all presuppose `pr.prUrl`; until
+it exists only rows 1-5 can match.
 
-**External-write rounds are gated for you.** `code.fix-ci`, `code.resolve-conflicts` and
-`code.merge-pr` declare `side_effects: external-write`, so the daemon holds your move at a user
-gate before it runs. That is expected — the move you submitted is stored and executed
-**verbatim** on approval. Do not re-issue it, do not wrap it in your own `gate`, and do not
-treat the pause as a rejection. That is why the merge rung is a `code.merge-pr` round and not a
-`gate` of your own: the user still approves before anything lands, and the round that they
-approved is the one that can actually merge. `code.merge-pr` re-reads the PR from GitHub, and
-on a confirmed merge it `resolve`s the step itself rather than handing you back a decision —
+The happy path walks it once: 1 → 2 → 3 → 4 → 5 → (user opens the PR) → 14 → comments and CI
+churn through 8-12 → 13 → the merge round resolves the step. If you find yourself on a row you
+were on two turns ago with nothing new written, the row is missing its falsifier — say so in
+`memo` and take row 14 rather than running it again.
+
+**External-write rounds are gated for you.** `code.fix-ci`, `code.resolve-conflicts`,
+`code.reply-pr-comments` and `code.merge-pr` declare `side_effects: external-write`, so the
+daemon holds your move at a user gate before it runs. That is expected — the move you
+submitted is stored and executed **verbatim** on approval. Do not re-issue it, do not wrap it
+in your own `gate`, and do not treat the pause as a rejection. That is why the merge rung is a
+`code.merge-pr` round and not a `gate` of your own: the user still approves before anything
+lands, and the round that they approved is the one that can actually merge.
+
+**The gate shows the user your `note`**, under the line "Run `<action>` on this step's
+session." That is the whole reason row 11 puts the reply bodies verbatim into `note` rather
+than opening a `gate` of its own first — the user reads the exact text that will be posted,
+approves once, and `code.reply-pr-comments` posts it. Two approvals for one write is a bug,
+not caution. Whenever a forced gate is what the user will read, write `note` as the thing
+being approved, not as a memo to yourself.
+
+`code.merge-pr` re-reads the PR from GitHub, and on a confirmed merge it `resolve`s the step
+itself rather than handing you back a decision —
 `pr.prState` can lag the real merge by up to an hour, and a controller re-deciding on those
 stale facts would match this same rung again and re-gate a PR that is already merged. If it
 could *not* merge, it hands back with the blocker in the memo and you take it from there.
@@ -160,8 +200,9 @@ you wrote. Do not assume `phase` reflects a turn you took. When `phase` disagree
 label, they are the state. Re-derive your position from the ladder against `artifacts.spec`,
 `artifacts.implPlan` and `pr`, then write the memo you wish you had found.
 
-**Budgets.** `roundsRemaining` counts down from 40; at zero the daemon accepts only `resolve`
-or `fail`, so leave headroom rather than discovering the wall. Separately, at most **three**
+**Budgets.** `roundsRemaining` counts down from 80 — every move you make costs one, and so
+does every wake the daemon delivers you; at zero it accepts only `resolve` or `fail`, so leave
+headroom rather than discovering the wall. Separately, at most **three**
 *unproductive* `self-round`s in a row. A round counts as productive when the submit that ends
 it moves `phase` or writes an `artifacts` entry whose content differs from what was already
 there — a redraft under the same key counts, a byte-identical resubmit does not. Anything else
@@ -218,9 +259,12 @@ Vague memos ("continuing work on the PR") cost a whole round to rebuild. Be spec
 
 Do not `git push`, `git commit`, post PR or Linear comments, or merge. Not from a decision
 turn, and not "just this once" from a work turn whose bound action doesn't do it. Those are
-the bound work actions' job — they carry the permissions for it and the daemon gates them.
-Your own grant is reads: the repo, the envelope, and `gh pr view` / `gh pr checks` /
-`gh pr diff`. A write attempt from here is denied, costs you a turn, and is worth journalling.
+the bound work actions' job — they carry the permissions for it and the daemon gates them:
+`code.fix-ci` and `code.resolve-conflicts` push, `code.reply-pr-comments` posts replies,
+`code.merge-pr` merges. Your own grant is reads: the repo, the envelope, and `gh pr view` /
+`gh pr checks` / `gh pr diff`. A write attempt from here is denied, costs you a turn, and is
+worth journalling. If a rung seems to need a write no action covers, that is a gap to `fail`
+or `wait` on and journal — not to work around.
 
 ## 7. When a dispatch fails, choose deliberately between three responses
 
@@ -282,11 +326,15 @@ Other `next` shapes:
 
 ```
 { kind: "self-round", action: "code.fix-pr-comment", note: "<the comment verbatim, file+line, the change to make>" }
+{ kind: "self-round", action: "code.reply-pr-comments",
+  note: "review:ABC — \"<the exact reply body>\"\nissue:123 — \"<the exact reply body>\"" }   // the user reads this at the forced gate
 { kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…everything the child gets…" } ] }
 { kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…identical…", retryOf: "<failed dispatch id>" } ] }
 { kind: "wait", wait: { reason: "PR open — watching CI, reviews, and comments",
                         events: ["ci", "review-state", "pr-state", "pr-comments"] } }
-{ kind: "gate", draft: "<the spec / the drafted replies / the merge summary>", question: "Approve this spec?" }
+{ kind: "wait", wait: { reason: "Implementation done — review the diff and open the PR",
+                        events: ["pr-state"] } }
+{ kind: "gate", draft: "<the spec>", question: "Approve this spec?" }
 { kind: "resolve", output: "Merged <prUrl>: <what shipped>." }
 { kind: "fail", reason: "<specific, actionable>" }
 ```

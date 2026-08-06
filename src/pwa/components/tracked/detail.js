@@ -24,7 +24,7 @@ function isEditingPlan(jobId) { return editingPlanByJob.get(jobId) === true; }
 function stepIsEditable(s) {
   if (s.cancelled) return false;
   if (s.sessionId) return false;
-  if (s.state === 'resolved' || s.state === 'merged') return false;
+  if (s.state === 'resolved') return false;
   return true;
 }
 
@@ -151,9 +151,30 @@ function detailsKey(d) {
   return `${d.className}|${step ? step.getAttribute('data-step-id') : ''}`;
 }
 
+// Every in-timeline composer — the orchestrated card's "Message the controller" and
+// "Propose changes" boxes, and an action step's gate-feedback box — is a
+// `[data-composer="<name>"]` wrapper around one textarea, scoped to its step.
+function composerKey(c) {
+  const step = c.closest('[data-step-id]');
+  return `${c.getAttribute('data-composer')}|${step ? step.getAttribute('data-step-id') : ''}`;
+}
+
+function composerByKey(root, key) {
+  for (const c of root.querySelectorAll('[data-composer]')) {
+    if (composerKey(c) === key) return c;
+  }
+  return null;
+}
+
 function snapshotUi(root) {
-  const snap = { details: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null };
+  const snap = { details: new Map(), composers: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null };
   root.querySelectorAll('details').forEach((d) => snap.details.set(detailsKey(d), d.open));
+  root.querySelectorAll('[data-composer]').forEach((c) => {
+    snap.composers.set(composerKey(c), {
+      value: c.querySelector('textarea')?.value ?? '',
+      open: !c.hasAttribute('hidden'),
+    });
+  });
   const replan = root.querySelector('.replan-composer');
   if (replan) {
     snap.replan = {
@@ -166,9 +187,11 @@ function snapshotUi(root) {
   snap.menuOpen = !!root.querySelector('.tk-menu-body:not([hidden])');
   const ae = document.activeElement;
   if (ae && root.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
+    const composer = ae.closest('[data-composer]');
     snap.focus = {
       replan: !!ae.closest('.replan-composer'),
       launchContext: !!ae.closest('.launch-context'),
+      composer: composer ? composerKey(composer) : null,
       start: ae.selectionStart,
       end: ae.selectionEnd,
     };
@@ -182,6 +205,16 @@ function restoreUi(root, snap) {
   root.querySelectorAll('details').forEach((d) => {
     const k = detailsKey(d);
     if (snap.details.has(k)) d.open = snap.details.get(k);
+  });
+  // Composers repaint empty and (for the toggled ones) closed. Carry the text back and
+  // re-open anything the user had open — a dispatch transition or a pr-watcher event
+  // bumps job.updatedAt every few seconds while they're mid-sentence.
+  root.querySelectorAll('[data-composer]').forEach((c) => {
+    const prev = snap.composers.get(composerKey(c));
+    if (!prev) return;
+    const ta = c.querySelector('textarea');
+    if (ta && prev.value) ta.value = prev.value;
+    if (prev.open) c.removeAttribute('hidden');
   });
   if (snap.replan && (snap.replan.open || snap.replan.value)) {
     const composer = root.querySelector('.replan-composer');
@@ -203,6 +236,8 @@ function restoreUi(root, snap) {
       ta = root.querySelector('.replan-textarea');
     } else if (snap.focus.launchContext) {
       ta = root.querySelector('.launch-context-textarea');
+    } else if (snap.focus.composer) {
+      ta = composerByKey(root, snap.focus.composer)?.querySelector('textarea') ?? null;
     }
     if (ta) {
       ta.focus();

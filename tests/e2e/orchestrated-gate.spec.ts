@@ -98,12 +98,16 @@ async function fetchStep(outpostPage: import('@playwright/test').Page, daemon: D
 
 seededTest('renders the controller, phase, dispatches and the gate draft as separate rows', async ({ outpostPage }) => {
   await openJob(outpostPage);
-  const card = outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] .orc-card`);
+  const step = outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"]`);
+  const card = step.locator('.orc-card');
   await expect(card).toBeVisible();
 
-  // Row 1: controller chip + phase chip — never crammed onto the step's header line.
+  // Row 1: the controller as a category-colored action chip + the phase chip — never
+  // crammed onto the step's header line, and never printed twice (the header's
+  // `.tl-skill` slot stays empty for an orchestrated step).
   await expect(card.locator('.orc-chips .type-mono')).toHaveText('orchestrate-pr');
   await expect(card.locator('.orc-chips .o-pill')).toHaveText('PR open');
+  await expect(step.locator('.tl-skill')).toHaveCount(0);
 
   // Dispatch list, with the child action's own name and status.
   const dispatch = card.locator('.orc-dispatch');
@@ -148,6 +152,32 @@ seededTest('Propose changes reveals a composer and declines the gate with feedba
   expect(step.gate).toBeUndefined();
   expect(step.gateApproved).toBeUndefined();
   await expect(outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] [data-orc-action="approve-gate"]`)).toHaveCount(0);
+});
+
+// The picker decides orchestrated-vs-action from the action's `kind`, which only the
+// ActionRegistry catalog carries — reading the on-disk `actions` list instead silently
+// produced an ordinary action step named after the controller, with no error.
+seededTest('the action picker builds an orchestrated step when the picked action is a controller', async ({ outpostPage, daemon }) => {
+  await openJob(outpostPage);
+  await outpostPage.locator('[data-job-action="add-step-end"]').click();
+
+  const dialog = outpostPage.locator('#action-picker-dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.locator('#ap-search').fill('orchestrate-pr');
+  await dialog.locator('.ap-row[data-name="code.orchestrate-pr"]').click();
+
+  await dialog.locator('#ap-title').fill('Second PR');
+  await dialog.locator('#ap-in-goal').fill('Ship the follow-up');
+  await dialog.locator('[data-action="add"]').click();
+  await expect(dialog).toHaveCount(0);
+
+  const added = await outpostPage.request.get(`${daemon.baseUrl}/api/work/jobs/${JOB_ID}`)
+    .then((r) => r.json())
+    .then((d) => d.job.steps.find((s: any) => s.title === 'Second PR'));
+  expect(added).toBeTruthy();
+  expect(added.type).toBe('orchestrated');
+  expect(added.controller).toBe('code.orchestrate-pr');
+  expect(added.goal).toBe('Ship the follow-up');
 });
 
 seededTest('the message composer wakes the controller with a user message', async ({ outpostPage, daemon }) => {

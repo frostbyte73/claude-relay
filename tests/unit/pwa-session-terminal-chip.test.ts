@@ -82,8 +82,8 @@ describe('terminalChipVariant', () => {
   it('action resolved → finished', () => {
     expect(terminalChipVariant(step({ state: 'resolved' }))).toBe('finished');
   });
-  it('open-pr merged → finished', () => {
-    expect(terminalChipVariant(step({ type: 'open-pr', state: 'merged' }))).toBe('finished');
+  it('orchestrated step whose PR landed → finished (it settles on resolved, phase merged)', () => {
+    expect(terminalChipVariant(step({ type: 'orchestrated', state: 'resolved', phase: 'merged' }))).toBe('finished');
   });
   it('failed → failed', () => {
     expect(terminalChipVariant(step({ failure: { reason: 'x', at: T0 } }))).toBe('failed');

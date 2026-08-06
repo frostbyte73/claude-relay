@@ -5,13 +5,15 @@
 export function stepNeedsYou(s) {
   // Both step kinds park here for an explicit approval: a human_gate action before an
   // external write, an orchestrated step before the move its controller gated.
+  // A green, approved PR is deliberately NOT listed here. Merging is the controller's
+  // move (code.merge-pr), which the policy force-gates — so the user's turn arrives as
+  // gate_pending_approval above. Flagging the pre-gate window too put the job in
+  // "Needs you" with nothing on the card to act on.
   return s.state === 'gate_pending_approval'
     // An indefinite meta.wait hold only clears when the user resumes; a timed soak
     // (resumeAt set) auto-resumes, so it's waiting on the clock, not on you. An
     // orchestrated step's `waiting` is on CI/review/dispatches, never on you.
-    || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null)
-    || (s.type === 'orchestrated' && s.phase === 'pr_open'
-      && s.pr?.reviewState === 'approved' && s.pr?.ciState === 'success');
+    || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null);
 }
 
 // abandonJob flips job state without rewriting step states, so a terminal job

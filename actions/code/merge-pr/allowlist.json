@@ -1,9 +1,9 @@
 {
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
-    "^gh pr merge(?![\\s\\S]*(--delete-branch|\\s-[A-Za-z]*d[A-Za-z]*(\\s|$)))(\\s|$)",
-    "^git push origin --delete(\\s|$)",
-    "^git push --delete(\\s|$)"
+    "^gh pr merge(?:\\s+(?:--(?:squash|merge|rebase|auto)|--(?:subject|body)(?:=|\\s+)(?:\"[^\"\\n]*\"|'[^'\\n]*'|[^-\\s\"'\\n][^\\s\"'\\n]*)|\"?(?:\\$[A-Za-z_][A-Za-z0-9_]*|https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+|[0-9]+)\"?))*\\s*$",
+    "^git push [A-Za-z][A-Za-z0-9._-]* --delete(?: --)? (?![\"']?(?:main|master|HEAD|trunk|develop|refs/heads/[^\\s\"']*|release[/-][^\\s\"']*)[\"']?\\s*$)(?:\"[^\"\\s]+\"|'[^'\\s]+'|[^-\\s\"'][^\\s\"']*)\\s*$",
+    "^git push --delete [A-Za-z][A-Za-z0-9._-]*(?: --)? (?![\"']?(?:main|master|HEAD|trunk|develop|refs/heads/[^\\s\"']*|release[/-][^\\s\"']*)[\"']?\\s*$)(?:\"[^\"\\s]+\"|'[^'\\s]+'|[^-\\s\"'][^\\s\"']*)\\s*$"
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": []

@@ -1,6 +1,6 @@
 ---
 name: code.implement
-description: Use when invoked as `/code.implement` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.implement"`. Reads the envelope (goal/approach/risks/branch + any previous-step findings) and edits files to implement the changes as uncommitted working-tree edits — NO git commit, NO git push, NO PR creation. The user reviews the diff via the PWA git view, then commits / pushes / opens the PR themselves. For subsequent rounds, `code.orchestrate-pr` rebinds this same session to `code.triage-pr-comments` (drafts replies) or `code.fix-pr-comment` (per-comment edits).
+description: Use when invoked as `/code.implement` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.implement"`. Reads the envelope (goal/approach/risks/branch + any previous-step findings) and edits files to implement the changes as uncommitted working-tree edits — NO git commit, NO git push, NO PR creation. The user reviews the diff via the PWA git view, then commits / pushes / opens the PR themselves. Finish with `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
@@ -13,7 +13,9 @@ outpost:
 
 # Project implementer
 
-You're running in the worktree `code.orchestrate-pr` owns, bound to the *initial* implementation round of its step. Your job: implement the change as **uncommitted file edits** in the worktree. When done, write a summary to chat and exit. The user reviews via the PWA's git view and handles every git operation themselves — `git add`, `git commit`, `git push`, `gh pr create`. Your output is files; the user takes it from there.
+You're running in the worktree `code.orchestrate-pr` owns, bound to the *initial* implementation round of its step. Your job: implement the change as **uncommitted file edits** in the worktree, then hand the session back to the controller with `mcp__outpost__submit_step_progress`. The user reviews via the PWA's git view and handles every git operation themselves — `git add`, `git commit`, `git push`, `gh pr create`. Your output is files; the user takes it from there, and the controller parks on a `wait` until the PR appears.
+
+**This round ends with exactly one `mcp__outpost__submit_step_progress` call, then you stop.** A round that ends without one is read as a hang and fails the whole step — the implementation included.
 
 This skill handles the initial round. **This same session runs every later round** — when review comments arrive it is rebound to `code.triage-pr-comments`, and each fix round to `code.fix-pr-comment`. So leave your reasoning legible in the conversation as you work (why the code is shaped this way, tradeoffs you weighed) — future rounds inherit this context, and it's what lets a one-line review fix stay a one-line fix.
 
@@ -29,6 +31,8 @@ The orchestrator dropped a JSON envelope at `$OUTPOST_ENVELOPE`:
 
 ```bash
 cat "$OUTPOST_ENVELOPE"
+JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
+STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
 ```
 
 You'll find:
@@ -89,15 +93,38 @@ Before finishing, read your own working-tree diff (`git diff`) end-to-end. Thing
 
 A 30-second review here saves the user from having to do it themselves.
 
-## Step 4 — Journal one lesson
+## Step 4 — Report the round
 
-The `submit_journal` tool is deferred behind ToolSearch — if you have something worth journaling, load the schema first:
+The outpost MCP tools are deferred behind ToolSearch — load them first:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_journal", max_results: 1 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__submit_journal", max_results: 2 })
 ```
 
-Before the summary, call `mcp__outpost__submit_journal` with one short lesson the *next* project-implementer run should know. Skip entirely if there's nothing new.
+If `submit_step_progress` doesn't come back, say so and stop — the daemon does not scrape the transcript, and a round that never submits fails the step.
+
+`artifacts.implementation` is the **only** durable signal that the implementation is finished. Nothing else in the envelope can say so: the edits are uncommitted, there is no PR yet, and `phase` is just a label. The controller's ladder reads this artifact to stop running implement rounds and start waiting for the PR — so write it, and make it a real summary rather than "done":
+
+```
+mcp__outpost__submit_step_progress({
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  phase: "implement",
+  memo: "<what you changed, any deviation from the plan and why, what to look for in review>",
+  artifacts: { implementation: "<the same summary as markdown: files touched, what each change does, deviations, what you could not finish>" },
+  next: { kind: "self-round" }
+})
+```
+
+Write `artifacts.implementation` even when you could **not** finish — say plainly what is done, what is broken, and what you gave up on. A blocked implementation the controller can see beats a silent round it has to re-run.
+
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — whether to wait for the PR, ask you for more, or fail the step — so do not pick that yourself. Do not try to open the PR, and do not wait for approval messages.
+
+Then write a one-paragraph human summary to the chat: what changed, any deviations from the approach, anything to look for in review. The user reads that in the activity stream, reviews the uncommitted diff via the PWA's git view, then commits / pushes / opens the PR themselves.
+
+## Step 5 — Journal one lesson
+
+Call `mcp__outpost__submit_journal` with one short lesson the *next* project-implementer run should know. Skip entirely if there's nothing new.
 
 ```
 mcp__outpost__submit_journal({
@@ -117,14 +144,8 @@ this action until a human sees it, and this journal is the only place
 
 Concrete > generic. "Server repo's lint step requires running `mage proto` first if proto files changed" beats "watch out for build steps". Don't pad.
 
-## Step 5 — Summarize and exit
-
-Write a one-paragraph human summary to the chat: what changed, any deviations from the approach, anything to look for in review. Then stop.
-
-The user reviews the uncommitted working-tree diff via the PWA's git view, then commits / pushes / opens the PR themselves — your part is done. Don't wait for approval messages; if anything arrives from the orchestrator it's a stale legacy prompt and can be ignored.
-
 ## Failure modes
 
-- **Tests fail and you can't make them pass.** Don't paper over it. Leave the diff and call out exactly what's broken in your summary — the user decides whether to push it or send you back via chat.
+- **Tests fail and you can't make them pass.** Don't paper over it. Leave the diff, say exactly what's broken in `memo` and `artifacts.implementation`, and still submit — the controller decides whether to send you back or park for the user.
 - **Worktree drift** (parent moved on `origin/main` while you worked). `git fetch origin && git rebase origin/main` is fine — rebase moves the worktree's `HEAD`, not a published ref. If the rebase conflicts and you can't resolve them with confidence, note it in your summary and let the user decide.
 - **You accidentally ran `git commit` / `git push` / `gh pr create`.** Stop immediately and tell the user in plain language what happened. Don't try to silently undo it — they need to know what state the branch is in so they can clean up.

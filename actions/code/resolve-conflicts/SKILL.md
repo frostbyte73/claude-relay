@@ -22,7 +22,7 @@ resolve confidently, abort cleanly and hand it back — never push a guessed res
 ## Step 1 — Read the envelope
 
 ```bash
-test -r "$OUTPOST_ENVELOPE" || { echo "missing envelope: $OUTPOST_ENVELOPE"; exit 1; }
+cat "$OUTPOST_ENVELOPE"
 JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
 STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
 ```

@@ -29,7 +29,7 @@ yourself wanting one of those, this is the wrong round: hand it back (Step 5b).
 ## Step 1 — Read the envelope
 
 ```bash
-test -r "$OUTPOST_ENVELOPE" || { echo "missing envelope: $OUTPOST_ENVELOPE"; exit 1; }
+cat "$OUTPOST_ENVELOPE"
 JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
 STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
 PR_URL=$(jq -r '.pr.prUrl // empty' "$OUTPOST_ENVELOPE")
@@ -83,13 +83,27 @@ a failure, the step never leaves its merge gate, and the PWA shows nothing happe
 the PR watcher reconciles the merge much later. The merge and the branch cleanup must be
 two separate commands so a cleanup failure can never be mistaken for a merge failure.
 
-This is not left to your good intentions: this action's allowlist grants `gh pr merge` only
-when the command contains no `--delete-branch` and no `-d` (its shorthand, clustered forms
-included), so the daemon denies the call outright. If you see that denial, you wrote the
-flag — drop it and re-run the merge, then do Step 4.
+This is not left to your good intentions. The allowlist does not *blocklist* `-d` — a flag
+parser accepts too many spellings of it (`-d`, `-sd`, `-d=true`, `-db"msg"`, `"-d"`, `-d$X`)
+for a blocklist to hold. It **whitelists**: `gh pr merge` is granted only when every word
+after it is one the action is meant to use, and anything else is denied by default. What is
+allowed:
 
-If `gh pr merge` itself fails, the PR did **not** merge. Do not retry blindly and do not
-reach for `--admin`; hand it back (Step 5b) with `gh`'s stderr in the memo.
+| Allowed | Notes |
+|---|---|
+| the PR operand | a URL, a number, or `"$PR_URL"` / `$PR_URL` |
+| `--squash`, `--merge`, `--rebase` | the strategy; `--squash` unless `boundNote` says otherwise |
+| `--auto` | |
+| `--subject <text>`, `--body <text>` | the squash commit message, when `boundNote` asks for one |
+
+Everything else is denied — including `--delete-branch` and every `-d` spelling, `--admin`,
+the `-s`/`-m`/`-r` shorthands, and a `\`-continued command split across lines. Write the
+merge on **one line**. If you see a denial here, you wrote something outside that table —
+drop it and re-run the plain merge, then do Step 4.
+
+If `gh pr merge` itself fails, the PR did **not** merge. Do not retry blindly; `--admin`
+(bypassing branch protection) is denied for the same reason it is a bad idea. Hand it back
+(Step 5b) with `gh`'s stderr in the memo.
 
 ## Step 4 — Delete the remote branch (best effort — failure is not a failure)
 
@@ -99,6 +113,13 @@ outcome of this round:
 ```bash
 git push origin --delete -- "$BRANCH"
 ```
+
+The **only** branch you may delete is this step's own — `workspace.branch`, which is what
+`$BRANCH` holds. The grant is shaped to match: an explicit remote, `--delete`, and exactly
+**one** branch operand. No extra arguments, no second branch, no bare `git push --delete`,
+and the literal names `main`, `master`, `HEAD`, `trunk`, `develop`, `release/…` and
+`refs/heads/…` are denied outright. If you ever find yourself typing a branch name that
+isn't `$BRANCH`, stop — that is not this round's job.
 
 Expect this to fail sometimes and **ignore it when it does**: GitHub's "automatically
 delete head branches" setting may have already reaped it, or the repo may protect the
@@ -155,10 +176,14 @@ mcp__outpost__submit_journal({
   action: "code.merge-pr",
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  outcome: "merged" | "not-merged",
+  outcome: "resolved" | "blocked",
   lesson: "<= 300 chars; concrete; what would surprise next-run-me?"
 })
 ```
+
+Use `blocked` for anything short of a merge (the Step 5b path). That is the string the
+Library and `meta.improve-actions` read as a blocker; a merge-specific word like
+`not-merged` reads to them as a success.
 
 **Always journal a blocker** — a denied tool call, an allowlist gap, a missing or
 ambiguous envelope field, anything you had to guess at or work around. Journal it even

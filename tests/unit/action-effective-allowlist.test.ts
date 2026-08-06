@@ -120,7 +120,7 @@ describe('code.orchestrate-pr effective allowlist', () => {
 });
 
 describe('code.merge-pr effective allowlist', () => {
-  // The one action allowed to land a PR. It takes `[read, pull]` plus two narrow extras
+  // The one action allowed to land a PR. It takes `[read, pull]` plus three narrow extras
   // rather than the whole `push` group, so the merge round can't also commit, push code,
   // or comment. `gh pr merge` reaching it is the capability the controller's merge rung
   // depends on — the old hardcoded open-pr machinery owned it, and nothing did after it went.
@@ -133,35 +133,103 @@ describe('code.merge-pr effective allowlist', () => {
       `gh pr view ${PR} --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`,
       `gh pr merge ${PR} --squash`,
       `gh pr merge ${PR} --merge`,
-      `gh pr merge ${PR} --rebase --admin`,
+      `gh pr merge ${PR} --rebase`,
+      `gh pr merge ${PR} --squash --auto`,
+      `gh pr merge ${PR} --squash --subject "fix: the thing" --body "why it changed"`,
       'gh pr merge "$PR_URL" --squash',
+      'gh pr merge $PR_URL --squash',
+      'gh pr merge 12 --squash',
+      'git push origin --delete -- "$BRANCH"',
+      'git push origin --delete "$BRANCH"',
       'git push origin --delete -- job-1234-fix',
       'git push --delete origin job-1234-fix',
+      'git push upstream --delete feature/x',
     ];
     expect(documented.filter((c) => !allows(c))).toEqual([]);
+  });
+
+  // The branch delete is best-effort cleanup of THIS step's own head branch. The checker
+  // only ever sees command text, so it can't bind the operand to `workspace.branch` — but
+  // it can insist on the shape (explicit remote, `--delete`, exactly one operand) and
+  // refuse the names that would turn a cleanup into an outage. `^git push --delete(\s|$)`
+  // did neither: it allowed `git push --delete origin main`.
+  it('deletes one feature branch on an explicit remote — never a default branch', () => {
+    for (const c of [
+      'git push origin --delete main',
+      'git push origin --delete master',
+      'git push origin --delete -- main',
+      'git push origin --delete "main"',
+      'git push --delete origin main',
+      'git push --delete origin master',
+      'git push origin --delete release/1.2',
+      'git push origin --delete HEAD',
+      'git push origin --delete refs/heads/main',
+      // Shape, not just names: no operand, no remote, more than one operand, or a
+      // flag smuggled in where the branch belongs.
+      'git push origin --delete',
+      'git push --delete',
+      'git push --delete feature-x',
+      'git push origin --delete a b',
+      'git push origin --delete --force main',
+      'git push origin --delete job-1234-fix --force',
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
   });
 
   // THE constraint on this action, and the one Outpost already shipped a bug on:
   // `gh pr merge --delete-branch` also deletes the LOCAL branch, which git refuses while
   // the step's worktree holds it — so gh exits non-zero even though the PR merged, the
-  // caller reads a failure, and the step is stranded at its merge gate forever. The
-  // SKILL.md explains that; this is what enforces it. Delete this test and the bug is one
-  // plausible-looking model edit away from returning.
+  // caller reads a failure, and the step is stranded at its merge gate forever.
+  //
+  // The grant is a WHITELIST, not a blocklist: `gh pr merge` is allowed only when every
+  // word after it is one of {PR operand, --squash/--merge/--rebase/--auto, --subject/--body
+  // with a value}. That shape is what makes this list closed — a blocklist has to enumerate
+  // `-d`'s spellings, and pflag accepts more of them than anyone remembers (`-d=true` is
+  // pflag's `-f=arg` form; `"-d"`, `-"d"`, `-d""` and `-d$X` all reach argv as plain `-d`;
+  // `-db"msg"` clusters it). Every one of those was ALLOWED by the negative-lookahead the
+  // whitelist replaced. Delete this test and the bug is one plausible model edit away.
   it('denies --delete-branch in every spelling', () => {
     for (const c of [
       `gh pr merge --delete-branch ${PR}`,
       `gh pr merge ${PR} --squash --delete-branch`,
       'gh pr merge "$PR_URL" --squash --delete-branch',
+      `gh pr merge ${PR} --squash --delete-branch=true`,
       // -d is gh's shorthand for --delete-branch, and pflag accepts it clustered.
       `gh pr merge ${PR} --squash -d`,
       `gh pr merge ${PR} -d --squash`,
       `gh pr merge ${PR} -sd`,
       `gh pr merge ${PR} -ds`,
+      // pflag's `-f=arg` form.
+      'gh pr merge "$PR_URL" --squash -d=true',
+      // The shell strips the quotes; argv is a bare `-d` in all three.
+      'gh pr merge "$PR_URL" --squash "-d"',
+      'gh pr merge "$PR_URL" --squash -"d"',
+      'gh pr merge "$PR_URL" --squash -d""',
+      // An unset variable expands away, leaving `-d`.
+      'gh pr merge "$PR_URL" --squash -d$X',
+      // Clustered -d + -b msg.
+      'gh pr merge "$PR_URL" --squash -db"msg"',
       // A line continuation stays inside one clause, so the guard can't be `.*` — `.`
       // doesn't cross the newline and the flag would sail through on the next line.
       `gh pr merge ${PR} \\\n  --delete-branch`,
       // Every clause is checked independently; a clean merge can't chaperone a dirty one.
       `gh pr merge ${PR} --squash && gh pr merge 456 --delete-branch`,
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
+  });
+
+  // SKILL.md tells the round not to reach for --admin; the grant says the same thing, so
+  // prose and enforcement can't drift apart. Same for the -d-adjacent shorthands: the
+  // whitelist takes long flags only, which is what keeps `-sd` from having a legal prefix.
+  it('denies --admin and the single-letter strategy shorthands', () => {
+    for (const c of [
+      `gh pr merge ${PR} --rebase --admin`,
+      `gh pr merge ${PR} --admin`,
+      `gh pr merge ${PR} -s`,
+      `gh pr merge ${PR} -m`,
+      `gh pr merge ${PR} -r`,
     ]) {
       expect(allows(c), c).toBe(false);
     }
@@ -183,6 +251,55 @@ describe('code.merge-pr effective allowlist', () => {
 
   it('declares the external write the daemon force-gates on', () => {
     expect(registry.getAction('code.merge-pr')?.frontmatter.outpost.side_effects).toBe('external-write');
+  });
+});
+
+describe('code.reply-pr-comments effective allowlist', () => {
+  // Nothing could post an approved PR reply after `engine.approveReplies` was deleted:
+  // triage drafts them, the controller is forbidden to post, and no daemon path picked it
+  // up — so approved replies were dropped and the pr_comments rung re-matched forever.
+  // This action closes that hole the same way code.merge-pr closed the merge one: an
+  // external-write round the daemon force-gates, with the narrow grant it actually needs
+  // (`[read]` + four gh rules) instead of the whole push group.
+  const allows = effective('code.reply-pr-comments');
+  const PR = 'https://github.com/livekit/outpost/pull/12';
+
+  it('allows exactly the posting commands its SKILL.md documents', () => {
+    const documented = [
+      'cat "$OUTPOST_ENVELOPE"',
+      `gh pr comment ${PR} --body "You're right — wrapping in a transaction."`,
+      'gh pr comment "$PR_URL" --body "thanks"',
+      'PR_NUM=$(gh pr view "$PR_URL" --json number --jq .number)',
+      'gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments" --paginate --jq \'.[] | "\\(.node_id)\\t\\(.id)"\'',
+      'gh api repos/livekit/outpost/pulls/12/comments --paginate',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" -f body="the approved reply"',
+      'gh api -X POST repos/livekit/outpost/pulls/comments/998877/replies -f body=hi',
+      `gh pr view ${PR} --json comments --jq '.comments[-3:] | .[] | "\\(.author.login): \\(.body[0:80])"'`,
+    ];
+    expect(documented.filter((c) => !allows(c))).toEqual([]);
+  });
+
+  it('cannot do anything else to the PR or the branch', () => {
+    for (const c of [
+      'git push',
+      'git commit -m wip',
+      `gh pr merge ${PR} --squash`,
+      `gh pr review ${PR} --approve`,
+      `gh pr close ${PR}`,
+      'gh pr create --fill',
+      'gh release create v1',
+      // Not a PR-review-comment endpoint — the grant is scoped to replies, not to gh api.
+      'gh api --method POST repos/livekit/outpost/issues/12/labels -f labels=bug',
+      'gh api --method DELETE repos/livekit/outpost/git/refs/heads/main',
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
+  });
+
+  it('declares the external write the daemon force-gates on', () => {
+    const fm = registry.getAction('code.reply-pr-comments')?.frontmatter.outpost;
+    expect(fm?.side_effects).toBe('external-write');
+    expect(fm?.kind).toBe('action');
   });
 });
 

@@ -775,10 +775,23 @@ function clearDiffSendWarning() {
   w.textContent = '';
 }
 
-// "Request changes" — drafted per-hunk comments flow back to the session as a
-// single structured review message. Routes through /git/review first: when the
-// session belongs to a step awaiting the user's verdict, the daemon feeds the review
-// back to that step rather than the chat (worktree preserved).
+// The live step behind the open overlay, when it's a controller-owned one that can
+// still take a turn. Re-read from the store rather than trusting diffState.ctx.step,
+// which is a snapshot from the moment the overlay opened.
+function liveOrchestratedStep() {
+  const { jobId, stepId } = diffState.ctx ?? {};
+  if (!jobId || !stepId) return null;
+  const step = work.get().byId.get(jobId)?.steps?.find((s) => s.id === stepId);
+  if (!step || step.type !== 'orchestrated') return null;
+  if (step.cancelled || step.state === 'resolved' || step.state === 'failed') return null;
+  return step;
+}
+
+// "Request changes" — drafted per-hunk comments flow back as a single structured
+// review message. For a controller-owned step it must go through the step's inbox
+// (that's what clears `waitingOn` and gives the controller its turn back); a raw WS
+// message into its session would prompt it out of band and leave the step parked.
+// Every other session takes the chat path, via /git/review for validation.
 async function submitReview() {
   if (diffState.openDraftKey) {
     setDiffSendWarning('Save or cancel the open draft first.');
@@ -789,20 +802,27 @@ async function submitReview() {
   const sessionId = diffState.ctx?.sessionId;
   if (!sessionId) { setDiffSendWarning('No active session.'); return; }
   const text = formatDiffReviewMessage();
-  let routed = { handled: 'chat' };
-  try {
-    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/git/review`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (r.ok) routed = await r.json();
-  } catch { /* network hiccup — fall through to chat path */ }
-  if (routed.handled === 'requeued') {
+
+  const step = liveOrchestratedStep();
+  if (step) {
+    try {
+      await work.messageStep(diffState.ctx.jobId, step.id, text);
+    } catch (e) {
+      setDiffSendWarning(`Not sent: ${e?.message ?? e}`);
+      return;
+    }
     diffState.comments.clear();
     closeDiffOverlay();
     return;
   }
+
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/git/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  } catch { /* network hiccup — fall through to chat path */ }
   if (!tabSendUserMessage(sessionId, text)) {
     setDiffSendWarning('Disconnected — not sent. Try again once reconnected.');
     return;

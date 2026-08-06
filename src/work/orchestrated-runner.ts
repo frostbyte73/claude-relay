@@ -67,10 +67,14 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   // `.failure` is checked too, not just `state === 'failed'` — some failure paths land
   // `.failure` without (yet) updating `state`, and this must hold even then.
   if (!step || step.state === 'resolved' || step.state === 'failed' || step.failure) return;
+  // A step parked at a gate is the user's turn. Running a second move here would flip state
+  // back to 'running' and strand `step.gate`, which resolveGate then refuses to touch — the
+  // user's Approve becomes a silent no-op and the deferred move is lost.
+  if (step.state === 'gate_pending_approval') return;
   const productive = isProductive(step, p);
   host.mutateStep(jobId, stepId, (s) => recordProgress(s, p));
 
-  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo);
+  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo, productive);
 
   if (verdict.kind === 'reject') {
     // One corrective turn. A controller that violates policy twice running (with no accepted
@@ -86,6 +90,12 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
     host.resumeController(jobId, stepId, undefined, undefined);
     return;
   }
+
+  // Every accepted move is a round, whatever its kind. Charging only on inbox deliveries left
+  // the self-round loop — the most common move there is — free, so MAX_ROUNDS bounded nothing
+  // for a controller that never parked. It is the backstop that has to hold once the finer
+  // guards (productivity, the self-round cap) have all been satisfied or evaded.
+  host.mutateStep(jobId, stepId, (s) => ({ ...s, roundsSpent: s.roundsSpent + 1 }));
 
   if (verdict.kind === 'force-gate') {
     openGate(host, jobId, stepId, {
@@ -116,6 +126,9 @@ function openGate(
     state: 'gate_pending_approval',
     gate: { ...gate, requestedAt: host.now() },
     gateApproved: undefined,
+    // A gated move is a move policy accepted, so it earns the same forgiveness runMove grants —
+    // otherwise a strike survives a legitimate move and the next rejection fails the step.
+    pendingPolicyStrike: false,
     // A gate is the strongest yield there is — the step parks and a human decides — so it
     // forgives the self-round budget at least as much as a dispatch or a wait does. That holds
     // even harder for a force-gate, which the daemon imposed on a controller that didn't ask.
@@ -123,8 +136,9 @@ function openGate(
   }));
 }
 
-// `productive` is false for a deferred move replayed from a gate: the payload that proposed it
-// was folded in rounds ago, so there is nothing left to compare against — charge the round.
+// `productive` is false for a deferred move replayed from a gate: it carries no payload of its
+// own — the one that proposed it was folded in when the gate opened — so there is nothing left
+// to compare against and the replay counts against the self-round budget.
 function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: NextMove, productive = false): void {
   // An accepted move is what earns forgiveness — clear before acting, whether this move was
   // immediately allowed or is a force-gated move running now on the user's approval.
@@ -207,10 +221,11 @@ export function resolveGate(
   }));
 
   if (approved && deferred) {
-    // Executed verbatim, WITHOUT re-validating: re-running policy here would
-    // force-gate the same write again, forever. The gate-resolved marker isn't needed —
-    // the deferred move is about to run immediately, nothing to explain.
-    host.mutateStep(jobId, stepId, (s) => ({ ...s, inbox: [] }));
+    // Executed verbatim, WITHOUT re-validating: re-running policy here would force-gate the
+    // same write again, forever. Drop ONLY the gate-resolved marker — the deferred move runs
+    // immediately, so there is nothing to explain — and leave everything else the watcher or a
+    // dispatch queued while the step was parked for the next natural delivery.
+    host.mutateStep(jobId, stepId, (s) => ({ ...s, inbox: s.inbox.filter((i) => i.id !== item.id) }));
     runMove(host, jobId, stepId, deferred);
     return;
   }
@@ -230,8 +245,16 @@ export function pushInbox(host: OrchestratedHost, jobId: string, stepId: string,
 }
 
 export function deliverInbox(host: OrchestratedHost, jobId: string, stepId: string): void {
-  const step = host.getStep(jobId, stepId);
+  let step = host.getStep(jobId, stepId);
   if (!step) return;
+  // A pure timed soak has an empty inbox by construction, and shouldDeliver refuses to deliver
+  // an empty one — so the wake has to materialize the item it delivers. This is the producer of
+  // the `timer` InboxItem, and the only reason a `wait` carrying just `resumeAt` can ever fire.
+  if (step.inbox.length === 0 && step.state === 'waiting'
+      && step.waitingOn?.resumeAt !== undefined && host.now() >= step.waitingOn.resumeAt) {
+    host.mutateStep(jobId, stepId, (s) => ({ ...s, inbox: [...s.inbox, stamp(host, { kind: 'timer' })] }));
+    step = host.getStep(jobId, stepId)!;
+  }
   const working = step.sessionId ? host.sessionWorking(step.sessionId) : false;
   if (!shouldDeliver(step, working, host.now())) return;
   host.mutateStep(jobId, stepId, (s) => drainForDelivery(s).step);

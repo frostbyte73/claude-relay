@@ -11,24 +11,12 @@ function job(overrides = {}) {
 }
 
 describe('stepNeedsYou', () => {
-  it('true for an approved, CI-green orchestrated step with its PR open', () => {
+  // Merging is the controller's own move (code.merge-pr), which the policy force-gates
+  // into gate_pending_approval — that gate is the user's turn, not the window before it.
+  it('false for an approved, CI-green orchestrated step with its PR open', () => {
     expect(stepNeedsYou(step({
       type: 'orchestrated', state: 'waiting', phase: 'pr_open',
       pr: { reviewState: 'approved', ciState: 'success' },
-    }))).toBe(true);
-  });
-
-  it('false when reviewState is approved but CI is not green', () => {
-    expect(stepNeedsYou(step({
-      type: 'orchestrated', state: 'waiting', phase: 'pr_open',
-      pr: { reviewState: 'approved', ciState: 'pending' },
-    }))).toBe(false);
-  });
-
-  it('false when the PR facts still sit at the top level (pre-migration shape)', () => {
-    expect(stepNeedsYou(step({
-      type: 'orchestrated', state: 'waiting', phase: 'pr_open',
-      reviewState: 'approved', ciState: 'success',
     }))).toBe(false);
   });
 

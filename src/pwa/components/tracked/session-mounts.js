@@ -68,7 +68,7 @@ export function withStepTiming(job, step) {
   const events = [];
   if (start) events.push({ kind: 'spawned', at: start });
   if (end) {
-    const kind = step.state === 'merged' ? 'merged' : step.failure ? 'failed' : 'resolved';
+    const kind = step.failure ? 'failed' : 'resolved';
     events.push({ kind, at: end });
   }
   return events.length ? { ...step, events } : step;

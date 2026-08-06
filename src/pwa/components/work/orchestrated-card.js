@@ -17,10 +17,10 @@ import { openSession } from '../../app-bridge.js';
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
 // pr-block.js reads the flat shape the deleted `open-pr` step had: PR facts at the top
-// level, spec/plan as their own fields, and the old state vocabulary. The facts are
-// unchanged — only where they hang — so adapt here rather than fork the block. Only the
-// two phases pr-block still branches on are mapped; every other phase stays blank so its
-// spec/conflict CTAs (whose gates the engine no longer accepts) can't be reached.
+// level and the old state vocabulary. The facts are unchanged — only where they hang —
+// so adapt here rather than fork the block. Only the two phases pr-block still branches
+// on are mapped; every other phase stays blank. Spec/implPlan deliberately do NOT get
+// mapped: the card renders every artifact once, below, via artifactsHtml.
 const PR_BLOCK_STATE = { merged: 'merged', implement: 'implementing' };
 const PRE_PR_PHASES = new Set(['spec', 'plan']);
 
@@ -29,17 +29,21 @@ function prView(s) {
     ...s,
     ...(s.pr ?? {}),
     state: PR_BLOCK_STATE[s.phase] ?? '',
-    spec: s.artifacts?.spec,
-    implPlan: s.artifacts?.implPlan,
   };
 }
 
 // Exported so step-card.js can suppress its own diff/PR refs when the card already
-// carries them, without reaching into the adapter above.
+// carries them, without reaching into the adapter above. `phase` is only written once
+// the controller reports its first move, so an unset phase is still pre-PR — without
+// that guard a just-created step shows a Discard CTA for work that doesn't exist yet.
 export function orchestratedHasPrBlock(s) {
-  return !PRE_PR_PHASES.has(s.phase) && hasPrBlock(prView(s));
+  if (!s.phase || PRE_PR_PHASES.has(s.phase)) return false;
+  return hasPrBlock(prView(s));
 }
 
+// The controller is named here, as a category-colored action chip — the same treatment
+// every other action gets. step-card.js leaves its `.tl-skill` slot empty for an
+// orchestrated step so the name isn't printed twice, adjacent, in two typographies.
 function chipsRowHtml(s, vm) {
   const bits = [];
   if (s.controller) {
@@ -54,9 +58,11 @@ function chipsRowHtml(s, vm) {
   return bits.length ? `<div class="orc-chips">${bits.join('')}</div>` : '';
 }
 
+// Same callout the timeline uses for a parked meta.wait, in its neutral variant: this
+// hold is on CI/review/a dispatch, not on the user, so it carries no --warn accent.
 function waitRowHtml(vm) {
   if (!vm.waitingReason) return '';
-  return `<div class="orc-wait">⏸ ${escapeHtml(vm.waitingReason)}</div>`;
+  return `<div class="tl-wait tl-wait--neutral"><div class="tl-wait-reason">⏸ ${escapeHtml(vm.waitingReason)}</div></div>`;
 }
 
 function dispatchRowHtml(d) {

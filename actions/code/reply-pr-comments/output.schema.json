@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.reply-pr-comments output",
+  "description": "This round hands the session back with `next: {kind:\"self-round\"}` rather than resolving the step, so it emits no step output. What it posted is recorded in `memo` and in the `postedReplies` artifact — one line per comment id.",
+  "type": "string"
+}

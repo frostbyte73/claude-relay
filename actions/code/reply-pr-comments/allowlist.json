@@ -1,0 +1,11 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^gh pr view(\\s|$)",
+    "^gh pr comment(\\s|$)",
+    "^gh api \"?repos/[A-Za-z0-9._${}/-]+/pulls/[A-Za-z0-9._${}-]+/comments\"?(\\s|$)",
+    "^gh api (--method|-X) POST \"?repos/[A-Za-z0-9._${}/-]+/pulls/comments/[A-Za-z0-9._${}-]+/replies\"?(\\s|$)"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}

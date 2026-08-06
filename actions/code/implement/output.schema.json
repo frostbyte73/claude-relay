@@ -1,18 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.implement output",
-  "description": "The real output is the uncommitted working-tree diff; the user reviews it via the PWA git view. This schema covers the summary message returned by the session.",
+  "description": "The real output is the uncommitted working-tree diff; the user reviews it via the PWA git view. This round writes no step output — it reports via mcp__outpost__submit_step_progress and hands the session back. This schema documents the `implementation` artifact that submit carries.",
   "type": "object",
-  "required": ["summary"],
+  "required": ["implementation"],
   "properties": {
-    "summary": {
+    "implementation": {
       "type": "string",
-      "description": "One-paragraph human summary: what changed, any deviations, anything to look for in review."
-    },
-    "deviations": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "Specific places the implementer diverged from the approach (e.g., file moved, API renamed)."
+      "description": "Markdown summary of the finished implementation: files touched, what each change does, deviations from the plan, and anything left unfinished. Its presence is what tells code.orchestrate-pr the implement rung is done."
     }
   }
 }

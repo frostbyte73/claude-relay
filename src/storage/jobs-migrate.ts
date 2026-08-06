@@ -73,6 +73,14 @@ const STATE: Record<string, OrchestratedStep['state']> = {
   failed: 'failed',
 };
 
+function failureReason(state: string, known: boolean): string {
+  if (!known) return `unrecognized legacy state ${JSON.stringify(state)} — retry the step to hand it to the controller`;
+  if (state === 'conflict_unresolved') {
+    return 'conflicts were never resolved before the orchestrated rewrite — retry to hand the step back to the controller';
+  }
+  return 'step was already failed before the orchestrated rewrite';
+}
+
 export function migrateOpenPrStep(raw: Record<string, unknown>): OrchestratedStep {
   const s = raw as unknown as LegacyOpenPrStep;
 
@@ -111,7 +119,7 @@ export function migrateOpenPrStep(raw: Record<string, unknown>): OrchestratedSte
     controller: 'code.orchestrate-pr',
     workspace: s.workspace,
     goal: s.goal,
-    inputs: { approach: s.approach, ...(s.risks ? { risks: s.risks } : {}) },
+    inputs: { ...(s.approach ? { approach: s.approach } : {}), ...(s.risks ? { risks: s.risks } : {}) },
     phase: known ? PHASE[state] : 'failed',
     state: known ? STATE[state]! : 'failed',
     dispatches: [],
@@ -128,7 +136,12 @@ export function migrateOpenPrStep(raw: Record<string, unknown>): OrchestratedSte
   if (s.parallelGroup !== undefined) out.parallelGroup = s.parallelGroup;
   if (s.sessionId !== undefined) out.sessionId = s.sessionId;
   if (s.events !== undefined) out.events = s.events;
+  // A `failed` step with no `.failure` is inert in every direction: decide() ignores it, the
+  // pr-watcher skips it, decideJobTransitions keys job failure on `.failure` (so the job neither
+  // fails nor completes), and the cockpit's "Job failed → Retry" card keys on it too. That is a
+  // silent permanent stall, so every failed landing gets a reason the user can act on.
   if (s.failure !== undefined) out.failure = s.failure;
+  else if (out.state === 'failed') out.failure = { reason: failureReason(state, known), at: s.updatedAt };
   if (s.cancelled !== undefined) out.cancelled = s.cancelled;
   if (s.reviewed !== undefined) out.reviewed = s.reviewed;
   if (s.iterations !== undefined) out.iterations = s.iterations;

@@ -317,8 +317,9 @@ export class PrWatcher {
     const facts: Partial<PrFacts> = {};
     let prUrl = prev.prUrl;
     if (!prUrl) {
-      // PR discovery: the controller picks the branch and a bound work round pushes and
-      // opens the PR, so finding it by branch is how the daemon learns the URL at all.
+      // PR discovery: nothing in the catalog opens the PR — code.implement leaves uncommitted
+      // edits and the user pushes and opens it by hand — so matching the step's branch is the
+      // only way the daemon ever learns the URL.
       prUrl = await this.discoverPr(cwd, branch);
       if (!prUrl) return;
       facts.prUrl = prUrl;

@@ -1,10 +1,16 @@
 import type { NextMove, OrchestratedStep } from '../work/work-types.js';
+import { workspaceError } from '../work/workspace.js';
 
-export const MAX_ROUNDS = 40;
+// Every accepted move charges one round (see applyMove), and so does every inbox delivery — so
+// this bounds the controller's whole loop, including one that keeps every finer guard happy by
+// moving `phase` each turn. Generous on purpose: an event-woken cycle costs two, the finer
+// guards (the unproductive-self-round cap, the gates, the dispatch attempt cap) do the actual
+// policing, and hitting this wall fails a step mid-flight on real work — a far worse outcome
+// than a runaway burning some extra tokens.
+export const MAX_ROUNDS = 80;
 // Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor changed the
-// content of any artifact (see isProductive in orchestrated-runner). A controller marching
-// spec → plan → implement has something to show for every round and never approaches this;
-// one resuming itself with nothing to show for it three times running is the runaway this bounds.
+// content of any artifact (see isProductive in orchestrated-runner). A productive round is
+// allowed however high the counter stands, and resets it: this caps spinning, not working.
 export const MAX_CONSECUTIVE_SELF_ROUNDS = 3;
 export const MAX_DISPATCH_ATTEMPTS = 2;
 
@@ -32,7 +38,12 @@ function needsGate(action: string, info: ActionInfo): boolean {
   return info.humanGate(action) || info.sideEffects(action) === 'external-write';
 }
 
-export function validateNext(step: OrchestratedStep, move: NextMove, info: ActionInfo): PolicyVerdict {
+// `productive` describes the payload submitted alongside this move — whether it moved `phase`
+// or changed an artifact's content. It is what keeps the self-round cap from rejecting a
+// genuinely progressing round: the counter only ever gates rounds with nothing to show.
+export function validateNext(
+  step: OrchestratedStep, move: NextMove, info: ActionInfo, productive = false,
+): PolicyVerdict {
   // `.failure` is checked alongside `state` — a failure that arrived without (yet) flipping
   // `state` to 'failed' is still terminal; see the matching guard in applyMove.
   if (step.state === 'resolved' || step.state === 'failed' || step.failure) {
@@ -45,11 +56,13 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
   }
 
   if (move.kind === 'self-round') {
-    if (step.consecutiveSelfRounds >= MAX_CONSECUTIVE_SELF_ROUNDS) {
+    if (!productive && step.consecutiveSelfRounds >= MAX_CONSECUTIVE_SELF_ROUNDS) {
       return {
         kind: 'reject',
         reason: `${MAX_CONSECUTIVE_SELF_ROUNDS} self-rounds in a row that moved neither phase nor `
-          + 'artifacts — show progress on the next round, or dispatch, wait, gate, resolve, or fail instead',
+          + 'artifacts, and this one moved neither either — submit a self-round that reports real '
+          + 'progress (a new phase, or an artifact with new content), or dispatch, wait, gate, '
+          + 'resolve, or fail instead',
       };
     }
     if (move.action) {
@@ -77,6 +90,11 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
       if (!info.sideEffects(d.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(d.action)}` };
       }
+      // A malformed ref is a dead end past this point: provision() throws on a readonly with no
+      // repoCwd, and treats any *unknown* kind as readonly — so a typo silently downgrades the
+      // child to a detached checkout instead of being refused.
+      const wsErr = workspaceError(d.workspace);
+      if (wsErr) return { kind: 'reject', reason: `${d.action}: ${wsErr}` };
       if (d.workspace?.kind === 'writable') {
         return {
           kind: 'reject',
@@ -124,6 +142,22 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
       return { kind: 'force-gate', move, question: `Approve dispatching ${gated.action}? It writes externally.` };
     }
     return { kind: 'allow', move };
+  }
+
+  // A wait naming nothing to wake on can never be satisfied: waitSatisfied has no condition to
+  // match, no timer is armed, and the step parks with no gate for the user to resolve. Refuse it
+  // at the boundary — a controller reaching for a soak and getting the shape slightly wrong
+  // should be told, not hung.
+  if (move.kind === 'wait') {
+    const w = move.wait;
+    if (!w.events?.length && !w.untilAllDispatchesDone && w.resumeAt === undefined) {
+      return {
+        kind: 'reject',
+        reason: 'a wait must name something to wake on: `events` (ci, review-state, pr-state, '
+          + 'pr-comments, dispatches), `untilAllDispatchesDone: true`, or `resumeAt` (epoch ms). '
+          + 'To think without parking, take a self-round instead.',
+      };
+    }
   }
 
   return { kind: 'allow', move };

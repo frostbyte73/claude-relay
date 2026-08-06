@@ -104,6 +104,30 @@ describe('migrateOpenPrStep', () => {
     expect(s.phase).toBe('failed');
   });
 
+  // `state: 'failed'` with no `.failure` is inert in every direction: decide() ignores it, the
+  // pr-watcher skips it, decideJobTransitions keys job failure on `.failure`, and the cockpit's
+  // "Job failed → Retry" card keys on it too. The job stalls with nothing to click.
+  it('gives every failed landing a .failure so the user has a way out', () => {
+    const conflict = migrateOpenPrStep(legacy({ state: 'conflict_unresolved', updatedAt: 42 }));
+    expect(conflict.state).toBe('failed');
+    expect(conflict.failure?.reason).toMatch(/conflict/i);
+    expect(conflict.failure?.at).toBe(42);
+
+    const unknown = migrateOpenPrStep(legacy({ state: 'who-knows' }));
+    expect(unknown.state).toBe('failed');
+    expect(unknown.failure?.reason).toMatch(/who-knows/);
+  });
+
+  it('keeps the record\'s own failure when it already had one', () => {
+    const s = migrateOpenPrStep(legacy({ state: 'failed', failure: { reason: 'CI never went green', at: 9 } }));
+    expect(s.failure).toEqual({ reason: 'CI never went green', at: 9 });
+  });
+
+  it('omits inputs.approach entirely when the legacy record had none', () => {
+    const s = migrateOpenPrStep(legacy({ approach: undefined }));
+    expect(s.inputs && 'approach' in s.inputs).toBe(false);
+  });
+
   it('drops the deleted control fields', () => {
     const s = migrateOpenPrStep(legacy({
       ciFixing: true, ciFixAttempts: 2, ciFixLastSignature: 'a|b', ciFixGaveUp: true,

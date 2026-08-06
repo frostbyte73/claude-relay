@@ -1,13 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.merge-pr output",
-  "description": "Reported via submit_step_progress (the outcome goes in `memo`); this covers the summary message. `remoteBranchDeleted` is best-effort and never gates `merged`.",
-  "type": "object",
-  "required": ["status"],
-  "properties": {
-    "status": { "type": "string", "enum": ["merged", "not-merged"] },
-    "prUrl": { "type": "string" },
-    "remoteBranchDeleted": { "type": "boolean" },
-    "failure": { "type": "string" }
-  }
+  "description": "A confirmed merge resolves the step, and the step's output is the plain string this round passes as `next.output` — `submit_step_progress` types `output` as a string, so there is no object here. By convention: \"Merged <prUrl>: <one line on what shipped>.\" Anything short of a merge writes no output at all: it hands back with `next: {kind:\"self-round\"}` and the blocker in `memo`. Whether the remote branch delete succeeded is best-effort and belongs in `memo`, never in the outcome.",
+  "type": "string"
 }

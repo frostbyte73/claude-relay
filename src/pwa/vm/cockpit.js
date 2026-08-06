@@ -34,17 +34,13 @@ function planReviewRow(j) {
   };
 }
 
+// stepNeedsYou only flags two shapes: a step parked on an explicit approval, and an
+// indefinite meta.wait hold. Both are hard stops the user alone can clear.
 function stepWaitPill(s) {
   if (s.state === 'gate_pending_approval') {
     return { label: s.type === 'orchestrated' ? 'Approve move' : 'Approve write', variant: 'gate' };
   }
-  if (s.type === 'action' && s.state === 'waiting') return { label: 'On hold', variant: 'gate' };
-  return { label: 'Ready to merge', variant: 'ok' };
-}
-
-function stepWaitTone(s) {
-  return (s.state === 'gate_pending_approval'
-    || (s.type === 'action' && s.state === 'waiting')) ? 'hot' : 'warn';
+  return { label: 'On hold', variant: 'gate' };
 }
 
 function stepWaitingRows(j) {
@@ -53,7 +49,7 @@ function stepWaitingRows(j) {
     .map((s) => ({
       id: `step-${j.id}-${s.id}`,
       kind: 'pr-step',
-      tone: stepWaitTone(s),
+      tone: 'hot',
       title: j.title ?? '(untitled job)',
       ref: j.externalRef?.issueIdentifier ?? null,
       pills: [stepWaitPill(s)],

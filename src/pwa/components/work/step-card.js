@@ -8,8 +8,11 @@ import { launchPillClass } from './ticket-row.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
+// An orchestrated step names its controller on the card's own category-colored action
+// chip (orchestrated-card.js), so this slot stays empty rather than repeating the name
+// as plain accent text right next to it.
 function stepLabel(s) {
-  if (s.type === 'orchestrated') return s.controller ?? 'ORCHESTRATED';
+  if (s.type === 'orchestrated') return '';
   return s.action ? `ACTION · ${s.action.toUpperCase()}` : 'ACTION';
 }
 
@@ -35,8 +38,6 @@ function stateTone(s) {
   // meta.wait hold — a soft gate the user (or a soak timer) releases. An orchestrated
   // step's `waiting` is on CI/review/dispatches, so it stays active, not a gate.
   if (s.type === 'action' && s.state === 'waiting') return 'gate';
-  if (s.type === 'orchestrated' && s.phase === 'pr_open'
-    && s.pr?.reviewState === 'approved' && s.pr?.ciState === 'success') return 'gate';
   return 'active';
 }
 
@@ -99,6 +100,9 @@ function dotTone(s) {
   if (s.state === 'resolved') return 'done';
   if (stateTone(s) === 'gate') return 'hot';
   if (!s.sessionId && s.state === 'running') return 'pending';
+  // An orchestrated step parked on CI or a dispatch can sit for hours; the busy dot
+  // pulses, and DESIGN §10 says don't pulse anything that isn't live.
+  if (s.type === 'orchestrated' && s.state === 'waiting') return 'pending';
   return 'busy';
 }
 
@@ -215,6 +219,7 @@ function refsHtml(refs) {
 export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   const tone = dotTone(s);
   const title = s.title || s.type;
+  const skill = stepLabel(s).toLowerCase().replace(/\s*·\s*/, '.');
   const desc = descriptionFor(s);
   const output = (s.type === 'action' && s.output) ? renderMarkdown(s.output) : '';
   // Findings are the long tail of a step — collapse them once the step is done so
@@ -235,7 +240,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
       <div class="tl-content">
         <div class="tl-hdr">
           <span class="tl-name">${escapeHtml(title)}</span>
-          <span class="tl-skill">${escapeHtml(stepLabel(s).toLowerCase().replace(/\s*·\s*/, '.'))}</span>
+          ${skill ? `<span class="tl-skill">${escapeHtml(skill)}</span>` : ''}
           <span class="tl-time">${escapeHtml(timeAgo(s.updatedAt))}${escapeHtml(durationLabel(s))}</span>
         </div>
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}

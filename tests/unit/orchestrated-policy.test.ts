@@ -61,6 +61,45 @@ describe('validateNext', () => {
       .toBe('allow');
   });
 
+  // Nothing can ever satisfy it: no event to match, no dispatches to finish, no timer to arm.
+  // The step parks with no gate for the user to resolve — a permanent hang.
+  it('rejects a wait that names nothing to wake on', () => {
+    const v = validateNext(step(), { kind: 'wait', wait: { reason: 'thinking' } }, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/wake on/);
+  });
+
+  it('allows a wait naming any one wake condition', () => {
+    const waits = [
+      { reason: 'CI', events: ['ci' as const] },
+      { reason: 'children', untilAllDispatchesDone: true },
+      { reason: 'soak', resumeAt: 1_700_000_000_000 },
+    ];
+    for (const wait of waits) {
+      expect(validateNext(step(), { kind: 'wait', wait }, info).kind, wait.reason).toBe('allow');
+    }
+  });
+
+  // The cap counts unproductive rounds; a round that moved phase or an artifact is real work
+  // and is allowed no matter what the counter reads.
+  it('allows a self-round at the cap when the round was productive', () => {
+    const s = step({ consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS });
+    expect(validateNext(s, { kind: 'self-round' }, info, true).kind).toBe('allow');
+  });
+
+  // A dispatch workspace is authored by the controller and goes straight to provision().
+  // An unknown kind silently degrades to a detached checkout there, so it has to be caught here.
+  it('rejects a dispatch workspace the daemon could not provision', () => {
+    const bad = { kind: 'readonly' } as unknown as Dispatch['workspace'];
+    const v = validateNext(step(), { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'x', workspace: bad! }] }, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/repoCwd/);
+
+    const bogus = { kind: 'sideways', repoCwd: '/x' } as unknown as Dispatch['workspace'];
+    expect(validateNext(step(), { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'x', workspace: bogus! }] }, info).kind)
+      .toBe('reject');
+  });
+
   it('rejects a dispatch to an unknown action', () => {
     const v = validateNext(step(), { kind: 'dispatch', dispatches: [{ action: 'nope.nope', brief: 'x' }] }, info);
     expect(v).toMatchObject({ kind: 'reject' });

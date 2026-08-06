@@ -26,7 +26,7 @@ export function implementAwaitingPush(j) {
   const liveIds = liveStepIds(j);
   return (j.steps ?? []).find((s) =>
     !s.cancelled && s.type === 'orchestrated' && s.phase === 'implement'
-    && s.sessionId && !liveIds.has(s.id));
+    && !s.pr?.prUrl && s.sessionId && !liveIds.has(s.id));
 }
 
 export function trackedGroups(jobs = []) {
@@ -77,17 +77,11 @@ export function focusAction(job) {
         cta: { label: 'Review', action: 'review-gate', stepId: step.id },
       };
     }
-    if (step.type === 'action' && step.state === 'waiting') {
-      return {
-        title: 'On hold',
-        description: step.inputs?.reason ? String(step.inputs.reason) : `${step.title} is holding until you resume.`,
-        cta: { label: 'Resume', action: 'resume-wait', stepId: step.id },
-      };
-    }
+    // The only other thing stepNeedsYou flags is an indefinite meta.wait hold.
     return {
-      title: 'Ready to merge',
-      description: `${step.title} is approved and CI is green.`,
-      cta: { label: 'Review diff', action: 'review-diff', stepId: step.id },
+      title: 'On hold',
+      description: step.inputs?.reason ? String(step.inputs.reason) : `${step.title} is holding until you resume.`,
+      cta: { label: 'Resume', action: 'resume-wait', stepId: step.id },
     };
   }
 
@@ -133,9 +127,10 @@ export function focusAction(job) {
 // Everything components/work/orchestrated-card.js needs to draw one controller-owned
 // step, derived from the raw step snapshot alone. No DOM, no store reads.
 
-// The controller's own phase vocabulary (storage/jobs-migrate.ts is the authority for
-// the values a migrated open-pr step lands on). An unrecognized phase is still shown —
-// a controller may coin its own — just without a curated label.
+// The controller's own phase vocabulary (actions/code/orchestrate-pr/SKILL.md is the
+// authority for what a live controller reports; storage/jobs-migrate.ts only for what a
+// migrated open-pr step landed on). An unrecognized phase is still shown — a controller
+// may coin its own — just without a curated label.
 const PHASE_LABEL = {
   spec: 'Spec',
   plan: 'Plan',

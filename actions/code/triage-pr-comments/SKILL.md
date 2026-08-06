@@ -15,12 +15,12 @@ outpost:
 
 This is the same session that implemented the PR, resumed now that review comments have arrived — you already have the full context of the change in this conversation. Your job for this round: for each comment, decide reply / edit / ignore, write a one-line rationale, and pre-draft a reply. The envelope re-states the comments and the original goal so you stay grounded even if the conversation was compacted; lean on your own memory of the code first, and use the envelope as the refresher.
 
-**You only recommend. You do not edit files. You do not post comments.** Editing is the `code.fix-pr-comment` round's job; posting replies is `code.orchestrate-pr`'s, once the user has approved them.
+**You only recommend. You do not edit files. You do not post comments.** Editing is the `code.fix-pr-comment` round's job; posting replies is `code.reply-pr-comments`'s, once the user has approved them at the gate the daemon forces on that round. `code.orchestrate-pr` can do neither — it has no write grant at all.
 
 ## Step 1 — Read the envelope
 
 ```bash
-test -r "$OUTPOST_ENVELOPE" || { echo "missing envelope: $OUTPOST_ENVELOPE"; exit 1; }
+cat "$OUTPOST_ENVELOPE"
 ```
 
 Relevant fields:
@@ -32,7 +32,7 @@ Relevant fields:
 | `goal`, `inputs.approach`, `inputs.risks` | The original spec for this step. Ground reply decisions in this. |
 | `previousSteps[]` | Earlier `action` steps' `output` strings (only those with `forwardOutput: true`). High-signal context for grounding reply decisions. |
 | `workspace.repoCwd`, `workspace.branch` | Parent repo path + branch name (your cwd is the worktree). |
-| `pr.comments` | Every comment on the PR. Each: `{id, author, body, createdAt, file?, line?, diffHunk?, respondedAt?}`. Skip any with `respondedAt`, and any already covered by `artifacts.draftedReplies`. |
+| `pr.comments` | Every comment on the PR. Each: `{id, author, body, createdAt, file?, line?, diffHunk?, url?, inReplyTo?, respondedAt?}`. Skip any with `respondedAt`, any already covered by `artifacts.draftedReplies`, and **any this session already replied to** — a reply posted by an earlier `code.reply-pr-comments` round comes back as a new comment on the next watcher sweep, and `artifacts.postedReplies` is the record of which those are. Triaging your own reply is an infinite loop. |
 | `boundNote` | Which comments the controller wants triaged this round, if it narrowed the set. |
 | `recentLessons` | Short lessons you wrote at the end of past code.triage-pr-comments runs. Skim them before drafting — they encode patterns about this reviewer or repo. |
 
@@ -160,7 +160,9 @@ Reviewer-specific lessons are gold ("@avichalp consistently asks for benchmarks 
 
 ## Step 5 — Exit
 
-This round doesn't wait for approval. `code.orchestrate-pr` takes the next decision turn on this same session: it gates the drafts with the user, posts the approved ones, and runs a `code.fix-pr-comment` round for the ones that need code changes.
+This round doesn't wait for approval. `code.orchestrate-pr` takes the next decision turn on this same session: it binds a `code.reply-pr-comments` round for the `reply` drafts (the daemon gates that round, showing the user the exact bodies before anything is posted) and a `code.fix-pr-comment` round for the ones that need code changes.
+
+That makes `artifacts.draftedReplies` the payload a human reads and approves verbatim, not a note to a teammate. Put each comment's id, recommendation, rationale and drafted reply in it plainly — the reply body must be postable exactly as written.
 
 ## Failure modes
 

@@ -1,4 +1,4 @@
-import { writeEnvelope, type OrchestratedEnvelope } from '../work/envelope.js';
+import { buildActionCatalog, writeEnvelope, type OrchestratedEnvelope } from '../work/envelope.js';
 import { MAX_ROUNDS } from './orchestrated-policy.js';
 import { shouldDeliver } from './orchestrated-inbox.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
@@ -39,8 +39,14 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
     return null;
   },
 
-  buildEnvelope(s, job): OrchestratedEnvelope {
+  buildEnvelope(s, job, ctx): OrchestratedEnvelope {
+    // Turn 1 comes through here, not through resumeControllerRound — so the two fields the
+    // SKILL leans on hardest have to be set here too: which hat the controller is wearing
+    // (its own, on a cold spawn) and what it may dispatch.
+    const actionCatalog = buildActionCatalog(ctx.actionRegistry);
     return {
+      boundAction: s.controller,
+      ...(actionCatalog ? { actionCatalog } : {}),
       kind: 'step',
       jobId: job.id,
       stepId: s.id,

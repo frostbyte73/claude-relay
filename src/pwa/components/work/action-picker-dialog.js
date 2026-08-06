@@ -60,12 +60,18 @@ export function openActionPickerDialog(jobId, opts = {}) {
     errEl.textContent = msg;
   };
 
+  // The ActionRegistry catalog — NOT the on-disk `actions` list. Only the catalog
+  // carries the frontmatter this dialog reads: `kind` (which decides orchestrated vs
+  // action step), runner/side_effects/human_gate for the chips, and the input/output
+  // schemas the detail pane renders.
+  function catalogOf(s) { return s.catalog ?? []; }
+
   function renderList() {
     const s = actions.get();
     if (s.err) { listEl.innerHTML = `<div class="empty">Couldn't load: ${escapeHtml(s.err)}</div>`; return; }
     if (!s.loaded) { listEl.innerHTML = `<div class="empty">Loading…</div>`; return; }
     const q = filter.toLowerCase();
-    const matched = (s.actions ?? []).filter((a) => !q
+    const matched = catalogOf(s).filter((a) => !q
       || a.name.toLowerCase().includes(q)
       || a.category.toLowerCase().includes(q)
       || (a.description ?? '').toLowerCase().includes(q));
@@ -128,6 +134,8 @@ export function openActionPickerDialog(jobId, opts = {}) {
         <input id="ap-title" class="field-input" type="text" placeholder="Short, scannable title for the plan" />
       </div>
 
+      ${workspaceFieldsHtml(picked)}
+
       ${fields.length === 0 ? '' : `
         <div class="ap-section-label o-microhead">Inputs <span class="field-hint">${fields.filter((f) => f.required).length} required</span></div>
         <div class="ap-fields">
@@ -142,6 +150,25 @@ export function openActionPickerDialog(jobId, opts = {}) {
     `;
     addBtn.disabled = false;
     detailEl.querySelector('#ap-title')?.focus();
+  }
+
+  // A controller owns a step for its whole life, so it needs a workspace the way a
+  // one-shot action doesn't — and no step-orchestrator declares `workspace` in its input
+  // schema (the controller's own inputs are the goal/approach, not where to run). Ask for
+  // it explicitly, the same two fields add-step-dialog.js uses.
+  function workspaceFieldsHtml(action) {
+    if (action.kind !== 'step-orchestrator') return '';
+    return `
+      <div class="ap-section-label o-microhead">Workspace</div>
+      <div class="ap-field">
+        <div class="field-label">Repo cwd</div>
+        <input id="ap-repo" class="field-input" type="text" placeholder="~/code/your-project" />
+      </div>
+      <div class="ap-field">
+        <div class="field-label">Branch <span class="field-hint">optional — blank means read-only</span></div>
+        <input id="ap-branch" class="field-input" type="text" placeholder="fix/dropping-rpc" />
+      </div>
+    `;
   }
 
   function renderField(f) {
@@ -195,7 +222,7 @@ export function openActionPickerDialog(jobId, opts = {}) {
 
   function pick(name) {
     const s = actions.get();
-    picked = (s.actions ?? []).find((a) => a.name === name) ?? null;
+    picked = catalogOf(s).find((a) => a.name === name) ?? null;
     renderList();
     renderDetail();
   }
@@ -224,14 +251,20 @@ export function openActionPickerDialog(jobId, opts = {}) {
     return inputs;
   }
 
+  function workspaceFromFields() {
+    const repoCwd = (detailEl.querySelector('#ap-repo')?.value ?? '').trim();
+    const branch = (detailEl.querySelector('#ap-branch')?.value ?? '').trim();
+    if (!repoCwd) return { kind: 'none' };
+    return branch ? { kind: 'writable', repoCwd, branch } : { kind: 'readonly', repoCwd };
+  }
+
   // Map (action, inputs) → ProposedStep that the existing orchestrator accepts.
   // Keep this shim small; it goes away when the orchestrator routes by action name.
   function buildStep(action, title, inputs) {
     // A step-orchestrator isn't run as a one-shot action — it owns a step and picks its
     // own move each turn, so it becomes the step's controller rather than its action.
     if (action.kind === 'step-orchestrator') {
-      const ws = inputs.workspace ?? {};
-      const { workspace: _ws, goal: _goal, ...rest } = inputs;
+      const { goal: _goal, ...rest } = inputs;
       return {
         type: 'orchestrated',
         controller: action.name,
@@ -239,9 +272,7 @@ export function openActionPickerDialog(jobId, opts = {}) {
         description: action.description ?? '',
         goal: typeof inputs.goal === 'string' ? inputs.goal : title,
         inputs: rest,
-        workspace: ws.repoCwd
-          ? (ws.branch ? { kind: 'writable', repoCwd: ws.repoCwd, branch: ws.branch } : { kind: 'readonly', repoCwd: ws.repoCwd })
-          : { kind: 'none' },
+        workspace: workspaceFromFields(),
       };
     }
     // Generic action shim: goal carries a serialized rendering of the inputs so

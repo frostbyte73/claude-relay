@@ -46,7 +46,7 @@ export function stepDurationText(step) {
 export function terminalChipVariant(step) {
   if (step.cancelled) return 'cancelled';
   if (step.failure) return 'failed';
-  if (step.state === 'resolved' || step.state === 'merged') return 'finished';
+  if (step.state === 'resolved') return 'finished';
   return null;
 }
 

@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Dispatch, InboxItem, JobRecord, PlanIteration, PrFacts, Step, WorkspaceRef } from './work-types.js';
 import type { JournalEntry } from '../storage/journal-store.js';
+import type { ActionRegistry } from '../actions/registry.js';
 
 export interface StepTypeCatalogEntry {
   type: Step['type'];
@@ -79,6 +80,24 @@ export interface ActionCatalogEntry {
   output_schema: unknown;
 }
 
+// Every envelope that offers a choice of actions — the orchestrator's plan, a controller's
+// dispatch — reads the catalog from the same place, so a controller's turn 1 sees exactly what
+// the planner saw.
+export function buildActionCatalog(reg: ActionRegistry | undefined): ActionCatalogEntry[] | undefined {
+  if (!reg) return undefined;
+  return reg.listActions().map((a) => ({
+    name: a.name,
+    description: a.frontmatter.description,
+    kind: a.frontmatter.outpost.kind,
+    category: a.frontmatter.outpost.category,
+    runner: a.frontmatter.outpost.runner,
+    side_effects: a.frontmatter.outpost.side_effects,
+    human_gate: a.frontmatter.outpost.human_gate ?? false,
+    input_schema: a.inputSchema,
+    output_schema: a.outputSchema,
+  }));
+}
+
 export interface OrchestratorEnvelope {
   kind: 'orchestrator';
   mode: 'initial' | 'replan' | 'step-review';
@@ -127,8 +146,8 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   delivered?: InboxItem[];
   dispatches?: Array<Pick<Dispatch, 'id' | 'action' | 'brief' | 'status' | 'output' | 'failure'>>;
   pr?: PrFacts;
-  // resolveGate clears the inbox before running the deferred move, so an approval leaves no
-  // `gate-resolved` item behind — these flags are the only durable record the controller has
+  // resolveGate drops the gate-resolved marker before running the deferred move, so an approval
+  // leaves no inbox item behind — these flags are the only durable record the controller has
   // that the user said yes (and what they said).
   gateApproved?: boolean;
   gateFeedback?: string[];

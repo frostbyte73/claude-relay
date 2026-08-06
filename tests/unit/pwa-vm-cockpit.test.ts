@@ -56,7 +56,7 @@ describe('cockpitGroups', () => {
     expect(jobRow.tone).toBe('warn');
   });
 
-  it('a ready-to-merge step gets a warn tone, not hot', () => {
+  it('a merge-ready step raises no waiting row — the controller has to gate the merge first', () => {
     const groups = cockpitGroups({
       now: NOW,
       jobs: [{
@@ -68,7 +68,22 @@ describe('cockpitGroups', () => {
           pr: { reviewState: 'approved', ciState: 'success' }, updatedAt: NOW }],
       }],
     });
-    expect(groups.waiting[0].tone).toBe('warn');
+    expect(groups.waiting.filter((r: any) => r.kind === 'pr-step')).toEqual([]);
+  });
+
+  it('a gated controller move is a hot waiting row', () => {
+    const groups = cockpitGroups({
+      now: NOW,
+      jobs: [{
+        id: 'j1',
+        title: 'Ready job',
+        state: 'executing',
+        updatedAt: NOW,
+        steps: [{ id: 's1', type: 'orchestrated', state: 'gate_pending_approval', phase: 'pr_open', updatedAt: NOW }],
+      }],
+    });
+    expect(groups.waiting[0].tone).toBe('hot');
+    expect(groups.waiting[0].pills).toEqual([{ label: 'Approve move', variant: 'gate' }]);
   });
 
   it('inFlight includes running/background sessions and executing jobs, excludes inactive sessions and other job states', () => {

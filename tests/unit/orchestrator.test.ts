@@ -7,6 +7,7 @@ import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import { LaunchGovernor } from '../../src/work/launch-governor.js';
 import { OUTPOST_MCP_TOOLS } from '../../src/mcp-server.js';
+import { orchestratedHandler } from '../../src/steps/orchestrated.js';
 import type { Finding, JobRecord, OrchestratedStep, ProposedStep, Step, WorkspaceRef } from '../../src/work/work-types.js';
 
 function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
@@ -186,6 +187,90 @@ describe('Orchestrator.reconcileInterruptedSteps', () => {
     expect(reloaded.state).toBe('running');
     expect(reloaded.failure).toBeUndefined();
     expect(queue.get(job.id)!.events?.some((e) => e.kind === 'step_retried')).toBeFalsy();
+  });
+});
+
+// A daemon bounce (`launchctl kickstart -k` is the documented way to restart) kills every
+// spawned Claude process. An orchestrated step in `running` is owed nothing by anyone — no
+// inbox item, no timer — so decide() returns null for it forever and the job hangs showing
+// "In progress". Every job migrated off the legacy open-pr type lands here on the first boot.
+describe('Orchestrator.reconcileInterruptedSteps — orchestrated steps', () => {
+  function orchestratedJob(queue: JobQueue, over: Partial<OrchestratedStep>) {
+    const step: OrchestratedStep = {
+      id: 'step-1', title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      phase: 'implement', memo: 'what I learned', artifacts: { spec: '# S' },
+      dispatches: [], inbox: [], roundsSpent: 3, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: 'dead-sess', ...over,
+    } as OrchestratedStep;
+    const job: JobRecord = {
+      id: 'job-1', source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    };
+    queue.upsert(job);
+    return { jobId: job.id, stepId: step.id };
+  }
+
+  it('cold-spawns a running controller by clearing the session that died with the daemon', () => {
+    const { engine, queue } = makeEngine();
+    const { jobId, stepId } = orchestratedJob(queue, {});
+
+    engine.reconcileInterruptedSteps();
+
+    const s = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    expect(s.sessionId).toBeUndefined();
+    expect(s.state).toBe('running');
+    expect(s.failure).toBeUndefined();
+    // phase/memo/artifacts are exactly what makes the cold resume cheap — they must survive.
+    expect(s).toMatchObject({ phase: 'implement', memo: 'what I learned', roundsSpent: 3 });
+    expect(queue.get(jobId)!.events!.some((e) => e.kind === 'step_retried' && e.who === 'system')).toBe(true);
+
+    // The point of clearing it: decide() now has something to do again.
+    expect(orchestratedHandler.decide(
+      queue.get(jobId)!.steps[0] as OrchestratedStep, queue.get(jobId)!,
+      { jobsDir: '/tmp/jobs', newId: () => 'n', now: () => 2 },
+    )).toMatchObject({ kind: 'spawn-session', stepId });
+  });
+
+  // A parked controller is NOT stranded: whatever it waits on (a watcher event, a dispatch, the
+  // user) resumes it, and sendOrResume respawns a dead session with --resume. Clearing its
+  // session here would burn a turn on every bounce for no reason.
+  it('leaves a parked controller alone', () => {
+    const { engine, queue } = makeEngine();
+    const { jobId } = orchestratedJob(queue, {
+      state: 'waiting', waitingOn: { reason: 'CI', events: ['ci'] },
+    });
+
+    engine.reconcileInterruptedSteps();
+
+    const s = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    expect(s.sessionId).toBe('dead-sess');
+    expect(s.state).toBe('waiting');
+    expect(queue.get(jobId)!.events?.some((e) => e.kind === 'step_retried')).toBeFalsy();
+  });
+
+  // A dispatch child cannot be resumed — it is a one-shot action session. Left `running`, the
+  // parent's untilAllDispatchesDone wait can never be satisfied.
+  it('fails a dispatch child whose session died, waking the controller that waits on it', () => {
+    const { engine, queue } = makeEngine();
+    const { jobId } = orchestratedJob(queue, {
+      state: 'waiting',
+      waitingOn: { reason: 'Running code.review-diff', untilAllDispatchesDone: true },
+      dispatches: [
+        { id: 'd1', action: 'code.review-diff', brief: 'b', status: 'running', sessionId: 'child-sess', attempts: 1 },
+        { id: 'd2', action: 'code.review-ui', brief: 'b2', status: 'done', output: 'ok', attempts: 1 },
+      ],
+    });
+
+    engine.reconcileInterruptedSteps();
+
+    const s = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    expect(s.dispatches[0]).toMatchObject({ status: 'failed' });
+    expect(s.dispatches[0]!.failure).toMatch(/restart/i);
+    expect(s.dispatches[1]).toMatchObject({ status: 'done', output: 'ok' });
+    // The wake actually happened: the controller was resumed with the done marker in hand.
+    expect(s.state).toBe('running');
+    expect(s.lastDelivered?.some((i) => i.kind === 'dispatch-done')).toBe(true);
   });
 });
 
@@ -881,11 +966,12 @@ function makeGovernedEngine() {
   const spawned: string[] = [];
   const closed: string[] = [];
   const archived: string[] = [];
+  const resumed: string[] = [];
   const sessionManager = {
     spawnDetached(sessionId: string) { spawned.push(sessionId); },
     send() { /* no-op */ },
     isWorking() { return false; },
-    sendOrResume() { /* no-op */ },
+    sendOrResume(sessionId: string) { resumed.push(sessionId); },
     close(sessionId: string) { closed.push(sessionId); },
   } as never;
   const worktreeManager = {
@@ -919,7 +1005,7 @@ function makeGovernedEngine() {
   };
   queue.upsert(job);
   return {
-    engine, queue, governor, jobId: job.id, stepId, controllerSessionId, spawned, closed, archived,
+    engine, queue, governor, jobId: job.id, stepId, controllerSessionId, spawned, closed, archived, resumed,
     openGovernor: () => { concurrency = 5; governor.onUsageSnapshot(); },
   };
 }
@@ -977,26 +1063,20 @@ describe('WorkEngine.onStepFailed — parked dispatch launches', () => {
 });
 
 describe('WorkEngine — orchestrated terminal cleanup', () => {
-  const successful: Array<[string, (h: ReturnType<typeof makeGovernedEngine>) => void]> = [
-    ['user mark-resolved', (h) => h.engine.markStepResolved(h.jobId, h.stepId)],
-    ['controller resolve move', (h) => h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'resolve', output: 'done' } })],
-  ];
+  // The controller's own resolve move is the one terminal that means the work LANDED — the PR
+  // merged, nothing is left in the worktree worth keeping.
+  it('closes the controller session and archives its worktree on the controller\'s resolve move', async () => {
+    const h = makeGovernedEngine();
+    h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'resolve', output: 'done' } });
+    await flushLaunch();
+    expect(h.closed).toEqual([h.controllerSessionId]);
+    expect(h.archived).toEqual([h.stepId]);
+  });
 
-  for (const [label, settle] of successful) {
-    it(`closes the controller session and archives its worktree — ${label}`, async () => {
-      const h = makeGovernedEngine();
-      settle(h);
-      await flushLaunch();
-      expect(h.closed).toEqual([h.controllerSessionId]);
-      expect(h.archived).toEqual([h.stepId]);
-    });
-  }
-
-  // The guard on a deliberate asymmetry: do NOT "unify" this with the successful terminals
-  // above. WorktreeManager.archive tears the worktree down (`git worktree remove --force` +
-  // `branch -D`), which on a failure destroys the uncommitted work and branch that are the only
-  // evidence of WHY the step failed, and 404s its diff view. terminateJobResources still reaps
-  // it when the job is abandoned/deleted, so holding it here leaks nothing permanently.
+  // The guard on a deliberate asymmetry: do NOT "unify" these with the resolve move above.
+  // WorktreeManager.archive tears the worktree down (`git worktree remove --force` +
+  // `branch -D`), which destroys uncommitted work and the local branch. terminateJobResources
+  // still reaps it when the job is abandoned/deleted, so holding it here leaks nothing.
   it('keeps a failed step\'s worktree for post-mortem, closing only its session', async () => {
     const h = makeGovernedEngine();
     h.engine.onStepProgress(h.jobId, h.stepId, { next: { kind: 'fail', reason: 'boom' } });
@@ -1004,6 +1084,67 @@ describe('WorkEngine — orchestrated terminal cleanup', () => {
     expect(h.archived).toEqual([]);
     expect(h.closed).toEqual([h.controllerSessionId]);
     expect((h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).state).toBe('failed');
+  });
+
+  // Mark-resolved is the user's escape hatch for a stranded controller — the PWA recommends it
+  // for exactly that. The stranded step's worktree holds the uncommitted implementation and its
+  // branch has never been pushed, so the escape hatch must not be what destroys them.
+  it('keeps the worktree on a user mark-resolved, closing only the session', async () => {
+    const h = makeGovernedEngine();
+    h.engine.markStepResolved(h.jobId, h.stepId);
+    await flushLaunch();
+    expect(h.archived).toEqual([]);
+    expect(h.closed).toEqual([h.controllerSessionId]);
+    expect((h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).state).toBe('resolved');
+  });
+});
+
+// resumeControllerRound awaits provision() — real git work, seconds — BEFORE it submits the
+// launch, so nothing has been parked yet for settleOrchestratedStep's cancelStep to drop. A
+// mark-resolved landing in that window has to be caught by the launch's own fire-time guard,
+// which re-reads only `cancelled` (the plan-editor flag, never set here).
+// spawnDispatchSession's guard re-reads the dispatch's real status; this one must match it.
+describe('WorkEngine.resumeControllerRound — settled while provision() was in flight', () => {
+  it('does not resume a step marked resolved while its worktree was still provisioning', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-inflight-'));
+    const queue = new JobQueue(dir);
+    const resumed: string[] = [];
+    let releaseProvision!: () => void;
+    const provisionGate = new Promise<void>((r) => { releaseProvision = r; });
+    const engine = new WorkEngine({
+      queue,
+      sessionManager: {
+        spawnDetached() {}, send() {}, isWorking() { return false; },
+        sendOrResume(sessionId: string) { resumed.push(sessionId); },
+        close: async () => {},
+      } as never,
+      worktreeManager: {
+        provision: async () => { await provisionGate; return { path: null }; },
+        get: () => undefined, archive: async () => {},
+      } as never,
+      linearWriter: { setState: async () => undefined } as never,
+      jobsDir: join(dir, 'jobs'), now: () => 1,
+    });
+    const step: OrchestratedStep = {
+      id: 'step-1', title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: 'ctrl-sess',
+    };
+    queue.upsert({
+      id: 'job-1', source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    });
+
+    engine.onStepProgress('job-1', 'step-1', { next: { kind: 'self-round' } });
+    expect(resumed).toEqual([]); // still suspended inside provision()
+
+    engine.markStepResolved('job-1', 'step-1');
+    releaseProvision();
+    await flushLaunch();
+
+    expect(resumed).toEqual([]);
+    expect((queue.get('job-1')!.steps[0] as OrchestratedStep).state).toBe('resolved');
   });
 });
 

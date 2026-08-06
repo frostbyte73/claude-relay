@@ -265,6 +265,17 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   color: var(--text);
   overflow-wrap: anywhere;
 }
+/* Neutral variant: an orchestrated step's hold is on CI, a review or a dispatch —
+   nothing the user can release — so it drops the --warn rail the meta.wait soak earns. */
+.tl-wait--neutral {
+  background: var(--bg-elev-2);
+  border-left-color: var(--line);
+}
+.tl-wait--neutral .tl-wait-reason {
+  margin-top: 0;
+  font-size: 12px;
+  color: var(--text-mute);
+}
 .tl-wait-preview {
   margin: 6px 0 0;
   padding: 6px 8px;
@@ -432,15 +443,6 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
    header line above stays name/skill/time and nothing else. */
 .orc-card { display: flex; flex-direction: column; gap: 8px; }
 .orc-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.orc-wait {
-  font-size: 12px;
-  color: var(--text-mute);
-  padding: 6px 10px;
-  background: var(--bg-elev-2);
-  border-left: 2px solid var(--line);
-  border-radius: 0 var(--r-control) var(--r-control) 0;
-}
-
 .orc-dispatches { display: flex; flex-direction: column; gap: 6px; }
 .orc-dispatch {
   display: grid;
@@ -538,20 +540,6 @@ a.pr-num:hover { text-decoration: underline; }
 }
 .pr-review-cta-label { font-size: 12px; color: var(--text); }
 .pr-review-cta-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
-
-.pr-conflict-cta--warn { background: var(--warn-soft); border-color: var(--warn); }
-.pr-conflict-busy,
-.pr-conflict-warn { margin: 0 0 4px; }
-/* primitives doesn't define an :disabled treatment (see diff.css) — local override. */
-.pr-conflict-busy .o-btn:disabled { opacity: 0.6; cursor: default; }
-.pr-conflict-spin {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: tl-pulse var(--pulse) ease-in-out infinite;
-}
 
 .threads { margin: 10px 0 0; }
 
@@ -877,15 +865,11 @@ html[data-layout="mobile"] .tk-menu-item { padding: 11px 12px; }
   border-top: 0;
 }
 
-/* Spec / implementation-plan reference docs, folded above checks. */
-.pr-spec > .step-findings,
-.pr-implplan > .step-findings { margin-top: 4px; }
-
 /* ───── Merged PR — collapse the whole block to its two header rows ───────
-   A done PR reads as one quiet line (repo · title · Merged); the spec, plan,
-   checks and resolved comments fold behind a single disclosure, expandable to
-   revisit the trail. The outer .pr-block becomes a <details>, so its padding
-   moves onto the summary/body. */
+   A done PR reads as one quiet line (repo · title · Merged); the checks and
+   resolved comments fold behind a single disclosure, expandable to revisit the
+   trail. The outer .pr-block becomes a <details>, so its padding moves onto the
+   summary/body. */
 details.pr-block--merged { padding: 0; overflow: hidden; }
 .pr-block--merged > summary {
   list-style: none;

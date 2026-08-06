@@ -36,11 +36,15 @@ describe('trackedGroups', () => {
     expect(trackedGroups(jobs).needsYou.map((j: any) => j.id)).toEqual(['j1']);
   });
 
-  it('merge-ready (approved + green) -> needs you', () => {
+  it('merge-ready (approved + green) -> waiting, not needs-you', () => {
+    // Merging is the controller's move; the user's turn arrives when the policy
+    // force-gates it (state -> gate_pending_approval), not before.
     const jobs = [{ id: 'j1', state: 'executing',
       steps: [{ id: 's1', type: 'orchestrated', state: 'waiting', phase: 'pr_open',
         pr: { reviewState: 'approved', ciState: 'success' } }], live: live(false, []) }];
-    expect(trackedGroups(jobs).needsYou.map((j: any) => j.id)).toEqual(['j1']);
+    const g = trackedGroups(jobs);
+    expect(g.waiting.map((j: any) => j.id)).toEqual(['j1']);
+    expect(g.needsYou).toEqual([]);
   });
 
   it('a controller chewing on PR comments with no live session -> waiting (Outpost will triage)', () => {
@@ -70,10 +74,9 @@ describe('trackedGroups', () => {
   });
 
   it('running is evaluated before needs-you when both apply', () => {
-    // s1 merge-ready (needs you), s2 still implementing live -> job shows as running.
+    // s1 parked on a gate (needs you), s2 still implementing live -> job shows as running.
     const jobs = [{ id: 'j1', state: 'executing', steps: [
-      { id: 's1', type: 'orchestrated', state: 'waiting', phase: 'pr_open',
-        pr: { reviewState: 'approved', ciState: 'success' } },
+      { id: 's1', type: 'orchestrated', state: 'gate_pending_approval', phase: 'pr_open' },
       { id: 's2', type: 'orchestrated', state: 'running', phase: 'implement', sessionId: 'a' },
     ], live: live(false, ['s2']) }];
     const g = trackedGroups(jobs);
@@ -96,11 +99,20 @@ describe('focusAction', () => {
     expect(a.description).toBe('Merge this PR?');
   });
 
-  it('merge-ready -> review diff', () => {
+  it('merge-ready -> no action; the job is waiting on the controller to gate the merge', () => {
     const a = focusAction({ id: 'j1', state: 'executing',
       steps: [{ id: 's1', title: 'Ship it', type: 'orchestrated', state: 'waiting', phase: 'pr_open',
         pr: { reviewState: 'approved', ciState: 'success' } }], live: live(false, []) });
-    expect(a.cta.action).toBe('review-diff');
+    expect(a.cta.action).toBe('none');
+    expect(a.title).toBe('Waiting');
+  });
+
+  it('an indefinite meta.wait hold -> resume', () => {
+    const a = focusAction({ id: 'j1', state: 'executing',
+      steps: [{ id: 's1', title: 'Soak', type: 'action', state: 'waiting', inputs: { reason: 'Let the canary bake' } }],
+      live: live(false, []) });
+    expect(a.cta.action).toBe('resume-wait');
+    expect(a.description).toBe('Let the canary bake');
   });
 
   it('implement phase with a dead session -> review diff & push', () => {

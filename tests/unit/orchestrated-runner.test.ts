@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   applyMove, deliverInbox, pushInbox, resolveGate, type OrchestratedHost,
 } from '../../src/work/orchestrated-runner.js';
-import { MAX_CONSECUTIVE_SELF_ROUNDS } from '../../src/steps/orchestrated-policy.js';
+import { MAX_CONSECUTIVE_SELF_ROUNDS, MAX_ROUNDS } from '../../src/steps/orchestrated-policy.js';
 import type { InboxItem, OrchestratedStep } from '../../src/work/work-types.js';
 
 function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
@@ -104,6 +104,57 @@ describe('applyMove', () => {
       next: { kind: 'self-round', action: 'code.spec' },
     });
     expect(b.get().consecutiveSelfRounds).toBe(3);
+  });
+
+  // MAX_ROUNDS is the backstop that has to hold once every finer guard is evaded. A controller
+  // that moves `phase` every round is productive every round, so consecutiveSelfRounds never
+  // climbs — the round budget is the only thing left standing.
+  it('charges the round budget on every accepted move, so an always-productive loop still ends', () => {
+    const { h, get } = host(step());
+    for (let i = 0; i < MAX_ROUNDS; i++) {
+      applyMove(h, 'j1', 's1', { phase: `p${i}`, next: { kind: 'self-round', action: 'code.implement' } });
+    }
+    expect(get().roundsSpent).toBe(MAX_ROUNDS);
+    expect(get().consecutiveSelfRounds).toBe(0);
+    expect(h.failStep).not.toHaveBeenCalled();
+
+    applyMove(h, 'j1', 's1', { phase: 'one-more', next: { kind: 'self-round', action: 'code.implement' } });
+    const rejection = get().lastDelivered?.find((i) => i.kind === 'policy-rejection');
+    expect(rejection).toBeDefined();
+    expect((rejection as { reason: string }).reason).toMatch(/round budget/);
+  });
+
+  it('charges a round for a dispatch, a wait, and a gate too — not just self-rounds', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'b' }] } });
+    expect(get().roundsSpent).toBe(1);
+    applyMove(h, 'j1', 's1', { next: { kind: 'wait', wait: { reason: 'ci', events: ['ci'] } } });
+    expect(get().roundsSpent).toBe(2);
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
+    expect(get().roundsSpent).toBe(3);
+  });
+
+  // The cap counts UNPRODUCTIVE self-rounds. A round that moved the phase and wrote a fresh
+  // artifact is real work: rejecting it would kill a healthy step, and the second such
+  // rejection would fail it outright.
+  it('allows a productive self-round taken at the cap, and resets the count', () => {
+    const { h, get } = host(step({ phase: 'implement', consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS }));
+    applyMove(h, 'j1', 's1', {
+      phase: 'review', artifacts: { review: '# Review' },
+      next: { kind: 'self-round', action: 'code.review-diff' },
+    });
+    expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBeFalsy();
+    expect(get().pendingPolicyStrike).toBe(false);
+    expect(get().consecutiveSelfRounds).toBe(0);
+    expect(get().state).toBe('running');
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.review-diff', undefined);
+  });
+
+  it('does not fail a step for two productive self-rounds in a row at the cap', () => {
+    const { h } = host(step({ phase: 'implement', consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS }));
+    applyMove(h, 'j1', 's1', { phase: 'review', next: { kind: 'self-round', action: 'code.review-diff' } });
+    applyMove(h, 'j1', 's1', { phase: 'merge', next: { kind: 'self-round', action: 'code.implement' } });
+    expect(h.failStep).not.toHaveBeenCalled();
   });
 
   it('self-rounds that change neither phase nor artifacts still hit the cap', () => {
@@ -219,6 +270,58 @@ describe('applyMove', () => {
     expect(get().state).toBe('running');
     expect(get().gate).toBeUndefined();
     expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.fix-ci', undefined);
+  });
+
+  // A gated step still accepts inbox pushes (shouldDeliver only refuses to DELIVER), and the
+  // pr-watcher pushes on any changed signal. Approving the gate must not eat the wake.
+  it('keeps watcher events queued through a gate approval, dropping only the gate marker', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.fix-ci' } });
+    expect(get().state).toBe('gate_pending_approval');
+    pushInbox(h, 'j1', 's1', {
+      kind: 'external', source: 'pr-watcher', summary: 'reviewer requested changes', events: ['pr-comments'],
+    });
+    expect(get().inbox).toHaveLength(1);
+
+    resolveGate(h, 'j1', 's1', true);
+    expect(get().inbox.some((i) => i.kind === 'gate-resolved')).toBe(false);
+    expect(get().inbox.some((i) => i.kind === 'external')).toBe(true);
+  });
+
+  // A second submit_step_progress in one turn would otherwise run the new move, flip state to
+  // 'running', and leave `step.gate` behind — resolveGate then early-returns and the user's
+  // Approve is a silent no-op.
+  it('refuses a second move while parked at a gate, so the gate stays resolvable', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
+    applyMove(h, 'j1', 's1', { memo: 'sneaking past the gate', next: { kind: 'self-round', action: 'code.implement' } });
+
+    expect(get().state).toBe('gate_pending_approval');
+    expect(get().gate).toBeDefined();
+    expect(get().memo).toBeUndefined();
+    expect(h.resumeController).not.toHaveBeenCalled();
+
+    resolveGate(h, 'j1', 's1', true);
+    expect(get().state).toBe('running');
+  });
+
+  // The other route out of a gate: a user message is allowed to abandon it. The gate it
+  // escapes must go with it, or the PWA keeps rendering buttons that resolve nothing.
+  it('clears the gate when a user message delivers through it', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
+    pushInbox(h, 'j1', 's1', { kind: 'user-message', body: 'forget the gate, do X instead' });
+    expect(get().state).toBe('running');
+    expect(get().gate).toBeUndefined();
+  });
+
+  it('a force-gated move clears the pending strike — policy accepted it', () => {
+    const { h } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.unknown-action' } }); // rejected → strike
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.fix-ci' } });         // accepted → force-gated
+    resolveGate(h, 'j1', 's1', false, 'not like that');
+    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.unknown-action' } }); // rejected again
+    expect(h.failStep).not.toHaveBeenCalled();
   });
 
   it('hands a declined gate back to the controller as delivered feedback, not a queued item', () => {
@@ -348,5 +451,24 @@ describe('pushInbox / deliverInbox', () => {
     const { h } = host(step());
     deliverInbox(h, 'j1', 's1');
     expect(h.resumeController).not.toHaveBeenCalled();
+  });
+
+  // A pure timed soak has an empty inbox by construction, so the wake has to materialize the
+  // item it delivers — otherwise shouldDeliver drops it and `resumeAt` can never fire.
+  it('materializes a timer item when a due soak is delivered', () => {
+    const { h, get } = host(step({ state: 'waiting', waitingOn: { reason: 'bake the canary', resumeAt: 900 } }));
+    deliverInbox(h, 'j1', 's1');
+    expect(h.resumeController).toHaveBeenCalledTimes(1);
+    expect(get().lastDelivered?.some((i) => i.kind === 'timer')).toBe(true);
+    expect(get().state).toBe('running');
+    expect(get().waitingOn).toBeUndefined();
+  });
+
+  it('leaves a soak that has not elapsed parked', () => {
+    const { h, get } = host(step({ state: 'waiting', waitingOn: { reason: 'bake', resumeAt: 5000 } }));
+    deliverInbox(h, 'j1', 's1');
+    expect(h.resumeController).not.toHaveBeenCalled();
+    expect(get().state).toBe('waiting');
+    expect(get().inbox).toEqual([]);
   });
 });

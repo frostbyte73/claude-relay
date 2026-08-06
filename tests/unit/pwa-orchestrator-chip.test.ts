@@ -98,8 +98,8 @@ describe('withStepTiming', () => {
     expect(stepDurationText(withStepTiming(job, step))).toBe('1m00s');
   });
 
-  it('merged step with no step_merged event (legacy): no fabricated duration', () => {
-    const step = { id: 'c', type: 'open-pr', state: 'merged', createdAt: T0, updatedAt: RECONCILE, events: [] };
+  it('settled step with no end event on the job timeline: no fabricated duration', () => {
+    const step = { id: 'c', type: 'orchestrated', state: 'resolved', phase: 'merged', createdAt: T0, updatedAt: RECONCILE, events: [] };
     const job = { events: [{ kind: 'step_started', stepId: 'c', at: T0 }] };
     const html = renderTerminalChipHtml(withStepTiming(job, step));
     expect(html).toContain('data-variant="finished"');

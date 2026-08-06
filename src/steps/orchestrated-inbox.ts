@@ -45,6 +45,10 @@ export function drainForDelivery(step: OrchestratedStep): { step: OrchestratedSt
       lastDelivered: items,
       waitingOn: undefined,
       state: 'running',
+      // The only delivery a gated step accepts is a user message abandoning the gate
+      // (shouldDeliver). The gate goes with it — a `running` step carrying a `gate` renders
+      // Approve/Decline buttons that resolveGate refuses to act on.
+      gate: undefined,
       roundsSpent: step.roundsSpent + 1,
       consecutiveSelfRounds: 0,
     },
