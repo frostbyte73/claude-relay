@@ -37,7 +37,7 @@ import { StopHookTracker } from './storage/stop-hook-tracker.js';
 import { UsagePoller, type AccountUsageSnapshot } from './integrations/usage-poller.js';
 import { loadConfig } from './config.js';
 import { loadEnvFile } from './env-file.js';
-import { parseJsonObject, readJsonObject } from './routes/util.js';
+import { parseJsonObject } from './routes/util.js';
 import { registerGitRoutes } from './routes/git.js';
 import { registerJobsRoutes } from './routes/jobs.js';
 import { registerSessionsRoutes } from './routes/sessions.js';
@@ -828,61 +828,6 @@ async function main() {
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
   registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
   registerPreferencesRoutes(server, { preferencesStore, notify: notifyAll });
-
-
-  // Body: { kind: 'tool'|'bash'|'mcp', value: string, scope?: 'global' | { project: string } | { action: string } | { session: string } | 'session' }.
-  // Validates + dedupes + atomic-writes global allowlist.json or per-project file.
-  // Action scope persists via ActionsStore (actions.json). Session scope is
-  // in-memory only — dies with the session, never touches disk. The bare-string
-  // 'session' form pairs with a top-level sessionId field.
-  server.route('POST', '/api/allowlist/rules', async (req, res) => {
-    const payload = await readJsonObject<{ kind?: string; value?: string; sessionId?: string; scope?: 'global' | 'session' | { project?: string } | { action?: string } | { session?: string } }>(req, res);
-    if (!payload) return;
-    const { kind, value, scope } = payload;
-    if (kind !== 'tool' && kind !== 'bash' && kind !== 'mcp' && kind !== 'path') {
-      res.statusCode = 400; res.end('kind must be tool|bash|mcp|path'); return;
-    }
-    if (typeof value !== 'string' || value.length === 0 || value.length > 500) {
-      res.statusCode = 400; res.end('value must be a 1..500 char string'); return;
-    }
-    let normalizedScope: 'global' | { project: string } | { action: string } | { session: string };
-    if (scope === undefined || scope === 'global') {
-      normalizedScope = 'global';
-    } else if (scope === 'session' && typeof payload.sessionId === 'string' && payload.sessionId.length > 0) {
-      normalizedScope = { session: payload.sessionId };
-    } else if (typeof scope === 'object' && scope !== null && typeof (scope as { session?: string }).session === 'string' && (scope as { session: string }).session.length > 0) {
-      normalizedScope = { session: (scope as { session: string }).session };
-    } else if (typeof scope === 'object' && scope !== null && typeof (scope as { project?: string }).project === 'string' && (scope as { project: string }).project.startsWith('/')) {
-      normalizedScope = { project: (scope as { project: string }).project };
-    } else if (typeof scope === 'object' && scope !== null && typeof (scope as { action?: string }).action === 'string' && (scope as { action: string }).action.length > 0) {
-      normalizedScope = { action: (scope as { action: string }).action };
-    } else {
-      res.statusCode = 400; res.end('scope must be "global" | {project: <absolute-cwd>} | {action: <name>} | {session: <id>} | "session" (+ sessionId)'); return;
-    }
-    let added: boolean;
-    try {
-      added = allowlist.addRule(kind, value, normalizedScope);
-    } catch (e) {
-      res.statusCode = 400; res.end(`invalid pattern: ${(e as Error).message}`); return;
-    }
-    if (added && normalizedScope === 'global') {
-      const tmp = `${ALLOWLIST_PATH}.tmp`;
-      writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
-      renameSync(tmp, ALLOWLIST_PATH);
-      console.log(`[api] allowlist[global]: added ${kind} rule ${JSON.stringify(value)} (total ${allowlist.ruleCount()})`);
-    } else if (added && typeof normalizedScope === 'object' && 'project' in normalizedScope) {
-      // Project file persistence lives inside Allowlist.addRule.
-      console.log(`[api] allowlist[project=${normalizedScope.project}]: added ${kind} rule ${JSON.stringify(value)}`);
-    } else if (added && typeof normalizedScope === 'object' && 'action' in normalizedScope) {
-      // Action persistence lives inside ActionsStore.addRule (chained via Allowlist).
-      console.log(`[api] allowlist[action=${normalizedScope.action}]: added ${kind} rule ${JSON.stringify(value)}`);
-    } else if (added && typeof normalizedScope === 'object' && 'session' in normalizedScope) {
-      console.log(`[api] allowlist[session=${normalizedScope.session.slice(0, 8)}]: added ${kind} rule ${JSON.stringify(value)} (in-memory)`);
-    }
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ added, ruleCount: allowlist.ruleCount() }));
-  });
 
   const actionRoutes = registerActionsRoutes(server, {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
