@@ -50,10 +50,12 @@ function recordProgress(s: OrchestratedStep, p: ProgressPayload): OrchestratedSt
 // Did this round have anything to show for itself? Must be answered against the step as it
 // stood BEFORE recordProgress folded the payload in — afterwards the payload's phase and
 // artifacts are already stored and every round looks unchanged.
+// Content, not keys: redrafting `artifacts.spec` to address a declined gate reuses the key and
+// is plainly real work. Only a byte-identical resubmit says the round produced nothing.
 function isProductive(before: OrchestratedStep, p: ProgressPayload): boolean {
   if (p.phase !== undefined && p.phase !== before.phase) return true;
   const had = before.artifacts ?? {};
-  return Object.keys(p.artifacts ?? {}).some((k) => !(k in had));
+  return Object.entries(p.artifacts ?? {}).some(([k, v]) => had[k] !== v);
 }
 
 export function applyMove(host: OrchestratedHost, jobId: string, stepId: string, p: ProgressPayload): void {
@@ -114,6 +116,10 @@ function openGate(
     state: 'gate_pending_approval',
     gate: { ...gate, requestedAt: host.now() },
     gateApproved: undefined,
+    // A gate is the strongest yield there is — the step parks and a human decides — so it
+    // forgives the self-round budget at least as much as a dispatch or a wait does. That holds
+    // even harder for a force-gate, which the daemon imposed on a controller that didn't ask.
+    consecutiveSelfRounds: 0,
   }));
 }
 
@@ -168,9 +174,6 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
       return;
 
     case 'gate':
-      // A gate is the strongest yield there is — the step parks and a human decides — so it
-      // forgives the self-round budget at least as much as a dispatch or a wait does.
-      host.mutateStep(jobId, stepId, (s) => ({ ...s, consecutiveSelfRounds: 0 }));
       openGate(host, jobId, stepId, {
         draft: move.draft, question: move.question,
         deferredMove: { kind: 'self-round' },

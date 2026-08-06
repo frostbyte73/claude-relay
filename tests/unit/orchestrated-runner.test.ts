@@ -76,12 +76,42 @@ describe('applyMove', () => {
     expect(get().consecutiveSelfRounds).toBe(0);
   });
 
+  it('a force-gated external write resets the count, and the controller runs on after approval', () => {
+    const { h, get } = host(step({ phase: 'pr_open', consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS - 1 }));
+    applyMove(h, 'j1', 's1', { phase: 'pr_open', next: { kind: 'self-round', action: 'code.fix-ci' } });
+    expect(get().state).toBe('gate_pending_approval');
+    expect(get().consecutiveSelfRounds).toBe(0);
+
+    resolveGate(h, 'j1', 's1', true);
+    expect(get().consecutiveSelfRounds).toBe(1);
+
+    applyMove(h, 'j1', 's1', { phase: 'pr_open', next: { kind: 'self-round', action: 'code.implement' } });
+    expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBeFalsy();
+    expect(get().consecutiveSelfRounds).toBe(2);
+  });
+
+  it('rewriting an artifact with new content is productive; resubmitting it verbatim is not', () => {
+    const a = host(step({ phase: 'spec', artifacts: { spec: '# v1' }, consecutiveSelfRounds: 2 }));
+    applyMove(a.h, 'j1', 's1', {
+      phase: 'spec', artifacts: { spec: '# v2' },
+      next: { kind: 'self-round', action: 'code.spec' },
+    });
+    expect(a.get().consecutiveSelfRounds).toBe(0);
+
+    const b = host(step({ phase: 'spec', artifacts: { spec: '# v1' }, consecutiveSelfRounds: 2 }));
+    applyMove(b.h, 'j1', 's1', {
+      phase: 'spec', artifacts: { spec: '# v1' },
+      next: { kind: 'self-round', action: 'code.spec' },
+    });
+    expect(b.get().consecutiveSelfRounds).toBe(3);
+  });
+
   it('self-rounds that change neither phase nor artifacts still hit the cap', () => {
     const { h, get } = host(step({ phase: 'implement', artifacts: { spec: '# S' } }));
     for (let i = 0; i < MAX_CONSECUTIVE_SELF_ROUNDS; i++) {
-      // Same phase, same artifact key with a rewritten value: nothing new to show for the round.
+      // Same phase, the same artifact resubmitted byte for byte: nothing to show for the round.
       applyMove(h, 'j1', 's1', {
-        phase: 'implement', artifacts: { spec: `# S${i}` },
+        phase: 'implement', artifacts: { spec: '# S' },
         next: { kind: 'self-round', action: 'code.implement' },
       });
     }

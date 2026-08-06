@@ -101,7 +101,7 @@ fan-out: reviews, investigations, second opinions across several files at once.
 Because those rounds are sequential, a batch of review comments is a `code.fix-pr-comment`
 round per group of related comments, not one per comment — put the comments verbatim, their
 files and lines, and the change each needs into `boundNote`. Those rounds all sit in the same
-`phase` and add no artifact, so they are exactly what the unproductive-self-round cap (below)
+`phase` and write no artifact, so they are exactly what the unproductive-self-round cap (below)
 counts — group them rather than racing it.
 
 **Phase vocabulary — use exactly these eight strings**, no others, no variants:
@@ -157,11 +157,13 @@ label, they are the state. Re-derive your position from the ladder against `arti
 **Budgets.** `roundsRemaining` counts down from 40; at zero the daemon accepts only `resolve`
 or `fail`, so leave headroom rather than discovering the wall. Separately, at most **three**
 *unproductive* `self-round`s in a row. A round counts as productive when the submit that ends
-it moves `phase` or adds a key to `artifacts` that wasn't there before; anything else — same
-phase, no new artifact — charges the count. A `dispatch`, `wait`, `gate`, or a fresh delivery
-resets it outright. Walking the ladder (`spec` → `plan` → `implement`) never approaches the
-cap; three rounds that show nothing new do, and that is the signal to park on a `wait`, gate
-it, or dispatch it — not to push a fourth.
+it moves `phase` or writes an `artifacts` entry whose content differs from what was already
+there — a redraft under the same key counts, a byte-identical resubmit does not. Anything else
+— same phase, nothing new written — charges the count. A `dispatch`, `wait`, or `gate` (yours
+or one the daemon imposed on an external write), or a fresh delivery, resets it outright.
+Walking the ladder (`spec` → `plan` → `implement`) never approaches the cap; three rounds that
+show nothing new do, and that is the signal to park on a `wait`, gate it, or dispatch it — not
+to push a fourth.
 
 ## 4. Events wake you; facts tell you what happened
 

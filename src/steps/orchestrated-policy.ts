@@ -1,10 +1,10 @@
 import type { NextMove, OrchestratedStep } from '../work/work-types.js';
 
 export const MAX_ROUNDS = 40;
-// Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor added an
-// artifact (see isProductive in orchestrated-runner). A controller marching spec → plan →
-// implement has something to show for every round and never approaches this; one resuming
-// itself with nothing to show for it three times running is the runaway this bounds.
+// Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor changed the
+// content of any artifact (see isProductive in orchestrated-runner). A controller marching
+// spec → plan → implement has something to show for every round and never approaches this;
+// one resuming itself with nothing to show for it three times running is the runaway this bounds.
 export const MAX_CONSECUTIVE_SELF_ROUNDS = 3;
 export const MAX_DISPATCH_ATTEMPTS = 2;
 
