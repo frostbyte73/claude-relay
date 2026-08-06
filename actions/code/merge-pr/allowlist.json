@@ -1,7 +1,7 @@
 {
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
-    "^gh pr merge(\\s|$)",
+    "^gh pr merge(?![\\s\\S]*(--delete-branch|\\s-[A-Za-z]*d[A-Za-z]*(\\s|$)))(\\s|$)",
     "^git push origin --delete(\\s|$)",
     "^git push --delete(\\s|$)"
   ],

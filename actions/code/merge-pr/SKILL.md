@@ -83,6 +83,11 @@ a failure, the step never leaves its merge gate, and the PWA shows nothing happe
 the PR watcher reconciles the merge much later. The merge and the branch cleanup must be
 two separate commands so a cleanup failure can never be mistaken for a merge failure.
 
+This is not left to your good intentions: this action's allowlist grants `gh pr merge` only
+when the command contains no `--delete-branch` and no `-d` (its shorthand, clustered forms
+included), so the daemon denies the call outright. If you see that denial, you wrote the
+flag — drop it and re-run the merge, then do Step 4.
+
 If `gh pr merge` itself fails, the PR did **not** merge. Do not retry blindly and do not
 reach for `--admin`; hand it back (Step 5b) with `gh`'s stderr in the memo.
 

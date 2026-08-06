@@ -133,10 +133,38 @@ describe('code.merge-pr effective allowlist', () => {
       `gh pr view ${PR} --json state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup`,
       `gh pr merge ${PR} --squash`,
       `gh pr merge ${PR} --merge`,
+      `gh pr merge ${PR} --rebase --admin`,
+      'gh pr merge "$PR_URL" --squash',
       'git push origin --delete -- job-1234-fix',
       'git push --delete origin job-1234-fix',
     ];
     expect(documented.filter((c) => !allows(c))).toEqual([]);
+  });
+
+  // THE constraint on this action, and the one Outpost already shipped a bug on:
+  // `gh pr merge --delete-branch` also deletes the LOCAL branch, which git refuses while
+  // the step's worktree holds it — so gh exits non-zero even though the PR merged, the
+  // caller reads a failure, and the step is stranded at its merge gate forever. The
+  // SKILL.md explains that; this is what enforces it. Delete this test and the bug is one
+  // plausible-looking model edit away from returning.
+  it('denies --delete-branch in every spelling', () => {
+    for (const c of [
+      `gh pr merge --delete-branch ${PR}`,
+      `gh pr merge ${PR} --squash --delete-branch`,
+      'gh pr merge "$PR_URL" --squash --delete-branch',
+      // -d is gh's shorthand for --delete-branch, and pflag accepts it clustered.
+      `gh pr merge ${PR} --squash -d`,
+      `gh pr merge ${PR} -d --squash`,
+      `gh pr merge ${PR} -sd`,
+      `gh pr merge ${PR} -ds`,
+      // A line continuation stays inside one clause, so the guard can't be `.*` — `.`
+      // doesn't cross the newline and the flag would sail through on the next line.
+      `gh pr merge ${PR} \\\n  --delete-branch`,
+      // Every clause is checked independently; a clean merge can't chaperone a dirty one.
+      `gh pr merge ${PR} --squash && gh pr merge 456 --delete-branch`,
+    ]) {
+      expect(allows(c), c).toBe(false);
+    }
   });
 
   it('stays at merge + branch cleanup — no other write reaches it', () => {
