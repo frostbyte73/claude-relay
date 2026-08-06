@@ -60,6 +60,8 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
         ...(d.failure !== undefined ? { failure: d.failure } : {}),
       })),
       pr: s.pr,
+      ...(s.gateApproved !== undefined ? { gateApproved: s.gateApproved } : {}),
+      ...(s.gateFeedback !== undefined ? { gateFeedback: s.gateFeedback } : {}),
       job: {
         source: job.source,
         title: job.title,

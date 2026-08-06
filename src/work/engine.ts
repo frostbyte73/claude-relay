@@ -28,7 +28,7 @@ import type {
   WorkspaceRef,
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
-import { workspaceError } from './workspace.js';
+import { readonlyView, workspaceError } from './workspace.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
@@ -1538,13 +1538,15 @@ export class WorkEngine {
   // so a child can't clobber it. The dispatch's own id doubles as its `stepId` for
   // envelope/submit purposes: submit_step_output/failed from this session lands on
   // onStepResolved/onStepFailed with that id, which routes to settleDispatch instead of
-  // resolving/failing the parent (see findDispatchStepId).
+  // resolving/failing the parent (see findDispatchStepId). An inherited workspace is
+  // downgraded to a detached checkout of the same branch — see readonlyView; a dispatch that
+  // asks for a writable one of its own is refused upstream in validateNext.
   private async spawnDispatchSession(jobId: string, stepId: string, dispatch: Dispatch): Promise<void> {
     const j = this.opts.queue.get(jobId);
     const s = j?.steps.find((x) => x.id === stepId);
     if (!j || !s || s.type !== 'orchestrated') return;
 
-    const workspace = dispatch.workspace ?? s.workspace;
+    const workspace = dispatch.workspace ?? readonlyView(s.workspace);
     let ws: { path: string | null };
     try {
       ws = await this.opts.worktreeManager.provision(dispatch.id, workspace);

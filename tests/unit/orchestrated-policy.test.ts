@@ -115,6 +115,32 @@ describe('validateNext', () => {
     expect(validateNext(step(), { kind: 'self-round', action: 'code.review-diff' }, info).kind).toBe('allow');
   });
 
+  // The branch belongs to the controller: a second worktree on it makes WorktreeManager
+  // relocate the controller's own checkout into the child's slot, invalidating its session cwd.
+  it('rejects a dispatch that asks for a writable workspace, pointing at the self-round instead', () => {
+    const move: NextMove = {
+      kind: 'dispatch',
+      dispatches: [{
+        action: 'code.implement', brief: 'edit it',
+        workspace: { kind: 'writable', repoCwd: '/repo', branch: 'feature/x' },
+      }],
+    };
+    const v = validateNext(step(), move, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/self-round/);
+    expect((v as { reason: string }).reason).toMatch(/writable/);
+  });
+
+  it('allows a dispatch with a readonly or no workspace', () => {
+    const readonly: NextMove = {
+      kind: 'dispatch',
+      dispatches: [{ action: 'code.review-diff', brief: 'read it', workspace: { kind: 'readonly', repoCwd: '/repo' } }],
+    };
+    expect(validateNext(step(), readonly, info).kind).toBe('allow');
+    expect(validateNext(step(), { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'r2' }] }, info).kind)
+      .toBe('allow');
+  });
+
   it('allows resolve and fail regardless of round budget', () => {
     const s = step({ roundsSpent: MAX_ROUNDS });
     expect(validateNext(s, { kind: 'resolve', output: 'done' }, info).kind).toBe('allow');

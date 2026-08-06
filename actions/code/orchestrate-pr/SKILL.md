@@ -40,6 +40,8 @@ cat "$OUTPOST_ENVELOPE"
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every child you have fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `comments[]`. |
+| `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
+| `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
 | `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, `human_gate`, I/O schemas. The only valid action names; never invent one. |
@@ -88,6 +90,19 @@ Your six moves:
 | `resolve` | `{kind:"resolve", output}` | Step done. `output` is the summary the job keeps. |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
 
+**Dispatched children are read-only; edits happen on your rounds.** The branch belongs to you
+and your worktree is the only checkout holding it, so a child gets a detached checkout of that
+same branch at its own path — the full code to read, no ability to change it. A dispatch that
+asks for `workspace: {"kind":"writable"}` is rejected. Anything that touches the tree —
+implementing, fixing CI, resolving conflicts, applying a review comment — is a `self-round`
+bound to the action that does it, which runs in *your* worktree. Dispatch is for read-shaped
+fan-out: reviews, investigations, second opinions across several files at once.
+
+Because those rounds are sequential, a batch of review comments is a `code.fix-pr-comment`
+round per group of related comments, not one per comment — put the comments verbatim, their
+files and lines, and the change each needs into `boundNote`, and keep to the three-self-rounds-
+in-a-row cap by grouping rather than by racing it.
+
 **Phase vocabulary — use exactly these eight strings**, no others, no variants:
 `spec`, `plan`, `implement`, `pr_open`, `pr_comments`, `conflict`, `merged`, `failed`.
 Set `phase` on every submit so the UI and a cold-resumed you agree on where the step is.
@@ -105,7 +120,7 @@ The ladder, top to bottom — take the first row that matches:
 | CI failure that has **settled** (every check reported, at least one failed) | `self-round` as `code.fix-ci` | `pr_open` |
 | Comments in `pr.comments` you have not drafted a reply for | `self-round` as `code.triage-pr-comments` | `pr_comments` |
 | Replies drafted | `gate` with the drafted replies as `draft` | `pr_comments` |
-| Approved replies that need code changes | `dispatch` `code.fix-pr-comment`, one entry per comment | `pr_comments` |
+| Approved replies that need code changes | `self-round` as `code.fix-pr-comment` | `pr_comments` |
 | `pr.ciState === "success"` and `pr.reviewState === "approved"` | `gate` asking to merge | `pr_open` |
 | `pr.prState === "merged"` | `resolve` with a summary and the PR URL | `merged` |
 
@@ -119,12 +134,14 @@ runs. That is expected — the move you submitted is stored and executed **verba
 approval. Do not re-issue it, do not wrap it in your own `gate`, and do not treat the pause as
 a rejection.
 
-**Approval of your own `gate` arrives silently.** When the user approves, the daemon clears
-the inbox and resumes you as a plain decision turn — there is *no* `gate-resolved` item in
-`delivered` saying "approved", and the step carries no approved flag you can read. So the memo
-must say what you gated on and what an approval would mean ("gated the spec; on approval, run
-`code.plan`"). Waking with no new events while your memo says you were parked at a gate *is*
-the approval. A **decline** is different: it arrives as a `gate-resolved` item with
+**Approval of your own `gate` arrives quietly.** The daemon clears the inbox before resuming
+you, so there is *no* `gate-resolved` item in `delivered` saying "approved". Read
+`gateApproved` instead — it is `true` from the moment the user approves, and `gateFeedback`
+carries anything they wrote alongside it. The memo is still your record of *which* draft that
+approval was for, so keep writing what you gated on and what an approval would mean ("gated the
+spec; on approval, run `code.plan`") — `gateApproved` tells you they said yes, the memo tells
+you to what. It clears the moment you open your next `gate`, so it always refers to the most
+recent one. A **decline** is different: it arrives as a `gate-resolved` item with
 `approved: false` and the user's `feedback`. Fold that feedback into the memo and redo the
 work with it — e.g. another `code.spec` round with the feedback in `boundNote` — rather than
 re-gating the same draft.
@@ -179,7 +196,8 @@ of you that remembers nothing:
 - Why the code looks the way it does — the shape the spec settled on and what was rejected.
 - Which comments you have already answered, and how.
 - What you are waiting for, and what would end the wait.
-- What you gated on, and what an approval means (see §3 — you get no explicit approval item).
+- What you gated on, and what an approval means (`gateApproved` says yes; only the memo says
+  what to).
 - Which dispatches failed, why you decided it was transient or not, and what you did about it.
 
 Vague memos ("continuing work on the PR") cost a whole round to rebuild. Be specific.
@@ -219,11 +237,12 @@ the failed dispatch's `failure` and decide which of these it is.
 sentence why the failure was environmental rather than the brief's fault, it isn't a retry.
 
 **Write briefs that stand alone.** A child gets a fresh session whose entire context is its
-brief — it cannot see your memo, artifacts, envelope, or the other children. For each
-`code.fix-pr-comment` dispatch, put the comment verbatim, the file and line, why the reviewer
-is right (or what the reply promised), and the change you expect, in that one brief. Tell the
-child to finish by calling `mcp__outpost__submit_step_output` with a summary of what it
-changed — a dispatched child that ends its turn without submitting is recorded as failed.
+brief — it cannot see your memo, artifacts, envelope, or the other children. For a
+`code.review-diff` child, name the branch and what the change is trying to do; for an
+investigation, put the question, the files you already suspect, and what an answer looks like,
+in that one brief. Tell the child to finish by calling `mcp__outpost__submit_step_output` with
+its findings — a dispatched child that ends its turn without submitting is recorded as failed,
+and its **output is the whole point**, since it cannot change the tree itself.
 
 ## 8. Report — load the tools, then submit
 
@@ -250,8 +269,9 @@ mcp__outpost__submit_step_progress({
 Other `next` shapes:
 
 ```
-{ kind: "dispatch", dispatches: [ { action: "code.fix-pr-comment", brief: "…everything the child gets…" } ] }
-{ kind: "dispatch", dispatches: [ { action: "code.fix-pr-comment", brief: "…identical…", retryOf: "<failed dispatch id>" } ] }
+{ kind: "self-round", action: "code.fix-pr-comment", note: "<the comment verbatim, file+line, the change to make>" }
+{ kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…everything the child gets…" } ] }
+{ kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…identical…", retryOf: "<failed dispatch id>" } ] }
 { kind: "wait", wait: { reason: "PR open — watching CI, reviews, and comments",
                         events: ["ci", "review-state", "pr-state", "pr-comments"] } }
 { kind: "gate", draft: "<the spec / the drafted replies / the merge summary>", question: "Approve this spec?" }

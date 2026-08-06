@@ -92,4 +92,20 @@ describe('orchestratedHandler.buildEnvelope', () => {
       id: 'd1', action: 'code.review-diff', brief: 'b', status: 'done', output: 'findings',
     });
   });
+
+  // resolveGate clears the inbox and runs the deferred move, so the approval leaves no
+  // gate-resolved item behind — without these fields the controller's only clue is its own memo,
+  // which is empty on a migrated job.
+  it('carries the gate verdict so an approval is detectable without the memo', () => {
+    const s = step({ gateApproved: true, gateFeedback: ['tighten the spec'] });
+    const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
+    expect(env.gateApproved).toBe(true);
+    expect(env.gateFeedback).toEqual(['tighten the spec']);
+  });
+
+  it('omits the gate verdict while no gate has been resolved', () => {
+    const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
+    expect(env).not.toHaveProperty('gateApproved');
+    expect(env).not.toHaveProperty('gateFeedback');
+  });
 });

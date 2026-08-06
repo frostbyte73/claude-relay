@@ -73,6 +73,15 @@ export function validateNext(step: OrchestratedStep, move: NextMove, info: Actio
       if (!info.sideEffects(d.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(d.action)}` };
       }
+      if (d.workspace?.kind === 'writable') {
+        return {
+          kind: 'reject',
+          reason: `${d.action} asks for a writable workspace. A dispatch cannot hold one — the branch `
+            + 'belongs to you, and a second worktree on it would move yours out from under your session. '
+            + 'Make the edit yourself in a self-round bound to an editing action, or dispatch a read-only '
+            + 'child that reports what to change and apply it on a self-round.',
+        };
+      }
       if (d.retryOf) {
         const target = byId.get(d.retryOf);
         if (!target) return { kind: 'reject', reason: `retryOf ${JSON.stringify(d.retryOf)} names no dispatch on this step` };

@@ -22,3 +22,13 @@ export function workspaceError(ws: WorkspaceRef | undefined): string | null {
   }
   return null;
 }
+
+// A child session must never inherit a writable ref from its parent. Two worktrees can't hold
+// one branch: WorktreeManager.create() resolves that collision by `git worktree move`-ing the
+// existing checkout — the parent's own live worktree — into the child's slot, leaving the
+// parent's recorded path and its session cwd pointing at nothing. Detaching at the same branch
+// gives the child the identical tree to read at its own path, with no claim on the branch.
+export function readonlyView(ws: WorkspaceRef): WorkspaceRef {
+  if (ws.kind !== 'writable') return ws;
+  return { kind: 'readonly', repoCwd: ws.repoCwd, ref: ws.branch };
+}

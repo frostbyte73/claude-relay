@@ -154,6 +154,11 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   delivered?: InboxItem[];
   dispatches?: Array<Pick<Dispatch, 'id' | 'action' | 'brief' | 'status' | 'output' | 'failure'>>;
   pr?: PrFacts;
+  // resolveGate clears the inbox before running the deferred move, so an approval leaves no
+  // `gate-resolved` item behind — these flags are the only durable record the controller has
+  // that the user said yes (and what they said).
+  gateApproved?: boolean;
+  gateFeedback?: string[];
   // Set on a work turn: the controller is wearing this action's hat this turn.
   boundAction?: string;
   boundNote?: string;

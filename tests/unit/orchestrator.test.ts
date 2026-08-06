@@ -7,7 +7,7 @@ import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import { LaunchGovernor } from '../../src/work/launch-governor.js';
 import { OUTPOST_MCP_TOOLS } from '../../src/mcp-server.js';
-import type { DraftedReply, Finding, JobRecord, OpenPrStep, OrchestratedStep, ProposedStep, Step } from '../../src/work/work-types.js';
+import type { DraftedReply, Finding, JobRecord, OpenPrStep, OrchestratedStep, ProposedStep, Step, WorkspaceRef } from '../../src/work/work-types.js';
 
 function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
   const queue = new JobQueue(dir);
@@ -970,7 +970,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
   // newId is deliberately left at its real-randomUUID() default (not the short counter other
   // tests in this file use) so a compound-id regression (stepId-dispatch.id at 73 chars) can't
   // hide behind an unrealistically short id — see the id-length assertions below.
-  function makeDispatchEngine(worktreeManager: unknown) {
+  function makeDispatchEngine(worktreeManager: unknown, stepWorkspace: WorkspaceRef = { kind: 'none' }) {
     const dir = mkdtempSync(join(tmpdir(), 'orch-dispatch-'));
     const queue = new JobQueue(dir);
     const sessionManager = {
@@ -998,7 +998,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     const stepId = randomUUID();
     const step: OrchestratedStep = {
       id: stepId, title: 'shepherd', description: 'd', type: 'orchestrated',
-      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      controller: 'code.orchestrate-pr', workspace: stepWorkspace, goal: 'g',
       dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
       state: 'running', createdAt: 1, updatedAt: 1, sessionId: randomUUID(),
     };
@@ -1054,6 +1054,45 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     // meant to prevent) while being exactly the dispatch's own id (not derived from it).
     expect(provisionedIds[0]).toBe(dispatchId);
     expect(provisionedIds[0]).not.toBe(stepId);
+  });
+
+  // Inheriting the controller's writable ref is the default path for code.orchestrate-pr, which
+  // runs on a worktree holding the PR branch. Provisioning a second worktree on that branch makes
+  // WorktreeManager `git worktree move` the controller's own checkout into the child's slot — its
+  // record and its live session's cwd both go stale. The fake below models exactly that relocation.
+  it('downgrades an inherited writable workspace to a readonly checkout of the same branch', async () => {
+    const pathById = new Map<string, string>();
+    const holderByBranch = new Map<string, string>();
+    const seen: Array<{ id: string; workspace: WorkspaceRef }> = [];
+    const worktreeManager = {
+      provision: async (id: string, workspace: WorkspaceRef) => {
+        seen.push({ id, workspace });
+        if (workspace.kind === 'none') return { path: null };
+        const path = `/wt/${id}`;
+        if (workspace.kind === 'writable') {
+          const holder = holderByBranch.get(workspace.branch);
+          if (holder && holder !== id) pathById.set(holder, path);
+          holderByBranch.set(workspace.branch, id);
+        }
+        pathById.set(id, path);
+        return { path };
+      },
+    };
+    const parentWorkspace: WorkspaceRef = { kind: 'writable', repoCwd: '/tmp/fake-repo', branch: 'feature/x' };
+    const { engine, queue, jobId, stepId } = makeDispatchEngine(worktreeManager, parentWorkspace);
+    await worktreeManager.provision(stepId, parentWorkspace);
+    const parentPath = pathById.get(stepId);
+
+    engine.onStepProgress(jobId, stepId, {
+      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'review it' }] },
+    });
+    await flush();
+
+    const updated = queue.get(jobId)!.steps[0] as OrchestratedStep;
+    const dispatchId = updated.dispatches[0]!.id;
+    const childCall = seen.find((c) => c.id === dispatchId);
+    expect(childCall?.workspace).toEqual({ kind: 'readonly', repoCwd: '/tmp/fake-repo', ref: 'feature/x' });
+    expect(pathById.get(stepId)).toBe(parentPath);
   });
 
   it('marks the dispatch failed (not the parent step) when provision() throws', async () => {
