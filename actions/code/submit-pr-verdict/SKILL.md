@@ -46,6 +46,10 @@ PR_URL=$(jq -r '.pr.prUrl // .inputs.prUrl // empty' "$OUTPOST_ENVELOPE")
 jq -r '.artifacts.resolutions // empty' "$OUTPOST_ENVELOPE"
 ```
 
+**Read the PR number off `PR_URL` and remember it.** Step 4 takes the number as a literal
+digit string — not `"$PR_URL"`, not `$PR_NUM`. Everything else about this action is one
+command, and that number is the only thing binding it to the right PR.
+
 Skim any lessons from past runs:
 
 ```bash
@@ -109,32 +113,43 @@ never posted — those were never approved and never given to the author.
 
 ## Step 4 — Submit it
 
+One line, in this exact order: `gh pr review`, the **literal PR number**, the verdict, then
+at most one body flag.
+
 ```bash
-gh pr review "$PR_URL" --request-changes --body-file /tmp/outpost-verdict-<PR_NUMBER>.md
+gh pr review <PR_NUMBER> --request-changes --body-file /tmp/outpost-verdict-<PR_NUMBER>.md
 ```
 
 or, for the approve path:
 
 ```bash
-gh pr review "$PR_URL" --approve --body-file /tmp/outpost-verdict-<PR_NUMBER>.md
+gh pr review <PR_NUMBER> --approve --body-file /tmp/outpost-verdict-<PR_NUMBER>.md
 ```
 
 A one-line body can go inline instead — but only as a literal:
-`gh pr review "$PR_URL" --approve --body "All four comments addressed in def4567."`
+`gh pr review <PR_NUMBER> --approve --body "All four comments addressed in def4567."`
 
 What is granted is exactly that shape:
 
 | Allowed | Notes |
 |---|---|
-| the PR operand | a URL, a number, or `"$PR_URL"` / `$PR_URL` |
-| `--approve`, `--request-changes` | pick exactly one |
+| the PR operand | **a bare number, typed literally.** Not a URL, not `"$PR_URL"`, not `$PR_NUM` |
+| `--approve`, `--request-changes` | exactly one, and it is mandatory |
 | `--body <literal text>` | quoted or bare; **no** `$VAR`, **no** `$(…)`, **no** backticks — a command substitution would put an unreviewed file's contents into a public review |
 | `--body-file /tmp/<literal-filename>` | the file from Step 3 |
 
-Everything else denies — `--comment`, `--repo` (which would retarget the verdict at a
-different repo), the `-a`/`-r`/`-c`/`-b`/`-F` shorthands, a `\`-continued command split
-across lines, and a second command chained with `&&`. Write it on **one line**. If you see
-a denial here, you wrote something outside that table; drop it and re-run the plain form.
+**Why a number and not the URL.** A bare number is resolved by `gh` against the remote of
+the worktree you are standing in — the repo whose PR you reviewed. A URL names any repo on
+github.com, and a `$VAR` names whatever was last assigned to it, so either one lets a
+verdict the user approved for *this* PR land on a different one. `--repo` is denied for the
+same reason. That binding is only as good as your cwd: **do not `cd` out of the worktree
+before Step 4.**
+
+Everything else denies — `--comment`, `--repo`, the `-a`/`-r`/`-c`/`-b`/`-F` shorthands,
+both verdicts at once, a bare `gh pr review` with no operand (which would drop into an
+interactive prompt and hang the step), a `\`-continued command split across lines, and a
+second command chained with `&&`. Write it on **one line**. If you see a denial here, you
+wrote something outside that table; drop it and re-run the plain form.
 
 **One verdict, once.** If `gh` exits zero, you are done — do not submit a second review to
 "clarify". If it fails, read Step 5b before doing anything else.

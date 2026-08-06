@@ -85,6 +85,11 @@ Prefer, in this order:
      -d '{"source":"my-schedule","title":"...","dedupeKey":"..."}'
    ```
 
+   Write the `-d` body as a literal (or a `$VAR` you built) — a `$(…)` or
+   backtick substitution there is denied, because a command substitution in
+   a request body is a local file read pointed at the network. Same for
+   `-H` values.
+
    `dedupeKey` is the idempotency key: a create-job call whose `dedupeKey`
    already maps to an existing job no-ops instead of duplicating it. Reuse a
    **stable, path-safe token** per external item (alphanumeric, dot, dash,

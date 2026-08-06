@@ -127,22 +127,29 @@ One command, one line, literal PR number:
 gh api --method POST "repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews" --input /tmp/outpost-review-<PR_NUMBER>.json
 ```
 
-`{owner}` and `{repo}` are `gh api`'s own placeholders, filled from the repo your cwd sits
-in. If the worktree's remote is not the PR's repo, write `repos/<owner>/<repo>/…`
-literally instead — both spellings are granted.
+`{owner}` and `{repo}` are `gh api`'s own placeholders, filled from the remote of the repo
+your cwd sits in. **Write them literally, exactly as spelled above** — a spelled-out
+`repos/<owner>/<repo>/…` is denied, because it would let this round post the review the
+user approved for *this* PR onto a PR in a repo it was never shown. The placeholders are
+the only thing that binds the endpoint to the worktree you reviewed, so **do not `cd` out
+of the worktree before running it.**
 
 What is granted is exactly that shape and nothing around it:
 
 | Allowed | Notes |
 |---|---|
 | `--method POST` / `-X POST` | the only method |
-| `repos/<owner>/<repo>/pulls/<n>/reviews` | the only endpoint |
+| `repos/{owner}/{repo}/pulls/<n>/reviews` | the only endpoint; `{owner}`/`{repo}` literal, `<n>` a bare number |
 | `--input /tmp/<literal-filename>` | the only payload source |
 
-Anything else denies — a second flag (`--hostname`, `--jq`, another `--method`), a
-`--input` path outside `/tmp/`, a `\`-continuation across lines, or a second command
-chained with `&&`. That closure is the point: `--input` is a file read, so an unpinned one
-would publish `/etc/passwd` or `~/.outpost/.env` as review text on a public PR.
+Anything else denies — a named owner/repo, a `$VAR` PR number, a second flag
+(`--hostname`, `--jq`, another `--method`), a `--input` path outside `/tmp/`, a
+`\`-continuation across lines, or a second command chained with `&&`. That closure is the
+point: `--input` is a file read, so an unpinned one would publish `/etc/passwd` or
+`~/.outpost/.env` as review text on a public PR.
+
+If the worktree's remote genuinely is not the PR's repo, this round cannot post — hand it
+back (Step 6b) with that as the reason rather than reaching for a spelled-out endpoint.
 
 ## Step 5 — Handle comments GitHub refuses
 
