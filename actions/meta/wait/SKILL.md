@@ -26,6 +26,6 @@ Two shapes:
 - **Timed soak** — set `duration_sec` to bake a deploy before the next ring. The user can still resume early.
 - **Manual hold** — omit `duration_sec` and the job waits indefinitely for the user. Pair a `preview` (a health verdict from an upstream `read.investigate`, a diff link, the drafted body of a pending write) so the user has what they need to decide.
 
-Do NOT use `meta.wait` to *assess* something — "is staging healthy?" is `read.investigate`, which reads the metrics and produces a verdict. `meta.wait` is only the follow-up hold: "given those findings, resume when you're ready to promote." And never use it as a stand-in for real work — a "deploy" is an `open-pr` step (the merge IS the deploy), not a wait.
+Do NOT use `meta.wait` to *assess* something — "is staging healthy?" is `read.investigate`, which reads the metrics and produces a verdict. `meta.wait` is only the follow-up hold: "given those findings, resume when you're ready to promote." And never use it as a stand-in for real work — a "deploy" is an `orchestrated` PR step (the merge IS the deploy), not a wait.
 
 There is no Claude session spawned for this action.

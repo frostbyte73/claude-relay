@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.plan output",
-  "description": "The real output is delivered via mcp__outpost__submit_impl_plan, not the session's final message. This schema documents that payload's shape.",
+  "description": "The real output is delivered via mcp__outpost__submit_step_progress as the step's `implPlan` artifact, not the session's final message. This schema documents that payload's shape.",
   "type": "object",
   "required": ["plan"],
   "properties": {

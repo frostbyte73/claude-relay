@@ -1,27 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import type { JobQueue } from './work-queue.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
-import { gitSquashMergeToBase } from '../git/git-ops.js';
 import type { LinearWriter } from '../integrations/linear-writer.js';
 import type {
   ActionStep,
   Dispatch,
-  DraftedReply,
-  EditJob,
   Finding,
   IterationRecord,
   JobEvent,
   JobEventKind,
   JobRecord,
-  OpenPrStep,
   OrchestratedStep,
   PlanIteration,
-  PrComment,
   PrFacts,
   ProposedStep,
-  ReviewComment,
   Step,
   StepEvent,
   StepEventKind,
@@ -32,14 +25,13 @@ import { readonlyView, workspaceError } from './workspace.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
-import type { Action, ExternalEvent, HandlerCtx } from '../steps/types.js';
+import type { Action, HandlerCtx } from '../steps/types.js';
 import {
   applyMove, deliverInbox, pushInbox, resolveGate,
   type NewItem, type OrchestratedHost, type ProgressPayload,
 } from './orchestrated-runner.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
-import { shouldAutoFixCi, ciFailureSignature } from '../steps/open-pr.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
@@ -60,15 +52,12 @@ const UNRESOLVED_GRACE_MS = 5 * 60_000;
 // concern as worktree-manager.ts's SESSION_ID_RE/BRANCH_NAME_RE.
 const DEDUPE_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-// Fields the plan editor may PATCH onto an existing step. `approach`/`risks` only
-// apply to open-pr steps; `action`/`inputs` only apply to action steps — editStepManually
-// picks the applicable subset by the step's own `type`.
+// Fields the plan editor may PATCH onto an existing step. `action` only applies to action
+// steps — editStepManually picks the applicable subset by the step's own `type`.
 export interface StepEditPatch {
   title?: string;
   description?: string;
   goal?: string;
-  approach?: string;
-  risks?: string;
   inputs?: Record<string, unknown>;
   action?: string;
   workspace?: WorkspaceRef;
@@ -77,8 +66,8 @@ export interface StepEditPatch {
 // Rounds that continue an already-open PR (CI red, merge conflict, review comment/edit).
 // These launch immediately — they resume an in-flight unit of work rather than starting a
 // new one, so the token-headroom + concurrency gate that throttles fresh launches doesn't
-// apply. (spawnStepSession's plan/implement/spec resumes are NOT here: they route as `queued`
-// and self-unblock when the prior turn's Stop frees the slot — see releaseLaunchSlot.)
+// apply. (A controller's own self-rounds are NOT here: they route as `queued` and
+// self-unblock when the prior turn's Stop frees the slot — see releaseLaunchSlot.)
 const REACTIVE_ACTIONS = new Set([
   'code.fix-ci', 'code.resolve-conflicts', 'code.fix-pr-comment', 'code.triage-pr-comments',
 ]);
@@ -87,23 +76,7 @@ export function isReactiveAction(action: string): boolean {
 }
 
 export function actionNameForStep(s: Step): string {
-  if (s.type === 'open-pr') {
-    // Push-capable binding must survive the transient `conflictResolving` flag:
-    // a failed merge clears it and drops the step to `conflict_unresolved`, and a
-    // daemon bounce clears it mid-round while state is still `conflicting`. Binding
-    // on the durable state (not just the flag) keeps a reopened session able to
-    // finish/push the merge instead of reverting to push-forbidden code.implement.
-    if (s.conflictResolving || s.state === 'conflicting' || s.state === 'conflict_unresolved') return 'code.resolve-conflicts';
-    if (s.ciFixing) return 'code.fix-ci';
-    if (s.state === 'comment_pending_response' || s.state === 'reply_pending_review') {
-      return 'code.triage-pr-comments';
-    }
-    if (s.state === 'speccing') return 'code.spec';
-    if (s.state === 'planning') return 'code.plan';
-    return 'code.implement';
-  }
-  if (s.type === 'orchestrated') return s.controller;
-  return s.action;
+  return s.type === 'orchestrated' ? s.controller : s.action;
 }
 
 export function activeGroup(j: JobRecord): Step[] {
@@ -324,11 +297,6 @@ export class WorkEngine {
     // can be retried (fresh session, state reset to speccing) while a check armed by the
     // old session is still pending. That check is owed by a round that no longer exists.
     if (step.sessionId !== sessionId) return undefined;
-    // code.implement and the triage/conflict rounds legitimately end their turn
-    // without a submit_* call (they resolve via PR merge / gate approval). The spec
-    // and plan rounds MUST submit — if their turn ends without submit_spec /
-    // submit_impl_plan, fail the step rather than hang the job.
-    if (step.type === 'open-pr' && step.state !== 'speccing' && step.state !== 'planning') return undefined;
     // A human_gate action's draft turn ends by submitting a draft and parking for approval
     // (submit_write_draft → gate_pending_approval). That's a legitimate turn end, not a
     // hang — don't fail it. The commit/redraft turns run when the user acts.
@@ -354,48 +322,13 @@ export class WorkEngine {
     for (const j of this.opts.queue.list()) await this.tickSafe(j.id);
   }
 
-  // Called once at daemon startup. Any editQueue entry left in a running state
-  // is orphaned — its session died with the previous process. Mark it failed so
-  // the queue unblocks and the thread's edit composer re-opens.
-  reconcileInterruptedEdits(): void {
-    for (const j of this.opts.queue.list()) {
-      for (const s of j.steps) {
-        if (s.type !== 'open-pr') continue;
-        if (s.conflictResolving) {
-          // A re-surfaced conflict gate resolves via the PR flow, so the owed
-          // squash must not silently re-fire once the daemon restarts.
-          this.mutateOpenPrStep(j.id, s.id, (st) => ({ ...st, conflictResolving: false, conflictPostAction: undefined, updatedAt: this.ctx.now() }));
-        }
-        if (s.ciFixing) {
-          this.mutateOpenPrStep(j.id, s.id, (st) => ({ ...st, ciFixing: false, updatedAt: this.ctx.now() }));
-        }
-        for (const e of s.editQueue ?? []) {
-          if (e.status !== 'running') continue;
-          this.markEditDone(j.id, s.id, e.id, { status: 'failed', failure: 'interrupted by daemon restart' });
-        }
-        // A triage round left in_progress (never posted) is orphaned — its session died
-        // with the previous process. dropOrphanIterations clears it so the `busy` guard
-        // in the open-pr handler's decide() stops blocking a fresh triage round; without
-        // this the thread hangs on "Claude is deciding…" forever with no way to retry.
-        if ((s.iterations ?? []).some((it) => it.kind === 'replies' && it.status === 'in_progress' && !it.postedAt)) {
-          this.dropOrphanIterations(j.id, s.id, 'replies');
-        }
-      }
-    }
-  }
-
-  // Called once at daemon startup, alongside reconcileInterruptedEdits. A step still
-  // in its in-flight state with a sessionId set is orphaned — the previous daemon died
-  // with its child session mid-turn (a routine `kickstart -k` bounce kills every spawned
-  // Claude process). Without this, decide() keeps returning null for such a step
-  // (state is in-flight, but sessionId is already set) and the job hangs forever.
-  // Recovery differs by step type:
-  //   - action steps are read-only and single-turn: clear the sessionId so decide()
-  //     re-spawns a fresh session on the next tick, reusing the stepId-keyed worktree.
-  //     The bounce becomes non-destructive to the investigation.
-  //   - open-pr `implementing` steps have partial uncommitted edits in the worktree that
-  //     can't be cleanly resumed, so mark them failed (mirroring reconcileInterruptedEdits)
-  //     and let the user retry / inspect the diff.
+  // Called once at daemon startup. A step still in its in-flight state with a sessionId
+  // set is orphaned — the previous daemon died with its child session mid-turn (a routine
+  // `kickstart -k` bounce kills every spawned Claude process). Without this, decide() keeps
+  // returning null for such a step (state is in-flight, but sessionId is already set) and
+  // the job hangs forever. Action steps are read-only and single-turn: clear the sessionId
+  // so decide() re-spawns a fresh session on the next tick, reusing the stepId-keyed
+  // worktree. The bounce becomes non-destructive to the investigation.
   reconcileInterruptedSteps(): void {
     for (const j of this.opts.queue.list()) {
       for (const s of j.steps) {
@@ -407,19 +340,6 @@ export class WorkEngine {
             kind: 'step_retried', who: 'system', stepId: s.id,
             body: `${label} — session interrupted by daemon restart; re-running`,
           }));
-        } else if (s.type === 'open-pr' && s.state === 'implementing') {
-          this.onStepFailed(j.id, s.id, 'implement session interrupted by daemon restart', { journal: false });
-        } else if (s.type === 'open-pr' && (s.state === 'speccing' || s.state === 'planning') && s.sessionId) {
-          // Spec/plan rounds have no uncommitted edits — the shared session was reaped
-          // by the bounce; re-dispatch to resume the round rather than hang (decide()
-          // returns null for planning, and speccing's cold-spawn guard sees the stale
-          // sessionId, so neither self-heals without this).
-          const label = this.stepLabel(j.id, s.id);
-          this.mutate(j.id, (jj) => this.appendEvent(jj, {
-            kind: 'step_retried', who: 'system', stepId: s.id,
-            body: `${label} — session interrupted by daemon restart; resuming round`,
-          }));
-          void this.dispatchRound(j.id, s.id);
         }
       }
     }
@@ -439,9 +359,20 @@ export class WorkEngine {
         this.bindAction(j.orchestratorSessionId, j.orchestratorAction ?? 'meta.orchestrate');
       }
       for (const s of j.steps) {
-        if (!s.sessionId) continue;
-        this.roleBySession.set(s.sessionId, { role: 'step', jobId: j.id, stepId: s.id });
-        this.bindAction(s.sessionId, actionNameForStep(s));
+        if (s.sessionId) {
+          this.roleBySession.set(s.sessionId, { role: 'step', jobId: j.id, stepId: s.id });
+          this.bindAction(s.sessionId, actionNameForStep(s));
+        }
+        // A still-running dispatch's session is persisted on the Dispatch record, but its
+        // role is not. Without rebinding it, its submit_step_output falls through the
+        // dispatch branch of onStepResolved and resolves the PARENT step on the child's
+        // behalf — see findDispatchStepId.
+        if (s.type !== 'orchestrated') continue;
+        for (const d of s.dispatches) {
+          if (d.status !== 'running' || !d.sessionId) continue;
+          this.roleBySession.set(d.sessionId, { role: 'dispatch', jobId: j.id, stepId: s.id, dispatchId: d.id });
+          this.bindAction(d.sessionId, d.action);
+        }
       }
     }
   }
@@ -474,27 +405,6 @@ export class WorkEngine {
         kind: 'state_changed', who: 'orchestrator', body: 'resumed: failing step recovered',
       }));
       j = this.opts.queue.get(jobId) ?? j;
-    }
-
-    // Edit-job dispatch: any open-pr step with a queued edit and no other running edit
-    // gets its head edit pumped through code.fix-pr-comment. Skipped for a settled job —
-    // its worktrees are archived, so the session would have nowhere to run. (`done` still
-    // falls through to the transition pass below, which may owe Linear its done-write.)
-    // Kept inline, and only awaited when there is work: callers rely on tickOne reaching
-    // the transition pass synchronously, which an unconditional await would break.
-    if (j.state !== 'done' && j.state !== 'abandoned') {
-      for (const s of j.steps) {
-        if (s.type !== 'open-pr' || s.cancelled) continue;
-        const queue = s.editQueue ?? [];
-        const running = queue.some((e) => e.status === 'running');
-        if (running) continue;
-        // One session per step: hold an edit round while a triage turn is mid-flight
-        // (dispatched but not yet posted). Once posted, the turn is done and edits proceed.
-        if ((s.iterations ?? []).some((it) => it.status === 'in_progress' && !it.postedAt)) continue;
-        const head = queue.find((e) => e.status === 'queued');
-        if (!head) continue;
-        await this.spawnEditFixSession(j, s, head.id);
-      }
     }
 
     // Per-step review: once a group has fully settled, run the orchestrator once
@@ -552,18 +462,6 @@ export class WorkEngine {
         break;
       case 'deliver-inbox':
         deliverInbox(this.orchestratedHost(), a.jobId, a.stepId);
-        break;
-      case 'request-merge-approval':
-        // The UI inspects step state to surface the approve-merge gate. No-op here.
-        break;
-      case 'request-conflict-approval':
-        // The UI inspects step state to surface the resolve-conflicts gate. No-op here.
-        break;
-      case 'start-ci-fix':
-        await this.fixCi(a.jobId, a.stepId);
-        break;
-      case 'note-ci-fix-exhausted':
-        this.markCiFixExhausted(a.jobId, a.stepId);
         break;
       case 'write-linear-in-progress':
       case 'write-linear-in-review':
@@ -802,8 +700,15 @@ export class WorkEngine {
     for (const s of j.steps) this.clearWaitTimer(j.id, s.id);
     // Worktrees are keyed by stepId (see worktreePathForSession comment). Reap every
     // step's — readonly/detached steps own worktrees too, and skipping them was the
-    // original orphan source; archiveStepWorktree no-ops when a step has none.
-    for (const s of j.steps) await this.archiveStepWorktree(s);
+    // original orphan source; archiveWorktreeFor no-ops when there is none. A dispatch's
+    // worktree is keyed by its own id (see spawnDispatchSession), so it needs its own
+    // pass or it outlives the job that spawned it.
+    for (const s of j.steps) {
+      await this.archiveWorktreeFor(s.id);
+      if (s.type === 'orchestrated') {
+        for (const d of s.dispatches) await this.archiveWorktreeFor(d.id);
+      }
+    }
   }
 
   private async closeSessions(sessionIds: Iterable<string>): Promise<void> {
@@ -816,11 +721,13 @@ export class WorkEngine {
     }
   }
 
-  private async archiveStepWorktree(step: Step): Promise<void> {
-    const rec = this.opts.worktreeManager.get(step.id);
+  // Keyed by the worktree's own key, which is a stepId for a step and a dispatchId for a
+  // dispatch child.
+  private async archiveWorktreeFor(key: string): Promise<void> {
+    const rec = this.opts.worktreeManager.get(key);
     if (!rec || rec.archivedAt) return;
-    try { await this.opts.worktreeManager.archive(step.id, rec.projectCwd); }
-    catch (e) { console.error(`[work] archive worktree ${step.id.slice(0,8)}: ${(e as Error).message}`); }
+    try { await this.opts.worktreeManager.archive(key, rec.projectCwd); }
+    catch (e) { console.error(`[work] archive worktree ${key.slice(0,8)}: ${(e as Error).message}`); }
   }
 
   // A step that reached a terminal state no longer needs its session or worktree;
@@ -829,7 +736,7 @@ export class WorkEngine {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (!step) return;
     await this.closeSessions(step.sessionId ? [step.sessionId] : []);
-    await this.archiveStepWorktree(step);
+    await this.archiveWorktreeFor(step.id);
   }
 
   onPlanReady(jobId: string, mode: 'initial' | 'replan', proposed: ProposedStep[], drops?: string[], feedback?: string, findings?: Finding): void {
@@ -1056,7 +963,6 @@ export class WorkEngine {
     }
     let didResolve = false;
     this.mutateStep(jobId, stepId, (s) => {
-      if (s.type === 'open-pr') return s;  // open-pr resolves via PR merge, not user action
       didResolve = true;
       const next: Step = { ...s, state: 'resolved', updatedAt: this.ctx.now() };
       if (payload?.output && next.type === 'action') next.output = payload.output;
@@ -1165,9 +1071,9 @@ export class WorkEngine {
 
   // ─────────────────────────────────────────────────────────
   // human_gate — draft → review → commit loop for external writes.
-  // Mirrors the open-pr spec_pending_review gate: the action's draft turn composes the
-  // payload and submits it for review (submit_write_draft) WITHOUT posting; the user
-  // approves (→ commit turn posts it) or proposes changes (→ redraft turn). The external
+  // The action's draft turn composes the payload and submits it for review
+  // (submit_write_draft) WITHOUT posting; the user approves (→ commit turn posts it)
+  // or proposes changes (→ redraft turn). The external
   // write is hard-blocked by the hook until gateApproved (see writeGateHeldForSession),
   // so nothing posts before the user's OK — independent of the skill's behaviour.
   // ─────────────────────────────────────────────────────────
@@ -1271,50 +1177,6 @@ export class WorkEngine {
     return !!this.ctx.actionRegistry?.getAction(s.action)?.frontmatter.outpost.human_gate;
   }
 
-  // code.spec finished a spec round. Store the spec and pause on the user gate —
-  // do NOT dispatch; approveSpec/rejectSpec drive the next round.
-  onSpecReady(jobId: string, stepId: string, spec: string): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({
-      ...s, spec, state: 'spec_pending_review', updatedAt: this.ctx.now(),
-    }));
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'session', stepId, body: 'spec ready for review',
-    }));
-  }
-
-  // code.plan finished. Store the plan and advance to implement (no gate). We do NOT
-  // dispatch code.implement here: this call runs inside the submit_impl_plan MCP handler
-  // while code.plan's turn is still open (between the tool call and its Stop). Sending
-  // /code.implement now would race the ending plan turn (and briefly rebind the session's
-  // allowlist to code.implement while code.plan is still executing). Instead the dispatch
-  // fires from the Stop hook (onSessionTurnEnded) once the shared session is idle — the
-  // same resume-when-idle invariant every other round transition already relies on.
-  onImplPlanReady(jobId: string, stepId: string, plan: string): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({
-      ...s, implPlan: plan, state: 'implementing', updatedAt: this.ctx.now(),
-    }));
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'session', stepId, body: 'implementation plan ready',
-    }));
-  }
-
-  // Called from the Stop hook when a spawned step session ends its turn. Handles the one
-  // round hand-off with no user gate: code.plan submits (onImplPlanReady flips the step to
-  // 'implementing') and ends its turn; now that the shared session is idle we dispatch the
-  // implement round. Guarded on the bound action still being code.plan so it fires exactly
-  // once — after code.implement is dispatched the binding is code.implement, and every
-  // other turn-end (spec gate, implement awaiting PR, triage) fails these conditions.
-  onSessionTurnEnded(sessionId: string): void {
-    const role = this.roleBySession.get(sessionId);
-    if (!role || role.role !== 'step') return;
-    const j = this.opts.queue.get(role.jobId);
-    const s = j?.steps.find((x) => x.id === role.stepId);
-    if (!s || s.type !== 'open-pr' || s.cancelled || s.failure) return;
-    if (s.state === 'implementing' && this.actionForSession(sessionId) === 'code.plan') {
-      void this.dispatchRound(role.jobId, role.stepId);
-    }
-  }
-
   // `journal: false` for failures the action itself didn't cause — a daemon bounce or a
   // workspace that wouldn't provision say nothing about the skill, and would crowd real
   // lessons out of the bounded per-action journal.
@@ -1329,7 +1191,7 @@ export class WorkEngine {
     if (opts.journal !== false) this.journalBlocker(jobId, stepId, reason);
     this.mutateStep(jobId, stepId, (s) => {
       const next: Step = { ...s, failure: { reason, at: this.ctx.now() } };
-      // open-pr/action steps reach failure only through `.failure` — this is the sole producer
+      // action steps reach failure only through `.failure` — this is the sole producer
       // of `state: 'failed'`, and only orchestrated steps go through it. Set both so they
       // agree, rather than leaving `state` frozen at whatever it was mid-round: a step the
       // engine treats as terminal (via `.failure`) still reading 'running'/'waiting' is exactly
@@ -1373,8 +1235,18 @@ export class WorkEngine {
         steps: j.steps.map((s) => s.id === stepId && s.type === 'orchestrated' ? fn(s) : s),
       })),
       sessionWorking: (sid) => this.opts.sessionManager.isWorking(sid),
-      resumeController: (jobId, stepId, action, note) => void this.resumeControllerRound(jobId, stepId, action, note),
-      spawnDispatch: (jobId, stepId, d) => void this.spawnDispatchSession(jobId, stepId, d),
+      // Both are fire-and-forget, and only their provision() call is guarded internally. A
+      // throw anywhere else (envelope build/write, lesson augmentation, action catalog) is
+      // an unhandled rejection that would leave the step hung or the dispatch stuck
+      // `queued`, with no failure event and no global unhandledRejection handler to catch it.
+      resumeController: (jobId, stepId, action, note) => {
+        this.resumeControllerRound(jobId, stepId, action, note).catch((e) =>
+          this.onStepFailed(jobId, stepId, `controller resume failed: ${(e as Error).message ?? e}`, { journal: false }));
+      },
+      spawnDispatch: (jobId, stepId, d) => {
+        this.spawnDispatchSession(jobId, stepId, d).catch((e) =>
+          this.settleDispatch(jobId, stepId, d.id, 'failed', { failure: `dispatch spawn failed: ${(e as Error).message ?? e}` }));
+      },
       resolveStep: (jobId, stepId, output) => this.onStepResolved(jobId, stepId, { output }),
       failStep: (jobId, stepId, reason) => this.onStepFailed(jobId, stepId, reason),
       actionInfo: {
@@ -1452,7 +1324,7 @@ export class WorkEngine {
         state: 'resolved',
         // A step force-resolved after failing shouldn't still render as failed forever
         // after — stateLabel/stateTone (step-card.js) and vm/tracked.js give `.failure`
-        // priority over `state`. Matches rerunLatest's retry path and the open-pr merge path.
+        // priority over `state`. Matches rerunLatest's retry path.
         failure: undefined,
         updatedAt: this.ctx.now(),
       };
@@ -1474,7 +1346,10 @@ export class WorkEngine {
   ): Promise<void> {
     const j = this.opts.queue.get(jobId);
     const s = j?.steps.find((x) => x.id === stepId);
-    if (!j || !s || s.type !== 'orchestrated') return;
+    // A resume presupposes a session: the cold spawn is the handler's own `spawn-session`
+    // decision (see orchestratedHandler.decide), never this path.
+    if (!j || !s || s.type !== 'orchestrated' || !s.sessionId) return;
+    const sessionId = s.sessionId;
     const boundAction = action ?? s.controller;
     const envelope = {
       ...orchestratedHandler.buildEnvelope(s, j, this.ctx),
@@ -1487,11 +1362,6 @@ export class WorkEngine {
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
     augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(boundAction) ?? []);
 
-    if (!s.sessionId) {
-      await this.spawnStepSession(jobId, stepId, envelopePath);
-      return;
-    }
-    const sessionId = s.sessionId;
     // A trailing Stop from the round we're superseding must not fail this live step.
     // Recorded synchronously — a queued launch may only fire once that Stop frees the slot.
     if (this.opts.sessionManager.isWorking(sessionId)) {
@@ -1629,10 +1499,6 @@ export class WorkEngine {
       return {
         ...s, failure: undefined, sessionId: undefined, state: h.initialState,
         reviewed: undefined, updatedAt: this.ctx.now(),
-        // open-pr-only artifacts from a prior spec/plan round — clear so a
-        // retried step restarts clean instead of rendering stale spec/plan
-        // markdown or carrying old feedback into the fresh spec envelope.
-        spec: undefined, implPlan: undefined, specFeedback: undefined,
       } as Step;
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore
@@ -1688,39 +1554,6 @@ export class WorkEngine {
     return true;
   }
 
-  onMergeApproved(jobId: string, stepId: string): void {
-    this.mutateStep(jobId, stepId, (s) => s.type === 'open-pr'
-      ? this.appendStepEvent({ ...s, state: 'merged', prState: 'merged', failure: undefined, updatedAt: this.ctx.now() } as OpenPrStep, 'merged', 'user')
-      : s);
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'step_merged', who: 'user', stepId, body: this.stepLabel(jobId, stepId),
-    }));
-    void this.archiveStepResources(jobId, stepId);
-    void this.tickOne(jobId);
-  }
-
-  onExternalEvent(jobId: string, stepId: string, ev: ExternalEvent): void {
-    const before = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
-    this.mutateStep(jobId, stepId, (s) => {
-      const h = handlerFor(s);
-      return h.onExternalEvent ? (h.onExternalEvent(s, ev) as Step) : s;
-    });
-    const after = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
-    // Emit a step_merged event when the watcher transitions an open-pr step into merged.
-    if (before && after && before.state !== 'merged' && after.state === 'merged') {
-      this.mutateStep(jobId, stepId, (s) => this.appendStepEvent(s, 'merged', 'pr-watcher'));
-      this.mutate(jobId, (j) => this.appendEvent(j, {
-        kind: 'step_merged', who: 'pr-watcher', stepId, body: this.stepLabel(jobId, stepId),
-      }));
-      void this.archiveStepResources(jobId, stepId);
-    }
-    const j = this.opts.queue.get(jobId);
-    if (j) {
-      this.mutate(jobId, (jj) => ({ ...jj, linearStatusDirty: true }));
-    }
-    void this.tickOne(jobId);
-  }
-
   addStepManually(jobId: string, proposed: ProposedStep, opts?: { afterStepId?: string }): Step | undefined {
     const j = this.opts.queue.get(jobId);
     if (!j) return undefined;
@@ -1747,7 +1580,7 @@ export class WorkEngine {
     const step = j.steps.find((s) => s.id === stepId);
     if (!step) return false;
     if (step.sessionId) return false;
-    if (step.state === 'resolved' || step.state === 'merged') return false;
+    if (step.state === 'resolved') return false;
     if (step.cancelled) return true;
     this.mutate(jobId, (jj) => this.appendEvent(
       { ...jj, steps: jj.steps.map((s) => s.id === stepId ? { ...s, cancelled: true } : s) },
@@ -1769,7 +1602,7 @@ export class WorkEngine {
     const newOrder = ids.map((id) => byId.get(id)!);
     for (let i = 0; i < newOrder.length; i++) {
       const s = newOrder[i]!;
-      const locked = s.sessionId || s.state === 'resolved' || s.state === 'merged';
+      const locked = s.sessionId || s.state === 'resolved';
       if (locked && j.steps[i]?.id !== s.id) return false;
     }
     this.mutate(jobId, (jj) => this.appendEvent(
@@ -1789,7 +1622,7 @@ export class WorkEngine {
     const step = j.steps.find((s) => s.id === stepId);
     if (!step) return false;
     if (step.sessionId) return false;
-    if (step.state === 'resolved' || step.state === 'merged') return false;
+    if (step.state === 'resolved') return false;
     if (step.cancelled) return false;
 
     // A step that failed because its ref couldn't provision is only repairable through this
@@ -1806,16 +1639,9 @@ export class WorkEngine {
     if (patch.workspace !== undefined) {
       const err = workspaceError(patch.workspace);
       if (err) throw new Error(err);
-      if (step.type === 'open-pr' && patch.workspace.kind !== 'writable') {
-        throw new Error('open-pr step requires writable workspace');
-      }
       fields.workspace = patch.workspace as Step['workspace'];
     }
-    if (step.type === 'open-pr') {
-      if (patch.goal !== undefined) (fields as Partial<OpenPrStep>).goal = patch.goal;
-      if (patch.approach !== undefined) (fields as Partial<OpenPrStep>).approach = patch.approach;
-      if (patch.risks !== undefined) (fields as Partial<OpenPrStep>).risks = patch.risks;
-    } else if (step.type === 'action') {
+    if (step.type === 'action') {
       if (patch.action !== undefined) {
         if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(patch.action)) {
           throw new Error(`unknown action ${JSON.stringify(patch.action)} — not in registry`);
@@ -1838,694 +1664,12 @@ export class WorkEngine {
     return true;
   }
 
-  // High-level reply/merge ops — ported from the old orchestrator. Per open-pr step.
-  rejectReplies(jobId: string, stepId: string, feedback: string): void {
-    this.resolveIteration(jobId, stepId, 'replies', 'rejected', feedback);
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({
-      ...s, state: 'comment_pending_response', updatedAt: this.ctx.now(),
-    }));
-    this.mutate(jobId, (j) => this.appendEvent(j, { kind: 'state_changed', who: 'user', stepId, body: feedback }));
-  }
-
-  approveReplies(jobId: string, stepId: string): void {
-    const j = this.opts.queue.get(jobId);
-    const s = j?.steps.find((x) => x.id === stepId);
-    if (!s || s.type !== 'open-pr' || !s.sessionId) return;
-    this.resolveIteration(jobId, stepId, 'replies', 'approved');
-    this.opts.sessionManager.send(s.sessionId, {
-      type: 'user',
-      message: { role: 'user', content: 'Replies approved — post each reply with `gh pr comment` and push any fix diff.' },
-    });
-  }
-
-  approveSpec(jobId: string, stepId: string): void {
-    let ok = false;
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      if (s.state !== 'spec_pending_review') return s;
-      ok = true;
-      return { ...s, state: 'planning', updatedAt: this.ctx.now() };
-    });
-    if (!ok) return;
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'user', stepId, body: 'spec approved',
-    }));
-    void this.dispatchRound(jobId, stepId);
-  }
-
-  rejectSpec(jobId: string, stepId: string, feedback: string): void {
-    let ok = false;
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      if (s.state !== 'spec_pending_review') return s;
-      ok = true;
-      return { ...s, state: 'speccing', specFeedback: [...(s.specFeedback ?? []), feedback], updatedAt: this.ctx.now() };
-    });
-    if (!ok) return;
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'user', stepId, body: feedback,
-    }));
-    void this.dispatchRound(jobId, stepId);
-  }
-
-  mergePr(jobId: string, stepId: string): void {
-    const j = this.opts.queue.get(jobId);
-    const s = j?.steps.find((x) => x.id === stepId);
-    if (!s || s.type !== 'open-pr' || !s.prUrl || s.prState === 'merged') return;
-    // Merge only — NOT `--delete-branch`. gh's branch deletion also removes the
-    // *local* branch, which fails ("cannot delete branch … used by worktree")
-    // because this step's branch is still checked out in its worktree. That made
-    // gh exit non-zero even though the PR merged on GitHub, so this catch swallowed
-    // it and the step never advanced past the merge gate — the PWA showed no change
-    // until the pr-watcher reconciled the merge minutes later. Branch cleanup is
-    // best-effort and decoupled: the local branch is reaped by the worktree teardown
-    // (applyOpenPrPatch → archiveStepResources → tearDown's `branch -D`), and the remote
-    // branch is deleted below without gating the state transition.
-    try {
-      execFileSync('gh', ['pr', 'merge', s.prUrl, '--squash'], { cwd: s.workspace.repoCwd, stdio: 'pipe' });
-    } catch (e) {
-      console.error(`[orchestrator] merge failed ${jobId}/${stepId}:`, (e as Error).message);
-      return;
-    }
-    this.applyOpenPrPatch(jobId, stepId, { state: 'merged', prState: 'merged' }, 'user');
-    try {
-      execFileSync('git', ['-C', s.workspace.repoCwd, 'push', 'origin', '--delete', '--', s.workspace.branch], { stdio: 'pipe' });
-    } catch (e) {
-      // Remote branch may already be gone (GitHub "auto-delete head branches") — best-effort.
-      console.error(`[orchestrator] remote branch delete failed ${jobId}/${stepId}:`, (e as Error).message);
-    }
-  }
-
-  // Resolve-reply-comment unified dispatcher (approve/ignore/reject for a single drafted reply).
-  resolveReplyComment(jobId: string, stepId: string, commentId: string, action: 'approve' | 'ignore' | 'reject', feedback?: string, body?: string): void {
-    const j = this.opts.queue.get(jobId);
-    const s = j?.steps.find((x) => x.id === stepId);
-    if (!s || s.type !== 'open-pr') return;
-    if (action === 'reject') {
-      this.rejectReplies(jobId, stepId, feedback ?? 'rejected');
-      return;
-    }
-    const draft = (s.draftedReplies ?? []).find((d) => d.commentId === commentId);
-    if (action === 'approve' && draft && s.sessionId) {
-      const text = body ?? draft.draftReply;
-      try {
-        execFileSync('gh', ['pr', 'comment', s.prUrl ?? '', '--body', text], { cwd: s.workspace.repoCwd, stdio: 'pipe' });
-      } catch (e) {
-        console.error(`[orchestrator] gh comment failed ${jobId}/${stepId}/${commentId}:`, (e as Error).message);
-      }
-    }
-    this.markCommentResponded(jobId, stepId, commentId);
-    const remaining = this.dropDraftedReply(jobId, stepId, commentId);
-    if (remaining === 0) {
-      this.resolveIteration(jobId, stepId, 'replies', 'approved');
-    }
-  }
-
-  // Re-draft one comment's reply: drop the current draft (user-edited included —
-  // regenerate is an explicit request to start over) and reopen the comment so
-  // the normal triage round picks it up as undrafted on the next tick.
-  regenerateReply(jobId: string, stepId: string, commentId: string): boolean {
-    const j = this.opts.queue.get(jobId);
-    const s = j?.steps.find((x) => x.id === stepId);
-    if (!s || s.type !== 'open-pr' || s.state === 'merged' || s.prState === 'merged') return false;
-    const comment = (s.comments ?? []).find((c) => c.id === commentId);
-    if (!comment) return false;
-    this.dropDraftedReply(jobId, stepId, commentId);
-    if (comment.respondedAt) this.markCommentReopened(jobId, stepId, commentId);
-    if (s.state !== 'comment_pending_response' && s.state !== 'reply_pending_review') {
-      this.mutateOpenPrStep(jobId, stepId, (st) => ({
-        ...st, state: 'comment_pending_response', updatedAt: this.ctx.now(),
-      }));
-    }
-    void this.tickOne(jobId);
-    return true;
-  }
-
-  reactToComment(jobId: string, stepId: string, commentId: string, content: string): void {
-    this.addUserReaction(jobId, stepId, commentId, content);
-  }
-
-  enqueueEdit(jobId: string, stepId: string, commentId: string, userNote?: string): void {
-    this.enqueueEditJob(jobId, stepId, commentId, userNote);
-  }
-
-  // Git-view "Send review" routing. Called by the /git/review HTTP handler.
-  // If the session belongs to an open-pr step whose last edit round finished
-  // (status 'done'/'failed') with no follow-up already queued, we treat the
-  // submitted review as "this last edit isn't quite right" and enqueue a fresh
-  // fix session for the same PR comment — reusing the existing editQueue
-  // machinery so the user's expected "edit → review → edit again" loop closes.
-  // Every other case (no editJob context, an edit still running, non-PR steps)
-  // falls back to `chat` so the caller can send the text as a plain session
-  // message and preserve pre-existing behavior.
-  handleGitReview(sessionId: string, text: string): { handled: 'requeued' | 'chat'; editJobId?: string } {
-    const role = this.roleBySession.get(sessionId);
-    if (!role || role.role !== 'step') return { handled: 'chat' };
-    const j = this.opts.queue.get(role.jobId);
-    const step = j?.steps.find((s) => s.id === role.stepId);
-    if (!step || step.type !== 'open-pr') return { handled: 'chat' };
-    if (step.state === 'merged' || step.prState === 'merged') return { handled: 'chat' };
-    const queue = step.editQueue ?? [];
-    const last = queue[queue.length - 1];
-    if (!last || (last.status !== 'done' && last.status !== 'failed')) {
-      return { handled: 'chat' };
-    }
-    const job = this.enqueueEditJob(role.jobId, role.stepId, last.commentId, text);
-    if (!job) return { handled: 'chat' };
-    return { handled: 'requeued', editJobId: job.id };
-  }
-
-  // Looks up which open-pr step (if any) a spawned session belongs to. Returns
-  // undefined for orchestrator sessions, unknown sessions, or step sessions whose
-  // step is not `open-pr`.
-  openPrStepForSession(sessionId: string): { jobId: string; stepId: string } | undefined {
-    const role = this.roleBySession.get(sessionId);
-    if (!role || role.role !== 'step') return undefined;
-    const j = this.opts.queue.get(role.jobId);
-    const step = j?.steps.find((s) => s.id === role.stepId);
-    if (!step || step.type !== 'open-pr') return undefined;
-    return { jobId: role.jobId, stepId: role.stepId };
-  }
-
-  // Called after a successful git push targeting an open-pr step's worktree.
-  // Any drafted reply whose recommendation is `edit` and whose corresponding
-  // edit-job has completed is considered addressed by the push — the fix landed
-  // on the remote branch, so the comment gets marked responded and its draft
-  // dropped. Idempotent: a re-push with nothing new to resolve is a no-op.
-  resolveCompletedEditDrafts(jobId: string, stepId: string): number {
-    const j = this.opts.queue.get(jobId);
-    const step = j?.steps.find((s) => s.id === stepId);
-    if (!step || step.type !== 'open-pr') return 0;
-    const done = new Set((step.editQueue ?? [])
-      .filter((e) => e.status === 'done')
-      .map((e) => e.commentId));
-    const targets = (step.draftedReplies ?? [])
-      .filter((d) => d.recommendation === 'edit' && done.has(d.commentId))
-      .map((d) => d.commentId);
-    for (const commentId of targets) {
-      this.markCommentResponded(jobId, stepId, commentId);
-      this.dropDraftedReply(jobId, stepId, commentId);
-    }
-    return targets.length;
-  }
-
   markStatusCommentClean(jobId: string): void {
     this.mutate(jobId, (j) => ({ ...j, linearStatusDirty: false }));
   }
 
   setOrchestratorSessionId(jobId: string, sessionId: string): void {
     this.mutate(jobId, (j) => j.orchestratorSessionId === sessionId ? j : { ...j, orchestratorSessionId: sessionId });
-  }
-
-  // ─────────────────────────────────────────────────────────
-  // Open-PR step ops (iterations, drafted replies, edit-jobs,
-  // comments, review comments). Called by hook server, PWA, and
-  // pr-watcher. Each operates on a specific open-pr step.
-  // ─────────────────────────────────────────────────────────
-
-  markCommentResponded(jobId: string, stepId: string, commentId: string, at: number = this.ctx.now()): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const comments = (s.comments ?? []).map((c) => c.id === commentId ? { ...c, respondedAt: at } : c);
-      return { ...s, comments, updatedAt: at };
-    });
-  }
-
-  // Upsert drafts by commentId. User-edited drafts are never clobbered, so a
-  // top-up triage that fires while the user is reviewing prior drafts can only
-  // add — not overwrite what the user is actively editing.
-  mergeDraftedReplies(
-    jobId: string,
-    stepId: string,
-    drafts: DraftedReply[],
-    threadHash?: string,
-  ): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const byId = new Map((s.draftedReplies ?? []).map((d) => [d.commentId, d] as const));
-      for (const d of drafts) {
-        const prior = byId.get(d.commentId);
-        if (prior?.userEdited) continue;
-        byId.set(d.commentId, d);
-      }
-      return {
-        ...s,
-        state: 'reply_pending_review',
-        draftedReplies: [...byId.values()],
-        ...(threadHash ? { threadHash } : {}),
-        updatedAt: this.ctx.now(),
-      };
-    });
-  }
-
-  dropDraftedReply(jobId: string, stepId: string, commentId: string): number {
-    let count = 0;
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const draftedReplies = (s.draftedReplies ?? []).filter((d) => d.commentId !== commentId);
-      count = draftedReplies.length;
-      return { ...s, draftedReplies, updatedAt: this.ctx.now() };
-    });
-    return count;
-  }
-
-  dropOrphanIterations(jobId: string, stepId: string, kind: 'replies' = 'replies'): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const iterations = (s.iterations ?? []).filter((i) => !(i.kind === kind && i.status === 'in_progress' && !i.postedAt));
-      return { ...s, iterations, updatedAt: this.ctx.now() };
-    });
-  }
-
-  startIteration(jobId: string, stepId: string, kind: 'replies' = 'replies'): IterationRecord | undefined {
-    let iter: IterationRecord | undefined;
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      iter = { id: this.ctx.newId(), kind, status: 'in_progress', startedAt: this.ctx.now() };
-      const iterations = [...(s.iterations ?? []), iter];
-      return { ...s, iterations, updatedAt: this.ctx.now() };
-    });
-    return iter;
-  }
-
-  markIterationPosted(jobId: string, stepId: string, kind: 'replies' = 'replies'): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const iterations = (s.iterations ?? []).slice();
-      for (let i = iterations.length - 1; i >= 0; i--) {
-        const it = iterations[i]!;
-        if (it.kind === kind && it.status === 'in_progress' && !it.postedAt) {
-          iterations[i] = { ...it, postedAt: this.ctx.now() };
-          break;
-        }
-      }
-      return { ...s, iterations, updatedAt: this.ctx.now() };
-    });
-  }
-
-  resolveIteration(jobId: string, stepId: string, kind: 'replies' = 'replies', status: 'approved' | 'rejected', feedback?: string): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const iterations = (s.iterations ?? []).slice();
-      for (let i = iterations.length - 1; i >= 0; i--) {
-        const it = iterations[i]!;
-        if (it.kind === kind && it.status === 'in_progress') {
-          iterations[i] = { ...it, status, resolvedAt: this.ctx.now(), ...(feedback ? { feedback } : {}) };
-          break;
-        }
-      }
-      return { ...s, iterations, updatedAt: this.ctx.now() };
-    });
-  }
-
-  enqueueEditJob(jobId: string, stepId: string, commentId: string, userNote?: string): EditJob | undefined {
-    let job: EditJob | undefined;
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      job = { id: this.ctx.newId(), commentId, status: 'queued', ...(userNote ? { userNote } : {}) };
-      const editQueue = [...(s.editQueue ?? []), job];
-      return { ...s, editQueue, updatedAt: this.ctx.now() };
-    });
-    void this.tickOne(jobId);
-    return job;
-  }
-
-  markEditRunning(jobId: string, stepId: string, editId: string, sessionId: string): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const editQueue = (s.editQueue ?? []).map((e) => e.id === editId
-        ? { ...e, status: 'running' as const, startedAt: this.ctx.now(), sessionId }
-        : e);
-      return { ...s, editQueue, updatedAt: this.ctx.now() };
-    });
-  }
-
-  markEditDone(jobId: string, stepId: string, editId: string, result: { status: 'done' | 'failed'; failure?: string }): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const editQueue = (s.editQueue ?? []).map((e) => e.id === editId
-        ? { ...e, status: result.status, finishedAt: this.ctx.now(), ...(result.failure ? { failure: result.failure } : {}) }
-        : e);
-      return { ...s, editQueue, updatedAt: this.ctx.now() };
-    });
-  }
-
-  async resolveConflicts(jobId: string, stepId: string, opts?: { base?: string; push?: boolean; postAction?: 'squash-to-base' }): Promise<void> {
-    const job = this.opts.queue.get(jobId);
-    const step = job?.steps.find((x) => x.id === stepId);
-    if (!job || !step || step.type !== 'open-pr') return;
-    if (step.state !== 'conflicting' || step.conflictResolving) return;
-
-    const ws = await this.opts.worktreeManager.provision(step.id, step.workspace);
-    const envelope = {
-      kind: 'step',
-      jobId: job.id,
-      stepId: step.id,
-      type: 'open-pr',
-      title: step.title,
-      description: step.description,
-      goal: step.goal,
-      approach: step.approach,
-      risks: step.risks,
-      job: { source: job.source, title: job.title, description: job.description, externalRef: job.externalRef },
-      previousSteps: job.steps
-        .filter((st) => st.id !== step.id && st.type === 'action' && st.forwardOutput !== false && st.output)
-        .map((st) => ({ id: st.id, title: st.title, action: (st as { action?: string }).action, output: (st as { output?: string }).output })),
-      workspace: step.workspace,
-      typePayload: {
-        branch: step.workspace.branch,
-        round: opts
-          ? { kind: 'conflict', ...(opts.base ? { base: opts.base } : {}), ...(opts.push !== undefined ? { push: opts.push } : {}), ...(opts.postAction ? { postAction: opts.postAction } : {}) }
-          : { kind: 'conflict' },
-      },
-    };
-    const envelopePath = writeEnvelope(this.ctx.jobsDir, job.id, step.id, envelope);
-    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent('code.resolve-conflicts') ?? []);
-
-    const sessionId = step.sessionId ?? this.ctx.newId();
-    const cwd = ws.path ?? this.orchestratorCwd();
-    // code.resolve-conflicts is reactive → immediate: run fires synchronously. The top-of-method
-    // `state !== 'conflicting' || conflictResolving` check is the double-spawn guard; the flag
-    // itself is claimed in run alongside the send.
-    this.submitLaunch({
-      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: 'code.resolve-conflicts', label: 'conflict',
-      run: () => {
-        this.mutateOpenPrStep(jobId, stepId, (s) => ({ ...s, conflictResolving: true, sessionId, conflictPostAction: opts?.postAction, updatedAt: this.ctx.now() }));
-        this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
-        this.bindAction(sessionId, 'code.resolve-conflicts');
-        this.mutate(jobId, (j) => this.appendEvent(j, {
-          kind: 'step_started',
-          who: 'orchestrator',
-          stepId,
-          body: `${this.stepLabel(jobId, stepId)} — resolving merge conflicts`,
-        }));
-        this.opts.sessionManager.sendOrResume(
-          sessionId,
-          cwd,
-          { type: 'user', message: { role: 'user', content: '/code.resolve-conflicts' } },
-          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
-        );
-        return true;
-      },
-    });
-  }
-
-  async fixCi(jobId: string, stepId: string): Promise<void> {
-    const job = this.opts.queue.get(jobId);
-    const step = job?.steps.find((x) => x.id === stepId);
-    if (!job || !step || step.type !== 'open-pr') return;
-    if (!shouldAutoFixCi(step)) return;
-
-    // Claim the round synchronously before any await. fixCi runs on the autonomous
-    // tick loop with no per-job mutex, so a second tick during `provision` would
-    // otherwise re-enter decide() with ciFixing still false and double-spawn.
-    const sessionId = step.sessionId ?? this.ctx.newId();
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({
-      ...s,
-      ciFixing: true,
-      ciFixAttempts: (s.ciFixAttempts ?? 0) + 1,
-      ciFixLastSignature: ciFailureSignature(s.ciChecks),
-      ciFixGaveUp: false,
-      sessionId,
-      updatedAt: this.ctx.now(),
-    }));
-
-    let ws;
-    try {
-      ws = await this.opts.worktreeManager.provision(step.id, step.workspace);
-    } catch (e) {
-      // Provision failed after we claimed the round — restore the pre-claim values
-      // so a later tick can retry instead of the step wedging on ciFixing.
-      this.mutateOpenPrStep(jobId, stepId, (s) => ({
-        ...s,
-        ciFixing: false,
-        ciFixAttempts: step.ciFixAttempts,
-        ciFixLastSignature: step.ciFixLastSignature,
-        ciFixGaveUp: step.ciFixGaveUp,
-        updatedAt: this.ctx.now(),
-      }));
-      throw e;
-    }
-    const checks = (step.ciChecks ?? [])
-      .filter((c) => c.state === 'failure')
-      .map((c) => ({ name: c.name, url: c.url }));
-    const envelope = {
-      kind: 'step',
-      jobId: job.id,
-      stepId: step.id,
-      type: 'open-pr',
-      title: step.title,
-      description: step.description,
-      goal: step.goal,
-      approach: step.approach,
-      risks: step.risks,
-      spec: step.spec,
-      implPlan: step.implPlan,
-      job: { source: job.source, title: job.title, description: job.description, externalRef: job.externalRef },
-      previousSteps: job.steps
-        .filter((st) => st.id !== step.id && st.type === 'action' && st.forwardOutput !== false && st.output)
-        .map((st) => ({ id: st.id, title: st.title, action: (st as { action?: string }).action, output: (st as { output?: string }).output })),
-      workspace: step.workspace,
-      typePayload: { branch: step.workspace.branch, round: { kind: 'ci-fix', checks } },
-    };
-    const envelopePath = writeEnvelope(this.ctx.jobsDir, job.id, step.id, envelope);
-    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent('code.fix-ci') ?? []);
-
-    const cwd = ws.path ?? this.orchestratorCwd();
-    // code.fix-ci is reactive → immediate: `run` fires synchronously here. The ciFixing
-    // claim stays above (before the provision await) so the synchronous double-spawn guard
-    // is unchanged; only the session send moves into run.
-    this.submitLaunch({
-      key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: 'code.fix-ci', label: 'ci-fix',
-      run: () => {
-        this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
-        this.bindAction(sessionId, 'code.fix-ci');
-        this.mutate(jobId, (j) => this.appendEvent(j, {
-          kind: 'step_started',
-          who: 'orchestrator',
-          stepId,
-          body: `${this.stepLabel(jobId, stepId)} — fixing failing CI`,
-        }));
-        this.opts.sessionManager.sendOrResume(
-          sessionId,
-          cwd,
-          { type: 'user', message: { role: 'user', content: '/code.fix-ci' } },
-          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: job.id, STEP_ID: step.id, STEP_TYPE: 'open-pr' },
-        );
-        return true;
-      },
-    });
-  }
-
-  // Squash the step's branch onto its base branch locally (no push), then complete
-  // the step as if the PR had merged (applyOpenPrPatch → merged → worktree archived).
-  // On conflict, hand off to the resolve-conflicts round (merge base into the branch,
-  // no push) and re-run this once it reports resolved.
-  async squashMergeToBase(jobId: string, stepId: string): Promise<'merged' | 'resolving-conflicts' | 'error'> {
-    const job = this.opts.queue.get(jobId);
-    const step = job?.steps.find((x) => x.id === stepId);
-    if (!job || !step || step.type !== 'open-pr') return 'error';
-
-    await this.opts.worktreeManager.provision(step.id, step.workspace);
-    const rec = this.opts.worktreeManager.get(step.id);
-    if (!rec?.projectCwd || !rec.branch || !rec.worktreePath) return 'error';
-    const baseBranch = rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
-
-    const result = await gitSquashMergeToBase({
-      parentCwd: rec.projectCwd,
-      worktreePath: rec.worktreePath,
-      worktreeBranch: rec.branch,
-      baseBranch,
-      message: job.title || step.title,
-    });
-
-    if (result.ok) {
-      this.applyOpenPrPatch(jobId, stepId, { state: 'merged' }, 'user');
-      return 'merged';
-    }
-    if (result.reason === 'conflict') {
-      this.mutateOpenPrStep(jobId, stepId, (s) => ({ ...s, state: 'conflicting', mergeable: 'conflicting', updatedAt: this.ctx.now() }));
-      await this.resolveConflicts(jobId, stepId, { base: baseBranch, push: false, postAction: 'squash-to-base' });
-      return 'resolving-conflicts';
-    }
-    return 'error';
-  }
-
-  markConflictResolved(jobId: string, stepId: string, result: { status: 'resolved' | 'unresolvable'; failure?: string }): void {
-    const prev = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId) as OpenPrStep | undefined;
-    const owesSquash = result.status === 'resolved' && prev?.conflictPostAction === 'squash-to-base';
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({
-      ...s,
-      conflictResolving: false,
-      conflictPostAction: undefined,
-      state: result.status === 'resolved' ? 'pr_open' : 'conflict_unresolved',
-      ...(result.status === 'resolved' ? { mergeable: 'unknown' as const } : {}),
-      updatedAt: this.ctx.now(),
-    }));
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed',
-      who: 'orchestrator',
-      stepId,
-      body: result.status === 'resolved'
-        ? `${this.stepLabel(jobId, stepId)} — conflicts resolved`
-        : `${this.stepLabel(jobId, stepId)} — could not auto-resolve conflicts: ${result.failure ?? 'unknown'}`,
-    }));
-    if (owesSquash) {
-      void this.squashMergeToBase(jobId, stepId).then((outcome) => {
-        if (outcome === 'error') {
-          this.mutate(jobId, (j) => this.appendEvent(j, {
-            kind: 'state_changed', who: 'orchestrator', stepId,
-            body: `${this.stepLabel(jobId, stepId)} — squash-to-base retry failed; retry from the git view`,
-          }));
-        }
-      }).catch((e) => console.error(`[work] squash retry ${stepId.slice(0, 8)}: ${(e as Error).message}`));
-    }
-  }
-
-  markCiFixed(jobId: string, stepId: string, result: { status: 'fixed' | 'unfixable'; failure?: string }): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({
-      ...s,
-      ciFixing: false,
-      // 'fixed' pushed a commit — the watcher will re-run CI. 'unfixable' left it
-      // red, so flag give-up to stop decide() re-emitting an exhausted note.
-      ...(result.status === 'unfixable' ? { ciFixGaveUp: true } : {}),
-      updatedAt: this.ctx.now(),
-    }));
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed',
-      who: 'orchestrator',
-      stepId,
-      body: result.status === 'fixed'
-        ? `${this.stepLabel(jobId, stepId)} — CI fix pushed`
-        : `${this.stepLabel(jobId, stepId)} — CI auto-fix could not fix it: ${result.failure ?? 'unknown'}`,
-    }));
-  }
-
-  markCiFixExhausted(jobId: string, stepId: string): void {
-    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId) as OpenPrStep | undefined;
-    if (!step || step.type !== 'open-pr' || step.ciFixGaveUp) return;
-    this.mutateOpenPrStep(jobId, stepId, (s) => ({ ...s, ciFixGaveUp: true, updatedAt: this.ctx.now() }));
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed',
-      who: 'orchestrator',
-      stepId,
-      body: `${this.stepLabel(jobId, stepId)} — CI still failing; auto-fix stopped (needs a human)`,
-    }));
-  }
-
-  addUserReaction(jobId: string, stepId: string, commentId: string, content: string): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const comments = (s.comments ?? []).map((c) => {
-        if (c.id !== commentId) return c;
-        const userReactions = c.userReactions ?? [];
-        return userReactions.includes(content) ? c : { ...c, userReactions: [...userReactions, content] };
-      });
-      return { ...s, comments, updatedAt: this.ctx.now() };
-    });
-  }
-
-  markCommentReopened(jobId: string, stepId: string, commentId: string, at: number = this.ctx.now()): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const comments = (s.comments ?? []).map((c) => c.id === commentId
-        ? { ...c, respondedAt: undefined, reopenedAt: at }
-        : c);
-      return { ...s, comments, updatedAt: at };
-    });
-  }
-
-  setDraftUserEdited(jobId: string, stepId: string, commentId: string, edited: boolean): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const draftedReplies = (s.draftedReplies ?? []).map((d) => {
-        if (d.commentId !== commentId) return d;
-        if (edited) return { ...d, userEdited: true } satisfies DraftedReply;
-        const { userEdited: _, ...rest } = d;
-        return rest as DraftedReply;
-      });
-      return { ...s, draftedReplies, updatedAt: this.ctx.now() };
-    });
-  }
-
-  addReviewComment(jobId: string, stepId: string, partial: {
-    kind: 'replies';
-    author: 'user' | 'claude';
-    body: string;
-    file?: string;
-    line?: number;
-    iterationId?: string;
-  }): ReviewComment | undefined {
-    let added: ReviewComment | undefined;
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      let iterationId = partial.iterationId;
-      if (!iterationId) {
-        const current = (s.iterations ?? []).filter((i) => i.kind === partial.kind && i.status === 'in_progress').at(-1);
-        const fallback = (s.iterations ?? []).filter((i) => i.kind === partial.kind).at(-1);
-        iterationId = current?.id ?? fallback?.id;
-      }
-      if (!iterationId) return s;
-      added = {
-        id: this.ctx.newId(),
-        iterationId,
-        kind: partial.kind,
-        author: partial.author,
-        body: partial.body,
-        createdAt: this.ctx.now(),
-        ...(partial.file ? { file: partial.file } : {}),
-        ...(partial.line !== undefined ? { line: partial.line } : {}),
-      };
-      const reviewComments = [...(s.reviewComments ?? []), added];
-      return { ...s, reviewComments, updatedAt: this.ctx.now() };
-    });
-    return added;
-  }
-
-  resolveReviewComment(jobId: string, stepId: string, commentId: string): void {
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const reviewComments = (s.reviewComments ?? []).map((c) => c.id === commentId
-        ? { ...c, resolvedAt: this.ctx.now() }
-        : c);
-      return { ...s, reviewComments, updatedAt: this.ctx.now() };
-    });
-  }
-
-  currentIteration(s: OpenPrStep, kind: 'replies' = 'replies'): IterationRecord | undefined {
-    const arr = s.iterations ?? [];
-    for (let i = arr.length - 1; i >= 0; i--) {
-      const it = arr[i]!;
-      if (it.kind === kind && it.status === 'in_progress') return it;
-    }
-    return undefined;
-  }
-
-  // Bulk update — pr-watcher uses this when it diffs the live PR state and wants
-  // to push multiple field updates atomically per tick. This is the single choke
-  // point every out-of-band observer (pr-watcher poll, git-route push/merge) goes
-  // through, so it also drives the plan forward: a patch that resolves the open-pr
-  // step (→merged) unblocks the next step, and a patch that flips it to
-  // comment_pending_response opens a triage round — without waiting on the next
-  // hourly sweep or a PWA nudge. `who` attributes the merge event to whoever
-  // observed it (default the watcher; the PWA merge button passes 'user').
-  applyOpenPrPatch(jobId: string, stepId: string, patch: Partial<OpenPrStep>, who: JobEvent['who'] = 'pr-watcher'): void {
-    const before = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
-    this.mutateOpenPrStep(jobId, stepId, (s) => {
-      const next = { ...s, ...patch, updatedAt: this.ctx.now() };
-      // A merged step, or one with a live open PR, is proof the implement round
-      // succeeded: the edits merged or produced a real, reviewable diff. Drop any stale
-      // step failure, namely the spurious "interrupted by daemon restart"
-      // reconcileInterruptedSteps stamps on a step caught mid-`implementing` by a daemon
-      // bounce. Once the user opens the PR from those worktree edits the step advances to
-      // pr_open / comment_pending_response, but the failure survives — and left in place
-      // it permanently halts the whole job (decideJobTransitions), which also strands the
-      // parallel-group siblings and the comment-triage round, even though the work landed.
-      // Clearing only on `merged` missed that pre-merge recovery window; clearing on
-      // `merged` too still covers squash-to-base, which merges with no PR. (The other
-      // step-level failures — spec/plan interrupt, provision failure — happen before any
-      // PR exists, so a live PR never masks a real one.)
-      if (next.failure && (next.state === 'merged' || (next.prUrl && next.prState !== 'closed'))) {
-        next.failure = undefined;
-      }
-      return next;
-    });
-    const after = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
-    if (before && after && before.state !== 'merged' && after.state === 'merged') {
-      this.mutate(jobId, (j) => this.appendEvent(j, {
-        kind: 'step_merged', who, stepId, body: this.stepLabel(jobId, stepId),
-      }));
-      // A merged step no longer needs its implementor session or worktree. This is
-      // the shared choke point (pr-watcher, mergePr, squash-to-base) so all of them
-      // reap here rather than waiting on whole-job teardown.
-      void this.archiveStepResources(jobId, stepId).catch((e) =>
-        console.error(`[work] archive merged ${stepId.slice(0, 8)}: ${(e as Error).message}`));
-    }
-    if (after) this.mutate(jobId, (jj) => ({ ...jj, linearStatusDirty: true }));
-    void this.tickOne(jobId);
   }
 
   // The watcher's only write. Facts about the PR — never control state: what they mean is
@@ -2675,84 +1819,6 @@ export class WorkEngine {
     });
   }
 
-  private async spawnEditFixSession(job: JobRecord, step: OpenPrStep, editId: string): Promise<void> {
-    const editJob = (step.editQueue ?? []).find((e) => e.id === editId);
-    if (!editJob) return;
-    const comment = (step.comments ?? []).find((c) => c.id === editJob.commentId);
-    if (!comment) return;
-
-    const ws = await this.opts.worktreeManager.provision(step.id, step.workspace);
-    const envelope = {
-      kind: 'step',
-      jobId: job.id,
-      stepId: step.id,
-      type: 'open-pr',
-      title: step.title,
-      description: step.description,
-      goal: step.goal,
-      approach: step.approach,
-      risks: step.risks,
-      job: { source: job.source, title: job.title, description: job.description, externalRef: job.externalRef },
-      previousSteps: job.steps
-        .filter((st) => st.id !== step.id && st.type === 'action' && st.forwardOutput !== false && st.output)
-        .map((st) => ({ id: st.id, title: st.title, action: (st as { action?: string }).action, output: (st as { output?: string }).output })),
-      workspace: step.workspace,
-      typePayload: {
-        branch: step.workspace.branch,
-        round: { kind: 'edit', editJobId: editJob.id },
-        editJob: { id: editJob.id, comment, userNote: editJob.userNote },
-      },
-    };
-    // Stable envelope path (not a per-round file): the resumed session re-reads its
-    // original $OUTPOST_ENVELOPE, so the current round must land at that same path.
-    const envelopePath = writeEnvelope(this.ctx.jobsDir, job.id, step.id, envelope);
-    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent('code.fix-pr-comment') ?? []);
-
-    // One resumable session per step: fall back to a fresh id only if the implement
-    // round never recorded one (degrades to today's cold start rather than failing).
-    const sessionId = step.sessionId ?? this.ctx.newId();
-    const cwd = ws.path ?? this.orchestratorCwd();
-    const env = {
-      OUTPOST_ENVELOPE: envelopePath,
-      JOB_ID: job.id,
-      STEP_ID: step.id,
-      STEP_TYPE: 'open-pr',
-      EDIT_JOB_ID: editId,
-    };
-    // code.fix-pr-comment is reactive → immediate. The one-running-edit-per-step guard stays
-    // in tickOne; markEditRunning (which flips the head edit to `running`) moves into run so it
-    // fires exactly when the round actually starts.
-    this.submitLaunch({
-      key: `${job.id}#${step.id}`, jobId: job.id, stepId: step.id, sessionId, action: 'code.fix-pr-comment', label: 'edit',
-      run: () => {
-        this.markEditRunning(job.id, step.id, editId, sessionId);
-        this.roleBySession.set(sessionId, { role: 'step', jobId: job.id, stepId: step.id });
-        this.bindAction(sessionId, 'code.fix-pr-comment');
-        this.opts.sessionManager.sendOrResume(
-          sessionId,
-          cwd,
-          { type: 'user', message: { role: 'user', content: '/code.fix-pr-comment' } },
-          env,
-        );
-        return true;
-      },
-    });
-  }
-
-  // Single-shot resume of the shared open-pr session for a state that decide() does
-  // not self-dispatch (planning / implementing / spec revision). Rebuilds the envelope
-  // for the current state (so the round + spec/plan artifacts are current) and resumes.
-  // spawnStepSession's `s.sessionId` branch handles the resume; worktree provision is
-  // idempotent.
-  private async dispatchRound(jobId: string, stepId: string): Promise<void> {
-    const j = this.opts.queue.get(jobId);
-    const s = j?.steps.find((x) => x.id === stepId);
-    if (!j || !s || s.type !== 'open-pr') return;
-    const envelope = handlerFor(s).buildEnvelope(s, j, this.ctx);
-    const path = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
-    await this.spawnStepSession(jobId, stepId, path);
-  }
-
   private async spawnStepSession(jobId: string, stepId: string, envelopePath: string): Promise<void> {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
@@ -2783,51 +1849,6 @@ export class WorkEngine {
     // in past sessions — see /work/journal.
     const lessons = this.opts.journalStore?.recent(actionName) ?? [];
     augmentEnvelopeWithLessons(envelopePath, lessons);
-    // Open-pr steps own one resumable session for their whole life. The initial
-    // implement round spawns it (no sessionId yet); triage rounds resume the same
-    // conversation so the agent keeps full context (why the code looks as it does,
-    // sibling comments for "same thing here", etc.).
-    if (s.type === 'open-pr' && s.sessionId) {
-      const sessionId = s.sessionId;
-      // If the shared session is still mid-turn, its previous round's Stop hook hasn't
-      // landed yet. That trailing Stop belongs to the round we're superseding here, not
-      // to the one we're about to dispatch — record it so the Stop handler drops it
-      // rather than failing this (live) step for "ended without submitting output".
-      // Recorded SYNCHRONOUSLY (not inside run): a `queued` plan/spec resume may only fire
-      // once that trailing Stop's releaseLaunchSlot frees the slot, so the owed stop must be
-      // on the books before the Stop lands.
-      if (this.opts.sessionManager.isWorking(sessionId)) {
-        this.owedStaleStops.set(sessionId, (this.owedStaleStops.get(sessionId) ?? 0) + 1);
-      }
-      this.submitLaunch({
-        key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
-        run: () => {
-          const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
-          if (!cur || cur.type !== 'open-pr' || cur.cancelled) return false;
-          this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
-          this.bindAction(sessionId, actionName);
-          this.mutate(jobId, (j) => this.appendEvent(j, {
-            kind: 'step_started', who: 'orchestrator', stepId, body: this.stepLabel(jobId, stepId),
-          }));
-          // A triage round runs a turn on the shared session; mark it in-flight so an edit
-          // round can't overwrite the envelope mid-turn. markIterationPosted (on submit_replies),
-          // dropOrphanIterations (pr-watcher, on new comments), and resolveIteration
-          // (approve/reject) already drive it to a terminal state.
-          if (actionName === 'code.triage-pr-comments') this.startIteration(jobId, stepId, 'replies');
-          // Stable envelope path + sendOrResume: whether the proc is still alive (reads
-          // the overwritten envelope.json) or was idle-reaped (respawn picks up extraEnv),
-          // it re-reads the current round.
-          this.opts.sessionManager.sendOrResume(
-            sessionId,
-            cwd,
-            { type: 'user', message: { role: 'user', content: `/${actionName}` } },
-            { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'open-pr' },
-          );
-          return true;
-        },
-      });
-      return;
-    }
     const sessionId = this.ctx.newId();
     this.submitLaunch({
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
@@ -2882,13 +1903,6 @@ export class WorkEngine {
     return { ...s, events };
   }
 
-  private mutateOpenPrStep(jobId: string, stepId: string, fn: (s: OpenPrStep) => OpenPrStep): void {
-    this.opts.queue.mutate(jobId, (j) => {
-      const steps = j.steps.map((s) => s.id === stepId && s.type === 'open-pr' ? fn(s) : s);
-      return { ...j, steps };
-    });
-  }
-
   private appendEvent(j: JobRecord, evt: { kind: JobEventKind; who: JobEvent['who']; stepId?: string; body?: string }): JobRecord {
     const event: JobEvent = { id: this.ctx.newId(), at: this.ctx.now(), ...evt };
     appendJobEvent(this.ctx.jobsDir, j.id, event);
@@ -2903,13 +1917,6 @@ export class WorkEngine {
     const wsErr = workspaceError(p.workspace);
     if (wsErr) throw new Error(wsErr);
     switch (p.type) {
-      case 'open-pr': {
-        const ws = p.workspace;
-        if (!ws) throw new Error('open-pr step requires workspace.repoCwd + workspace.branch');
-        if (ws.kind !== 'writable') throw new Error('open-pr step requires writable workspace');
-        const { keepId: _, ...rest } = p;
-        return { ...rest, id, workspace: ws, state: initialStateForType('open-pr'), createdAt: now, updatedAt: now } as OpenPrStep;
-      }
       case 'action': {
         if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(p.action)) {
           throw new Error(`unknown action ${JSON.stringify(p.action)} — not in registry`);
@@ -2951,11 +1958,6 @@ function stepToProposed(s: Step): ProposedStep {
     keepId: s.id,
   } as Record<string, unknown>;
   switch (s.type) {
-    case 'open-pr':
-      base.goal = s.goal;
-      base.approach = s.approach;
-      base.risks = s.risks;
-      break;
     case 'action':
       base.action = s.action;
       base.goal = s.goal;
@@ -2972,5 +1974,4 @@ function stepToProposed(s: Step): ProposedStep {
 }
 
 // Re-exports for consumers (hook server, PWA server) that want the type shapes.
-export type { ExternalEvent } from '../steps/types.js';
-export type { Step, JobRecord, OpenPrStep, ProposedStep, PrComment } from './work-types.js';
+export type { Step, JobRecord, ProposedStep, PrComment } from './work-types.js';

@@ -1,6 +1,6 @@
 ---
 name: code.plan
-description: Use when invoked as `/code.plan` in a session spawned by the Outpost work orchestrator inside an open-pr step's worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.round.kind == "plan"`. Reads the envelope and the accepted spec, borrows the writing-plans methodology to decompose the change into right-sized tasks with concrete steps and file paths, self-reviews it, and submits it via `mcp__outpost__submit_impl_plan`. Read-only — no edits, no commits, no PR. Advances straight to `code.implement` — no user gate on the plan itself.
+description: Use when invoked as `/code.plan` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.plan"`. Reads the envelope and the accepted spec, borrows the writing-plans methodology to decompose the change into right-sized tasks with concrete steps and file paths, self-reviews it, and reports it as the step's `implPlan` artifact via `mcp__outpost__submit_step_progress`. Read-only — no edits, no commits, no PR.
 outpost:
   kind: action
   category: code
@@ -13,9 +13,9 @@ outpost:
 
 # Plan drafter
 
-You're running in the worktree the Outpost orchestrator created for an open-pr step, at the **plan round** — the second of three rounds (spec → plan → implement) that precede the actual diff. The spec round (this same session, earlier in the conversation) already produced a design spec and the user approved it at the gate. Your job: turn that approved spec into a task-by-task implementation plan and submit it. You do not touch any files in the worktree. Once you submit, the orchestrator advances this session straight to `/code.implement` — there is no review gate on the plan itself, so get it right.
+You're running in the worktree `code.orchestrate-pr` owns, bound to the **plan round** — the second of three rounds (spec → plan → implement) that precede the actual diff. The spec round (this same session, earlier in the conversation) already produced a design spec and the user approved it. Your job: turn that approved spec into a task-by-task implementation plan and report it. You do not touch any files in the worktree. There is no review gate on the plan itself, so get it right.
 
-**Never run `Edit`, `Write`, `git add`, `git commit`, `git push`, `gh pr create`, or any command that touches the worktree's files or the branch.** This round is pure thinking — the deliverable is a markdown string handed to `mcp__outpost__submit_impl_plan`, not a file.
+**Never run `Edit`, `Write`, `git add`, `git commit`, `git push`, `gh pr create`, or any command that touches the worktree's files or the branch.** This round is pure thinking — the deliverable is a markdown string handed to `mcp__outpost__submit_step_progress`, not a file.
 
 ## Step 0 — Read your envelope and the spec
 
@@ -30,13 +30,13 @@ You'll find:
 | Field | Meaning |
 |---|---|
 | `goal` | One paragraph — what this step needs to deliver. |
-| `approach` | Two-three paragraphs on the planned approach. |
-| `risks` | Optional — things the orchestrator flagged for sanity-checks. |
-| `spec` | The accepted design spec, as markdown. This is the source of truth for this round — the user has already reviewed and approved it. |
+| `inputs.approach` | Two-three paragraphs on the planned approach. |
+| `inputs.risks` | Optional — things the planner flagged for sanity-checks. |
+| `artifacts.spec` | The accepted design spec, as markdown. This is the source of truth for this round — the user has already reviewed and approved it. |
 | `workspace.branch` | The branch name this step will eventually implement against. |
 | `workspace.repoCwd` | The parent repo's path (your cwd is the worktree, not the parent). |
 | `previousSteps[]` | Earlier `action` steps' `output` strings (only those with `forwardOutput: true`). High-signal context. |
-| `typePayload.round` | `{ kind: "plan" }` for this skill. |
+| `boundNote` | What the controller asked this round to do, in its own words. |
 | `job.title`, `job.description`, `job.externalRef.url` | Original ticket context. |
 | `recentLessons` | Short lessons from past runs of this action. Skim before starting. |
 
@@ -92,20 +92,25 @@ Fix issues inline; don't submit a draft you'd flag in someone else's review.
 The outpost MCP tools are deferred behind ToolSearch — load the schema first:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_impl_plan", max_results: 1 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress", max_results: 1 })
 ```
 
-Then call it with the full markdown:
+Then report the plan as this step's `implPlan` artifact:
 
 ```
-mcp__outpost__submit_impl_plan({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  plan: "<full task-by-task implementation plan as markdown>"
+  phase: "plan",
+  memo: "<what the plan commits to, written for a cold-resumed you>",
+  artifacts: { implPlan: "<full task-by-task implementation plan as markdown>" },
+  next: { kind: "self-round" }
 })
 ```
 
-Do NOT write the plan to any file in the repo or worktree — the daemon stores it as job state, not a repo artifact, so the eventual PR diff stays pure implementation. Do NOT submit the plan as your final chat message; the daemon does not scrape transcripts. There is no user gate on the plan round: after the tool call returns, the orchestrator resumes this same session as `/code.implement`, which inherits everything you and the spec round reasoned through. Leave that reasoning legible in the conversation — stop here and let the resumed session pick it up.
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and whether the user is asked to approve anything — so do not pick that yourself.
+
+Do NOT write the plan to any file in the repo or worktree — the daemon stores it as step state, not a repo artifact, so the eventual PR diff stays pure implementation. Do NOT submit the plan as your final chat message; the daemon does not scrape transcripts. The implement round runs on this same session and inherits everything you and the spec round reasoned through — leave that reasoning legible in the conversation, then stop.
 
 ## Before you exit — journal a blocker
 

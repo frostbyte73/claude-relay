@@ -57,7 +57,7 @@ function jobCwd(job: JobRecord): string | undefined {
 
 function jobPrUrl(job: JobRecord): string | undefined {
   for (const step of [...job.steps].reverse()) {
-    if (step.type === 'open-pr' && step.prUrl) return step.prUrl;
+    if (step.type === 'orchestrated' && step.pr?.prUrl) return step.pr.prUrl;
   }
   return undefined;
 }

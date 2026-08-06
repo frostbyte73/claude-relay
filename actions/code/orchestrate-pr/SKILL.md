@@ -1,6 +1,6 @@
 ---
 name: code.orchestrate-pr
-description: Use when invoked as `/code.orchestrate-pr` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step` and `type=orchestrated` and `controller=code.orchestrate-pr`. Owns one open-pr step end to end — spec, plan, implement, then shepherd the PR through CI, comments, conflicts, and merge. Decides its own next move each turn and reports it via `mcp__outpost__submit_step_progress`.
+description: Use when invoked as `/code.orchestrate-pr` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step` and `type=orchestrated` and `controller=code.orchestrate-pr`. Owns one PR-shaped step end to end — spec, plan, implement, then shepherd the PR through CI, comments, conflicts, and merge. Decides its own next move each turn and reports it via `mcp__outpost__submit_step_progress`.
 outpost:
   kind: step-orchestrator
   category: code
@@ -70,12 +70,12 @@ Look at `boundAction`.
   its permissions are yours for this turn only. You are that action now: do its work as it
   describes. `boundNote` is the instruction you left yourself when you asked for this round.
 
-**On a work turn, do not use the bound action's own terminal submit tool.** `submit_spec`,
-`submit_impl_plan`, `submit_replies`, `submit_ci_fixed`, `submit_conflict_resolved` and
-`submit_edit_done` write to legacy `open-pr` steps; on this step they are silent no-ops and
-your work would vanish. Report through `submit_step_progress` instead: put what the round
-produced into `artifacts` (`spec`, `implPlan`, `review`, …), say what happened in `memo`,
-and declare the next move. `mcp__outpost__submit_journal` still works normally.
+**Every turn ends the same way: `submit_step_progress`.** There is no round-specific submit
+tool — a work turn puts what it produced into `artifacts` (`spec`, `implPlan`, `review`, …),
+says what happened in `memo`, and declares the next move, exactly as a decision turn does. A
+work turn that has nothing to decide hands the session back with `next: {kind:"self-round"}`
+and no `action`, which resumes you under your own hat for the next decision turn.
+`mcp__outpost__submit_journal` still works normally.
 
 ## 3. The phase ladder
 
@@ -147,7 +147,7 @@ recent one. A **decline** is different: it arrives as a `gate-resolved` item wit
 work with it — e.g. another `code.spec` round with the feedback in `boundNote` — rather than
 re-gating the same draft.
 
-**Cold resume into a phase you never set.** Jobs migrated from the old hardcoded `open-pr`
+**Cold resume into a phase you never set.** Jobs migrated from the old hardcoded PR-step
 machinery arrive mid-flight with a `phase` the daemon stamped, an empty `memo`, and no history
 you wrote. Do not assume `phase` reflects a turn you took. When `phase` disagrees with
 `artifacts` and `pr`, **the artifacts and the PR facts are ground truth** — `phase` is a

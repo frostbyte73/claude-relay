@@ -96,7 +96,7 @@ describe('handleDiffRoute (worktree-backed sessions)', () => {
     expect(result.status).toBe(400);
   });
 
-  // Regression: open-pr steps key their worktree by stepId, and DELETE /api/sessions
+  // Regression: steps key their worktree by stepId, and DELETE /api/sessions
   // on the step's reused session leaves a session-keyed archived tombstone. A direct
   // wm.get(sessionId) hits that tombstone and 404s ("session is archived") even though
   // the step worktree is still live — so the diff for reply_pending_review /

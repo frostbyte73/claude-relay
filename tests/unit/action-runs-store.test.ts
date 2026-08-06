@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ActionRunsStore, type ActionRunRecord } from '../../src/storage/action-runs-store.js';
 import { ActionRunLedger } from '../../src/work/action-run-ledger.js';
-import type { JobRecord, OpenPrStep } from '../../src/work/work-types.js';
+import type { ActionStep, JobRecord } from '../../src/work/work-types.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -103,31 +103,34 @@ describe('ActionRunsStore queries', () => {
 });
 
 describe('ActionRunLedger.reconcileAtBoot', () => {
-  const step = (id: string, over: Partial<OpenPrStep> = {}): OpenPrStep => ({
-    id, type: 'open-pr', title: 't', description: '',
-    workspace: { kind: 'writable', repoCwd: '/r', branch: 'b' },
-    goal: 'g', approach: 'a', state: 'speccing', sessionId: `sess-${id}`,
+  const step = (id: string, over: Partial<ActionStep> = {}): ActionStep => ({
+    id, type: 'action', title: 't', description: '',
+    workspace: { kind: 'none' }, action: 'write.linear-comment', goal: 'g',
+    state: 'running', sessionId: `sess-${id}`,
     createdAt: 0, updatedAt: 0, ...over,
   });
-  const job = (steps: OpenPrStep[]): JobRecord => ({
+  const job = (steps: ActionStep[]): JobRecord => ({
     id: 'j1', source: 'manual', title: 't', description: '',
     state: 'executing', steps, createdAt: 0, updatedAt: 0,
   });
 
   function ledgerOver(s: ActionRunsStore) {
-    return new ActionRunLedger({ store: s, isHumanGate: () => false, now: () => NOW + 5_000 });
+    return new ActionRunLedger({ store: s, isHumanGate: (a) => a === 'write.linear-comment', now: () => NOW + 5_000 });
   }
+
+  const draftRun = { action: 'write.linear-comment', round: 'draft' };
 
   it('retires a run whose round has moved on', () => {
     const s = store();
-    const run = open(s, { stepId: 'a' });
-    ledgerOver(s).reconcileAtBoot([job([step('a', { state: 'implementing' })])]);
+    const run = open(s, { stepId: 'a', ...draftRun });
+    // The gate was approved while the daemon was down: the live round is `commit`, not `draft`.
+    ledgerOver(s).reconcileAtBoot([job([step('a', { gateApproved: true })])]);
     expect(s.get(run.id)).toMatchObject({ outcome: 'interrupted', endedAt: NOW + 5_000 });
   });
 
   it('re-adopts a run whose round is still live', () => {
     const s = store();
-    const run = open(s, { stepId: 'a' });
+    const run = open(s, { stepId: 'a', ...draftRun });
     ledgerOver(s).reconcileAtBoot([job([step('a')])]);
     expect(s.get(run.id)?.outcome).toBeUndefined();
     expect(s.openRuns()).toHaveLength(1);
@@ -135,7 +138,7 @@ describe('ActionRunLedger.reconcileAtBoot', () => {
 
   it('retires a run whose job is gone entirely', () => {
     const s = store();
-    const run = open(s, { stepId: 'a' });
+    const run = open(s, { stepId: 'a', ...draftRun });
     ledgerOver(s).reconcileAtBoot([]);
     expect(s.get(run.id)?.outcome).toBe('interrupted');
   });

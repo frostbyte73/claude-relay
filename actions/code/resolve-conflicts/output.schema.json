@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.resolve-conflicts output",
-  "description": "Reported via submit_conflict_resolved; this covers the summary message.",
+  "description": "Reported via submit_step_progress (the outcome goes in `memo`); this covers the summary message.",
   "type": "object",
   "required": ["status"],
   "properties": {

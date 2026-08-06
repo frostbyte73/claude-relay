@@ -1,6 +1,6 @@
 ---
 name: code.fix-pr-comment
-description: Use when invoked as `/code.fix-pr-comment` in a session spawned by the Outpost work orchestrator inside an open-pr step's worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.editJob` populated. Read the envelope, edit files to address the PR comment, NEVER commit / push / post comments, then call `mcp__outpost__submit_edit_done`.
+description: Use when invoked as `/code.fix-pr-comment` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.fix-pr-comment"`. Read the envelope, edit files to address the PR comment, NEVER commit / push / post comments, then report via `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
@@ -13,7 +13,7 @@ outpost:
 
 # PR fix
 
-This is the same session that implemented the PR and triaged its comments, resumed to apply one reviewer's requested change. You already know this code and you've seen the sibling comments from triage — so a comment like "same thing here" resolves against what you already discussed. The envelope names the specific comment to act on (and re-states the goal as a refresher after any compaction). Your job: edit files in the worktree to address that comment, then POST that you're done. Do not commit, do not push, do not reply on the PR — the user reviews the diff and pushes themselves.
+This is the same session that implemented the PR and triaged its comments, resumed to apply one reviewer's requested change. You already know this code and you've seen the sibling comments from triage — so a comment like "same thing here" resolves against what you already discussed. `boundNote` names the specific comments to act on (and the envelope re-states the goal as a refresher after any compaction). Your job: edit files in the worktree to address them, then report that you're done. Do not commit, do not push, do not reply on the PR — the user reviews the diff and pushes themselves.
 
 ## Step 1 — Read the envelope
 
@@ -27,10 +27,9 @@ Fields you'll use:
 |---|---|
 | `jobId`, `stepId` | Identifiers — POST them back. |
 | `workspace.repoCwd`, `workspace.branch` | Parent repo path + branch. Your cwd is the worktree. |
-| `typePayload.editJob.id` | The edit-job id — POST back as `editId`. |
-| `typePayload.editJob.comment` | Full `PrComment` — `{id, author, body, file?, line?, diffHunk?, createdAt}`. |
-| `typePayload.editJob.userNote` | Optional user guidance — additional context, not an override. |
-| `goal`, `approach` | Original step spec, for context if the comment is ambiguous. |
+| `boundNote` | The comments to address this round, verbatim, with their files/lines and the change each needs. |
+| `pr.comments` | Every comment on the PR — look the ones named in `boundNote` up here for their full body, file, line, and diff hunk. |
+| `goal`, `inputs.approach` | Original step spec, for context if a comment is ambiguous. |
 | `recentLessons` | Short lessons you wrote at the end of past code.fix-pr-comment runs. Skim them before editing. |
 
 ```bash
@@ -40,9 +39,8 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 ```bash
 JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
 STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
-EDIT_ID=$(jq -r '.typePayload.editJob.id' "$OUTPOST_ENVELOPE")
-COMMENT=$(jq -c '.typePayload.editJob.comment' "$OUTPOST_ENVELOPE")
-USER_NOTE=$(jq -r '.typePayload.editJob.userNote // ""' "$OUTPOST_ENVELOPE")
+NOTE=$(jq -r '.boundNote // ""' "$OUTPOST_ENVELOPE")
+COMMENTS=$(jq -c '.pr.comments // []' "$OUTPOST_ENVELOPE")
 ```
 
 `DAEMON_AUTH` and `OUTPOST_HOOK_PORT` are inherited from the spawn.
@@ -67,36 +65,42 @@ If the edit is non-trivial and could regress something, run the project's own te
 
 ## Step 3 — Submit the edit result
 
-The outpost MCP tools are deferred behind ToolSearch — load `submit_edit_done` (and `submit_journal` for the next step) first:
+The outpost MCP tools are deferred behind ToolSearch — load `submit_step_progress` (and `submit_journal` for the next step) first:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_edit_done,mcp__outpost__submit_journal", max_results: 2 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__submit_journal", max_results: 2 })
 ```
 
 If the tool doesn't come back, halt. The daemon will not scrape the transcript.
 
-On success:
+Say in `memo` which comments you addressed and how — that is the only durable record of
+this round. On success:
 
 ```
-mcp__outpost__submit_edit_done({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  editId: "<$EDIT_ID>",
-  status: "done"
+  phase: "pr_comments",
+  memo: "<which comments you addressed and the edit each got>",
+  next: { kind: "self-round" }
 })
 ```
 
-On failure (you couldn't figure out what to change, or the edit conflicts):
+If you couldn't figure out what to change, or the edit conflicts, say so in `memo` and
+hand back the same way — the decision turn decides whether that is retryable, and it is
+the only thing that may fail the step:
 
 ```
-mcp__outpost__submit_edit_done({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  editId: "<$EDIT_ID>",
-  status: "failed",
-  failure: "<one-line reason>"
+  phase: "pr_comments",
+  memo: "could not address <comment>: <one-line reason>",
+  next: { kind: "self-round" }
 })
 ```
+
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and whether the user is asked to approve anything — so do not pick that yourself.
 
 Then write a one-line summary in chat of what you changed (or why you gave up) — the user reads this in the activity stream.
 

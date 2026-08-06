@@ -6,7 +6,7 @@ export type JobState =
   | 'failed'
   | 'abandoned';
 
-export type StepKind = 'open-pr' | 'action' | 'orchestrated';
+export type StepKind = 'action' | 'orchestrated';
 
 export type WorkspaceRef =
   | { kind: 'none' }
@@ -61,17 +61,6 @@ export interface DraftedReply {
   confidence?: 'high' | 'medium' | 'low';
 }
 
-export interface EditJob {
-  id: string;
-  commentId: string;
-  status: 'queued' | 'running' | 'done' | 'failed';
-  userNote?: string;
-  sessionId?: string;
-  startedAt?: number;
-  finishedAt?: number;
-  failure?: string;
-}
-
 // The step's own run bounds, which the job timeline can't give: a plan reconcile
 // bumps every surviving step's updatedAt to the same instant, so createdAt→updatedAt
 // reads as one bogus multi-day duration. Consumed by the inline session's terminal chip.
@@ -110,56 +99,9 @@ export interface CiCheck {
   url?: string;
 }
 
-export interface OpenPrStep extends StepBase {
-  type: 'open-pr';
-  workspace: { kind: 'writable'; repoCwd: string; branch: string };
-  goal: string;
-  approach: string;
-  risks?: string;
-  state: 'speccing' | 'spec_pending_review' | 'planning' | 'implementing' | 'pr_open'
-       | 'comment_pending_response' | 'reply_pending_review' | 'conflicting'
-       | 'conflict_unresolved' | 'merged' | 'failed';
-  // Spec → plan → implement artifacts. Stored as job state, never written to the
-  // worktree, so the review diff stays pure implementation.
-  spec?: string;         // design spec markdown (submit_spec)
-  implPlan?: string;     // implementation plan markdown (submit_impl_plan)
-  specFeedback?: string[]; // accumulated user revision notes across gate loops
-  prUrl?: string;
-  prState?: 'open' | 'merged' | 'closed';
-  ciState?: 'pending' | 'success' | 'failure';
-  ciChecks?: CiCheck[];
-  // GitHub's mergeability, orthogonal to CI: a 'conflicting' PR can't merge until
-  // conflicts are resolved even while its checks read as pending/blocked.
-  mergeable?: 'mergeable' | 'conflicting' | 'unknown';
-  // True while a code.resolve-conflicts round is mid-flight on the shared session.
-  // Guards decide() from re-emitting the gate and the watcher from re-flipping state.
-  conflictResolving?: boolean;
-  // Set when a squash-to-base attempt hit conflicts and spawned a resolve round;
-  // markConflictResolved reads it to auto-retry the squash once conflicts are resolved.
-  conflictPostAction?: 'squash-to-base';
-  // True while a code.fix-ci round is mid-flight on the shared session. Guards
-  // decide() from re-spawning and the watcher window before the fix push lands.
-  ciFixing?: boolean;
-  // How many auto-fix rounds we've spawned for this PR. Hard-capped (CI_FIX_CAP)
-  // as a backstop against thrash between two distinct failure signatures.
-  ciFixAttempts?: number;
-  // Signature of the failing-check set we last attempted. If the same set fails
-  // again after a fix, we stop instead of re-attempting the identical failure.
-  ciFixLastSignature?: string;
-  // Set once we've declined to keep auto-fixing (cap hit, or same failure
-  // recurred, or the round reported unfixable). Surfaces "auto-fix stopped" in UI.
-  ciFixGaveUp?: boolean;
-  reviewState?: 'approved' | 'changes_requested' | 'review_required';
-  comments?: PrComment[];
-  iterations?: IterationRecord[];
-  reviewComments?: ReviewComment[];
-  draftedReplies?: DraftedReply[];
-  editQueue?: EditJob[];
-  threadHash?: string;
-}
-
-// Generic step: spawn a session for a named action. Side-effecting work (PR opening
-// with multi-round comment handling) lives in OpenPrStep — everything else is this.
+// Generic step: spawn a session for a named action. Side-effecting work that needs a
+// controller deciding its own next move each turn lives in OrchestratedStep —
+// everything else is this.
 // `forwardOutput` controls whether the step's output is threaded into downstream
 // steps as `previousSteps[].output`; defaults to true for read-only investigations,
 // false for one-off operational work.
@@ -180,7 +122,7 @@ export interface ActionStep extends StepBase {
   state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
   // Epoch ms when a timed meta.wait auto-resumes. Unset for an indefinite manual hold.
   resumeAt?: number;
-  // human_gate draft/review/commit loop (mirrors open-pr spec_pending_review). The action
+  // human_gate draft/review/commit loop. The action
   // runs in a draft phase that composes `draft` and parks in gate_pending_approval WITHOUT
   // performing the external write (the hook hard-blocks the write until gateApproved). The
   // user approves (→ commit phase posts it) or proposes changes (→ redraft phase with the
@@ -284,7 +226,7 @@ export interface OrchestratedStep extends StepBase {
   state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
 }
 
-export type Step = OpenPrStep | ActionStep | OrchestratedStep;
+export type Step = ActionStep | OrchestratedStep;
 
 export type JobEventKind =
   | 'created'
@@ -317,13 +259,13 @@ export interface JobEvent {
 type ProposedFields<S extends Step> = Omit<
   S,
   'id' | 'state' | 'sessionId' | 'events' | 'failure' | 'createdAt' | 'updatedAt' | 'workspace'
+  | 'dispatches' | 'inbox' | 'roundsSpent' | 'consecutiveSelfRounds'
 > & {
   keepId?: string;
   workspace?: S['workspace'];
 };
 
 export type ProposedStep =
-  | ({ type: 'open-pr' } & ProposedFields<OpenPrStep>)
   | ({ type: 'action' }  & ProposedFields<ActionStep>)
   | ({ type: 'orchestrated' } & ProposedFields<OrchestratedStep>);
 

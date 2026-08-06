@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { migrateJob, migrateOpenPrStep } from '../../src/storage/jobs-migrate.js';
-import type { JobRecord, OpenPrStep, OrchestratedStep } from '../../src/work/work-types.js';
+import type { JobRecord, OrchestratedStep } from '../../src/work/work-types.js';
 
-function legacy(over: Partial<OpenPrStep> = {}): OpenPrStep {
+// The `open-pr` step type no longer exists in the live type system — these are raw persisted
+// records, which is exactly the shape migrateOpenPrStep reads.
+type LegacyRecord = Record<string, unknown>;
+
+function legacy(over: LegacyRecord = {}): LegacyRecord {
   return {
     id: 's1', title: 'Ship it', description: 'd', type: 'open-pr',
     workspace: { kind: 'writable', repoCwd: '/repo', branch: 'fix/x' },
     goal: 'g', approach: 'a', state: 'pr_open',
     createdAt: 1, updatedAt: 2, ...over,
-  } as OpenPrStep;
+  };
 }
 
 describe('migrateOpenPrStep', () => {
@@ -56,11 +60,11 @@ describe('migrateOpenPrStep', () => {
   });
 
   it('maps every legacy state to the right resting place', () => {
-    const cases: Array<[OpenPrStep['state'], OrchestratedStep['state'], string]> = [
+    const cases: Array<[string, OrchestratedStep['state'], string]> = [
       ['speccing', 'running', 'spec'],
       ['spec_pending_review', 'running', 'spec'],
-      ['planning', 'running', 'plan'],
-      ['implementing', 'running', 'implement'],
+      ['planning', 'running', 'spec'],       // never-dispatched: rewound to the spec phase
+      ['implementing', 'running', 'spec'],   // never-dispatched: rewound to the spec phase
       ['comment_pending_response', 'running', 'pr_comments'],
       ['reply_pending_review', 'running', 'pr_comments'],
       ['conflicting', 'running', 'conflict'],
@@ -73,6 +77,31 @@ describe('migrateOpenPrStep', () => {
       expect(s.state, legacyState).toBe(expected);
       expect(s.phase, legacyState).toBe(phase);
     }
+  });
+
+  // Moved from work-queue-migrate: pre-spec-flow records were materialized straight into
+  // 'implementing', so a never-dispatched one must not arrive as an implement-phase step.
+  it('rewinds a never-dispatched implementing/planning record to the spec phase', () => {
+    for (const state of ['implementing', 'planning']) {
+      const s = migrateOpenPrStep(legacy({ state }));
+      expect(s.phase, state).toBe('spec');
+      expect(s.state, state).toBe('running');
+    }
+  });
+
+  it('leaves a genuinely-dispatched implementing record in the implement phase', () => {
+    expect(migrateOpenPrStep(legacy({ state: 'implementing', sessionId: 'sess' })).phase).toBe('implement');
+    expect(migrateOpenPrStep(legacy({ state: 'implementing', prUrl: 'http://x' })).phase).toBe('implement');
+    expect(migrateOpenPrStep(legacy({ state: 'implementing', cancelled: true })).phase).toBe('implement');
+    expect(migrateOpenPrStep(legacy({ state: 'implementing', spec: '# s' })).phase).toBe('implement');
+  });
+
+  it('lands an unrecognized state in Needs-you rather than leaving it undefined', () => {
+    // A hand-edited or corrupt record. `state: undefined` is unrecoverable — nothing in the
+    // engine can act on it — where a `failed` step can at least be retried or edited.
+    const s = migrateOpenPrStep(legacy({ state: 'who-knows' }));
+    expect(s.state).toBe('failed');
+    expect(s.phase).toBe('failed');
   });
 
   it('drops the deleted control fields', () => {
@@ -109,19 +138,23 @@ describe('migrateJob', () => {
     steps, createdAt: 0, updatedAt: 0,
   });
 
+  const job2 = (steps: LegacyRecord[]): JobRecord =>
+    ({ id: 'j1', source: 'manual', title: 'J', description: 'D', state: 'executing',
+       steps, createdAt: 0, updatedAt: 0 } as unknown as JobRecord);
+
   it('migrates open-pr steps and leaves others untouched', () => {
     const action = {
       id: 's2', title: 'Look', description: 'd', type: 'action' as const,
       workspace: { kind: 'none' as const }, action: 'read.investigate', goal: 'g',
       state: 'resolved' as const, createdAt: 0, updatedAt: 0,
     };
-    const out = migrateJob(job([legacy(), action]));
+    const out = migrateJob(job2([legacy(), action]));
     expect(out.steps[0]!.type).toBe('orchestrated');
     expect(out.steps[1]).toEqual(action);
   });
 
   it('is idempotent', () => {
-    const once = migrateJob(job([legacy()]));
+    const once = migrateJob(job2([legacy()]));
     expect(migrateJob(once)).toEqual(once);
   });
 });

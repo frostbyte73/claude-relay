@@ -23,10 +23,11 @@ export function withLiveness(
   const stepIds: string[] = [];
   for (const s of job.steps) {
     if (s.cancelled) continue;
-    const stepLive = isActive(s.sessionId);
-    const editLive = s.type === 'open-pr'
-      && (s.editQueue ?? []).some((e) => e.status === 'running' && isActive(e.sessionId));
-    if (stepLive || editLive) stepIds.push(s.id);
+    // A dispatch child's session is the step's work too — without it, a controller that
+    // has fanned out and gone quiet reads as idle for the whole fan-out.
+    const childLive = s.type === 'orchestrated'
+      && s.dispatches.some((d) => d.status === 'running' && isActive(d.sessionId));
+    if (isActive(s.sessionId) || childLive) stepIds.push(s.id);
   }
   return { ...job, live: { orchestrator: isActive(job.orchestratorSessionId), stepIds } };
 }

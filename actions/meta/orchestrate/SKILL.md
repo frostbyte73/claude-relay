@@ -38,7 +38,7 @@ cat "$OUTPOST_ENVELOPE"
 | `job.externalRef.issueIdentifier` | e.g. `ENG-123` for Linear-sourced jobs. |
 | `job.externalRef.linearUuid` | Linear's internal UUID — use this to call the Linear GraphQL API. |
 | `launchContext` (initial only) | Free-text the user attached when launching the planner. Treat it as high-signal extra guidance from the user on top of `job.description` — priorities, constraints, hints about where to look. Absent if the user launched without typing anything. |
-| `stepTypeCatalog` | The step-kind catalog (`open-pr`, `action`). **Today's orchestrator consumes plans in this shape — use it.** |
+| `stepTypeCatalog` | The step-kind catalog (`action`, `orchestrated`). **The orchestrator consumes plans in this shape — use it.** |
 | `actionCatalog` | The full action registry — every available action's `name`, `description`, `category`, `runner`, `side_effects`, and JSON Schemas. Use it to pick the right `action` name for an `action`-kind step and to understand what each action expects/produces. |
 | `currentSteps` (replan only) | The existing plan with state. Each entry has an `id` you need for `keepId`, and completed steps carry their `output`/`findings`. |
 | `userFeedback` (replan only) | The message the user just sent. Highest-signal context. |
@@ -79,8 +79,8 @@ ToolSearch({ query: "select:mcp__outpost__submit_continue,mcp__outpost__submit_p
 Concrete example (the shape this overhaul fixes): the last step was
 `read.investigate` and its `output` says a timeout is too low and a config-repo
 PR should raise it. That is NOT "plan holds" — call `submit_plan` (replan),
-keeping the investigation via `keepId` and appending an `open-pr` step against the
-deployment config repo.
+keeping the investigation via `keepId` and appending an `orchestrated` PR step against
+the deployment config repo.
 
 ## Step 1 — Understand the job
 
@@ -106,9 +106,9 @@ Linear MCP tools work too if you have them — probe via `ToolSearch` first.
 
 Before composing steps, name the category out loud (you'll print this in Step 6 for the user). The category drives the shape and scope of the plan:
 
-- **Single code change** — one bug fix, one small feature in one repo. → typically one `open-pr` step. No preamble.
-- **Multi-repo project** — schema/proto change with consumers, or a feature touching service + cloud + dashboard. → multiple `open-pr` steps, sometimes with `parallelGroup` when truly independent. Consider whether an investigation step is needed first to map the blast radius.
-- **Staged rollout / infra-as-code** — anything that ships through a repo where merging the PR *is* the deploy (a GitOps config repo, helm charts, Terraform, k8s manifests). → one `open-pr` step **per ring** (staging → canary → prod). Between rings: `read.investigate` produces the health verdict (DD metrics, error rates, restart counts), then `meta.wait` holds the job so the user can *promote* given those findings (resume) or halt (abandon). The deploys themselves are `open-pr`; never collapse "open the PR" or "check health" into a `meta.wait`.
+- **Single code change** — one bug fix, one small feature in one repo. → typically one `orchestrated` step with `controller: "code.orchestrate-pr"`. No preamble.
+- **Multi-repo project** — schema/proto change with consumers, or a feature touching service + cloud + dashboard. → multiple `orchestrated` PR steps, sometimes with `parallelGroup` when truly independent. Consider whether an investigation step is needed first to map the blast radius.
+- **Staged rollout / infra-as-code** — anything that ships through a repo where merging the PR *is* the deploy (a GitOps config repo, helm charts, Terraform, k8s manifests). → one `orchestrated` PR step **per ring** (staging → canary → prod). Between rings: `read.investigate` produces the health verdict (DD metrics, error rates, restart counts), then `meta.wait` holds the job so the user can *promote* given those findings (resume) or halt (abandon). The deploys themselves are `orchestrated` PR steps; never collapse "open the PR" or "check health" into a `meta.wait`.
 - **Investigation (root-cause unknown)** — a page, a customer-reported symptom, "find what's dropping requests". → investigate inline (Step 4), record what you found in the `findings` artifact on `submit_plan`, and emit the fix/comm steps your findings now ground. Only emit a standalone `read.investigate` step when the investigation must run *during execution* (e.g. a health check between deploy rings) or when a tracked, re-runnable investigation is the deliverable itself.
 - **Investigation with likely follow-up** — same as above and you're confident a fix or comm will follow. Do the investigation inline, capture it in `findings`, and emit the grounded follow-up steps in the same pass — you now have the findings that let you shape them.
 - **Customer incident ticket** — investigate inline, put the verdict in `findings` (the verdict block), and emit `write.linear-issue` (the bug filing) → `write.linear-comment` (back on the incident ticket) in one pass, packing `verdict.writeup` / `verdict.customer_summary` into the write steps' `inputs`. Each `write.*` step is hard-gated by the daemon (`human_gate`) — it parks for the user's approval of the exact body before it posts, so you don't need a separate `meta.wait` in front purely to guard the write. Add a leading `meta.wait` only if you want a single combined hold on the verdict *before* either write is even prepared.
@@ -116,11 +116,11 @@ Before composing steps, name the category out loud (you'll print this in Step 6 
 - **Operational / non-PR work** — flip a feature flag, post a Slack note, send a customer email, schedule a meeting. Same constraint: only the actions in `actionCatalog` are real. If the op doesn't fit one (`write.linear-comment`, `meta.wait`, etc.), don't emit a fake step — call out the gap in `risks` so the user can decide whether to build the action first.
 - **Mixed** — most large jobs are mixed. Emit the steps that are clearly knowable now and stop at the boundary of "what depends on findings we don't have yet". The user can extend after.
 
-If the category isn't obvious from title + description, **investigate now** (Step 4) until it is — don't emit a `read.investigate` step just to learn what to plan, and never emit an `open-pr` whose `approach` you'd have to guess. A blind PR step is the most expensive mistake here.
+If the category isn't obvious from title + description, **investigate now** (Step 4) until it is — don't emit a `read.investigate` step just to learn what to plan, and never emit a PR step whose `approach` you'd have to guess. A blind PR step is the most expensive mistake here.
 
-## Step 3 — Route the open-pr steps
+## Step 3 — Route the PR steps
 
-For each `open-pr` step, pick the repo it lands in. The candidate repos are the user's registered projects — list them first:
+For each `orchestrated` PR step, pick the repo it lands in. The candidate repos are the user's registered projects — list them first:
 
 ```bash
 curl -s http://127.0.0.1:8080/api/sessions | jq -r '.projects[].cwd'
@@ -140,7 +140,7 @@ Use the absolute paths from the registered-projects list. If a repo is on disk b
 
 Investigate as deeply as the job needs before composing the plan — this is the investigation, not a precursor to one. The recorded finding can be as small as "verified the NPE reproduces at `session.go:142`," but you don't get to skip it. Record what you found in the `findings` field of `submit_plan` (Step 7); skip `findings` only when there was genuinely nothing to verify.
 
-**Two production failures this step exists to prevent.** CS-1931 — planned an egress-retry fix off two Linear comments, never opened the Datadog link sitting *in the ticket body*, and misread the load-bearing claim (the "80% error rate" was metric pollution, not failing egresses). CS-1105 — committed two `open-pr` steps guessing which server SDK the ticket meant and asserting a proto/version history it never checked against live state; "completely wrong." Both plans looked plausible. Neither was investigated.
+**Two production failures this step exists to prevent.** CS-1931 — planned an egress-retry fix off two Linear comments, never opened the Datadog link sitting *in the ticket body*, and misread the load-bearing claim (the "80% error rate" was metric pollution, not failing egresses). CS-1105 — committed two PR steps guessing which server SDK the ticket meant and asserting a proto/version history it never checked against live state; "completely wrong." Both plans looked plausible. Neither was investigated.
 
 ### 4a — Sweep every relevant angle
 
@@ -176,24 +176,30 @@ Any "no" on a load-bearing item → keep investigating, or record the gap in `ri
 | "The ticket links logs but I can decide from code." | If it carries a log link or log-shaped evidence, open it. You don't skip the angle the filer thought was load-bearing. |
 | "My local checkout shows X." | Checkouts go stale. Confirm against live state before asserting version/API/history. |
 | "I'm fairly sure which repo this targets." | Fairly sure isn't grounded. Can't cite why → it's a guess; flag it in `risks`, don't commit a worktree to it. |
-| "I'll emit the `open-pr` and let the implementer work out the approach." | A blind open-pr burns an implementer worktree. Can't name the verified files/functions → it's not ready to be a step. |
+| "I'll emit the PR step and let the controller work out the approach." | A blind PR step burns a worktree. Can't name the verified files/functions → it's not ready to be a step. |
 
 ## Step 5 — Compose the plan
 
-**Gate — no ungrounded `open-pr`.** Before you emit any `open-pr` step, confirm both: (1) its target repo was chosen from evidence you can cite, and (2) its `approach` names real files/functions you read *this run*. If either is missing, do NOT emit the open-pr — instead surface the unknown in `risks` and stop at that boundary, or, if the missing piece can only be resolved during execution, emit a `read.investigate` step for it. A guessed open-pr is the single most expensive mistake here (CS-1105): it burns an implementer worktree on a plan shape you couldn't yet see.
+**Gate — no ungrounded PR step.** Before you emit any `orchestrated` PR step, confirm both: (1) its target repo was chosen from evidence you can cite, and (2) its `inputs.approach` names real files/functions you read *this run*. If either is missing, do NOT emit it — instead surface the unknown in `risks` and stop at that boundary, or, if the missing piece can only be resolved during execution, emit a `read.investigate` step for it. A guessed PR step is the single most expensive mistake here (CS-1105): it burns a worktree on a plan shape you couldn't yet see.
 
-For each step you emit, fill the fields the catalog requires for its `type`. Refer to `stepTypeCatalog` for the legacy shape and `actionCatalog` for action names + their input/output schemas.
+For each step you emit, fill the fields the catalog requires for its `type`. Refer to `stepTypeCatalog` for the step shapes and `actionCatalog` for action names + their input/output schemas.
 
 **Step shapes the orchestrator accepts today:**
 
 ```jsonc
+// A PR-shaped change: one controller action owns the whole step — spec, plan, implement,
+// then shepherding the PR through CI, comments, conflicts and merge. Do NOT plan its
+// rounds; it decides those itself.
 {
-  "type": "open-pr",
+  "type": "orchestrated",
+  "controller": "code.orchestrate-pr",
   "title": "Fix the dropping RPC in api-server",        // short, scannable
   "description": "...",                                 // 1-2 sentences for the UI
   "goal": "...",                                        // user-visible outcome
-  "approach": "...",                                    // 2-3 paragraphs naming files/functions
-  "risks": "...",                                       // optional bullets
+  "inputs": {
+    "approach": "...",                                  // 2-3 paragraphs naming files/functions
+    "risks": "..."                                      // optional bullets
+  },
   "workspace": { "kind": "writable", "repoCwd": "/path/to/api-server", "branch": "fix/dropping-rpc" }
 }
 ```
@@ -224,11 +230,11 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
 - `read.linear-issue` — when a downstream step needs the ticket as structured data (team, comments, etc.).
 - `write.linear-comment` / `write.linear-issue` — for the write-back side of customer-incident flows. They declare `human_gate: true`, and **the daemon hard-gates them**: the step parks in `gate_pending_approval` and the user must approve the exact body before the session runs and anything posts. You do **not** need to insert a `meta.wait` in front just to gate the write — that's enforced automatically. A leading `meta.wait` is only for a combined hold on the verdict before the writes are prepared at all.
 - `code.review-diff` — only for diffs in OUR worktrees, not someone else's PR.
-- `meta.wait` — a daemon-side hold between steps. Two shapes: a **manual hold** (omit `duration_sec`) that parks the job until the user resumes or abandons — for "given these findings, promote when ready"; and a **timed soak** (`inputs.duration_sec`) that auto-resumes after N seconds, then the next step runs on its own. The timed soak is how you bake a deploy before acting on it — e.g. an `open-pr` that ships the change, then `meta.wait` with `duration_sec: 3600`, then `read.investigate` to check health an hour after rollout (set `forwardOutput: true` on nothing here — the wait's own output is just `{resumed_by}`; the investigate reads live signal fresh). Never use `meta.wait` to *assess* something — "is staging healthy?" is `read.investigate`. And never use it as a stand-in for actual work — a "deploy" step is `open-pr` (the merge IS the deploy).
+- `meta.wait` — a daemon-side hold between steps. Two shapes: a **manual hold** (omit `duration_sec`) that parks the job until the user resumes or abandons — for "given these findings, promote when ready"; and a **timed soak** (`inputs.duration_sec`) that auto-resumes after N seconds, then the next step runs on its own. The timed soak is how you bake a deploy before acting on it — e.g. a PR step that ships the change, then `meta.wait` with `duration_sec: 3600`, then `read.investigate` to check health an hour after rollout (set `forwardOutput: true` on nothing here — the wait's own output is just `{resumed_by}`; the investigate reads live signal fresh). Never use `meta.wait` to *assess* something — "is staging healthy?" is `read.investigate`. And never use it as a stand-in for actual work — a "deploy" step is an `orchestrated` PR step (the merge IS the deploy).
 
 **Parallel groups.** Two steps with the same `parallelGroup: "g1"` string run concurrently. Use sparingly — only when the steps are genuinely independent (e.g. same fix in two repos that don't share a branch).
 
-**Branch names** (open-pr only). Pick a short, descriptive branch like `fix/dropping-rpc-retry`. Outpost validates the name and creates the worktree on it.
+**Branch names** (writable workspaces only). Pick a short, descriptive branch like `fix/dropping-rpc-retry`. Outpost validates the name and creates the worktree on it.
 
 **`forwardOutput`** (action only). Default `true` — the action's output is appended to downstream steps' envelopes as prior findings. Set `false` for ops work that doesn't produce useful findings for later steps.
 
@@ -236,12 +242,12 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
 
 **Replan mode — every existing step MUST have a disposition.** In replan mode, for **every non-cancelled step in `currentSteps`**, you must do exactly one of:
 
-- **Keep it** — emit a proposed step with `keepId: "<existing step id>"`. That's how you preserve completed investigations, running open-prs, or pending steps you still want to run.
+- **Keep it** — emit a proposed step with `keepId: "<existing step id>"`. That's how you preserve completed investigations, in-flight PR steps, or pending steps you still want to run.
 - **Drop it** — put its id in the top-level `drops: [...]` array on the `submit_plan` call. That cancels it.
 
 The daemon rejects any submission where a non-cancelled step is neither kept nor dropped, and any submission with overlap (an id both kept and dropped) or unknown ids. There is no implicit cancellation — omission is a bug. The daemon shows a diff (`✓ ~ + ✗`) and the user approves the reconciliation.
 
-One replan shape: **keep** the completed investigation step (with its `keepId`) and append new follow-up `open-pr` / `write.*` / `meta.wait` steps its findings unlocked; **drops** stays empty.
+One replan shape: **keep** the completed investigation step (with its `keepId`) and append new follow-up PR / `write.*` / `meta.wait` steps its findings unlocked; **drops** stays empty.
 
 Example replan `submit_plan` payload:
 
@@ -251,7 +257,7 @@ Example replan `submit_plan` payload:
   "mode": "replan",
   "steps": [
     { "keepId": "step_abc", "type": "action", "action": "read.investigate", "title": "Find the dropping RPC", /* ... */ },
-    { "type": "open-pr", "title": "Fix the dropping RPC", /* ... */ }
+    { "type": "orchestrated", "controller": "code.orchestrate-pr", "title": "Fix the dropping RPC", /* ... */ }
   ],
   "drops": ["step_xyz"]   // e.g. a stale investigate-cloud step whose findings we no longer need
 }
@@ -261,7 +267,7 @@ Example replan `submit_plan` payload:
 
 Print the plan in the chat as readable markdown so the spawn log shows what you composed. Lead with one line naming the **category** you chose ("This looks like a multi-repo project — proto change in `protocol` plus two consumers", or "Treating as an investigation — root cause isn't obvious from the ticket"). Then one block per step with type, title, the per-type fields, and any risks.
 
-If `mode === "replan"`, explicitly call out the deltas from `currentSteps` — "Keeping step 1 (investigate), adding step 2 (open-pr in server), dropping step 3 (no longer needed since findings show the dashboard isn't affected)."
+If `mode === "replan"`, explicitly call out the deltas from `currentSteps` — "Keeping step 1 (investigate), adding step 2 (PR step in server), dropping step 3 (no longer needed since findings show the dashboard isn't affected)."
 
 **Do not** ask "ready to post?" — the user reviews and approves the plan in the PWA via the `plan_pending_review` flow. Print the preview and then POST in the same turn.
 
@@ -329,4 +335,4 @@ Confirm with one line: "Posted. Plan is now in `plan_pending_review` for `<jobId
 - **No registered projects.** You can still propose on-disk paths; the PWA review will tell the user to register first.
 - **Job clearly out of scope.** POST `steps: []`. The user can abandon from the PWA.
 - **Hook server 401.** `$DAEMON_AUTH` is stale. Print the situation and exit.
-- **Tempted to emit an `open-pr` whose `approach` you can't fill in.** Don't. Investigate (Step 4) until you can name the files/functions, then emit the grounded step. If the change genuinely can't be scoped without work that belongs in execution, say so in `risks`.
+- **Tempted to emit a PR step whose `approach` you can't fill in.** Don't. Investigate (Step 4) until you can name the files/functions, then emit the grounded step. If the change genuinely can't be scoped without work that belongs in execution, say so in `risks`.

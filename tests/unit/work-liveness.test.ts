@@ -19,25 +19,25 @@ describe('withLiveness', () => {
 
   it('lists steps whose session is active', () => {
     const j = job({ steps: [
-      { id: 's1', type: 'open-pr', state: 'implementing', sessionId: 'a' } as any,
-      { id: 's2', type: 'open-pr', state: 'implementing', sessionId: 'b' } as any,
+      { id: 's1', type: 'action', state: 'running', sessionId: 'a' } as any,
+      { id: 's2', type: 'action', state: 'running', sessionId: 'b' } as any,
     ] });
     const out = withLiveness(j, (id) => id === 'a');
     expect(out.live.stepIds).toEqual(['s1']);
   });
 
-  it('counts a step live when it has a running fix session', () => {
+  it('counts a step live when one of its dispatch children is running', () => {
     const j = job({ steps: [
-      { id: 's1', type: 'open-pr', state: 'comment_pending_response', sessionId: 'x',
-        editQueue: [{ id: 'e1', commentId: 'c', status: 'running', sessionId: 'fix' }] } as any,
+      { id: 's1', type: 'orchestrated', state: 'waiting', sessionId: 'x',
+        dispatches: [{ id: 'd1', action: 'code.review-diff', brief: 'b', status: 'running', sessionId: 'child', attempts: 1 }] } as any,
     ] });
-    const out = withLiveness(j, (id) => id === 'fix');
+    const out = withLiveness(j, (id) => id === 'child');
     expect(out.live.stepIds).toEqual(['s1']);
   });
 
   it('ignores cancelled steps and dead sessions', () => {
     const j = job({ steps: [
-      { id: 's1', type: 'open-pr', state: 'implementing', sessionId: 'dead', cancelled: true } as any,
+      { id: 's1', type: 'action', state: 'running', sessionId: 'dead', cancelled: true } as any,
       { id: 's2', type: 'action', state: 'resolved', sessionId: 'dead' } as any,
     ] });
     const out = withLiveness(j, () => false);

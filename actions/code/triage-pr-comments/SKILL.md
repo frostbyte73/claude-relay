@@ -1,6 +1,6 @@
 ---
 name: code.triage-pr-comments
-description: Use when invoked as `/code.triage-pr-comments` in a session spawned by the Outpost work orchestrator inside an open-pr step's worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.round.kind == "pr-comments"`. Read it, for each comment recommend one of {reply, edit, ignore} with a short rationale and pre-drafted reply, call `mcp__outpost__submit_replies`, then exit.
+description: Use when invoked as `/code.triage-pr-comments` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.triage-pr-comments"`. Read it, for each comment recommend one of {reply, edit, ignore} with a short rationale and pre-drafted reply, report them via `mcp__outpost__submit_step_progress`, then exit.
 outpost:
   kind: action
   category: code
@@ -15,7 +15,7 @@ outpost:
 
 This is the same session that implemented the PR, resumed now that review comments have arrived — you already have the full context of the change in this conversation. Your job for this round: for each comment, decide reply / edit / ignore, write a one-line rationale, and pre-draft a reply. The envelope re-states the comments and the original goal so you stay grounded even if the conversation was compacted; lean on your own memory of the code first, and use the envelope as the refresher.
 
-**You only recommend. You do not edit files. You do not post comments.** Editing is the `code.fix-pr-comment` skill's job; posting replies is the orchestrator's job once the user clicks Reply.
+**You only recommend. You do not edit files. You do not post comments.** Editing is the `code.fix-pr-comment` round's job; posting replies is `code.orchestrate-pr`'s, once the user has approved them.
 
 ## Step 1 — Read the envelope
 
@@ -29,11 +29,11 @@ Relevant fields:
 |---|---|
 | `jobId`, `stepId` | Identifiers — POST them back. |
 | `job.title`, `job.description`, `job.externalRef.url` | Original ticket context. |
-| `goal`, `approach`, `risks` | The original spec for this step. Ground reply decisions in this. |
+| `goal`, `inputs.approach`, `inputs.risks` | The original spec for this step. Ground reply decisions in this. |
 | `previousSteps[]` | Earlier `action` steps' `output` strings (only those with `forwardOutput: true`). High-signal context for grounding reply decisions. |
 | `workspace.repoCwd`, `workspace.branch` | Parent repo path + branch name (your cwd is the worktree). |
-| `typePayload.round.kind` | Should be `"pr-comments"`. If not, the orchestrator misrouted you — exit with an error. |
-| `typePayload.round.comments` | Array of pending comments. Each: `{id, author, body, createdAt, file?, line?, diffHunk?}`. Already filtered to exclude already-responded/edited/locked. |
+| `pr.comments` | Every comment on the PR. Each: `{id, author, body, createdAt, file?, line?, diffHunk?, respondedAt?}`. Skip any with `respondedAt`, and any already covered by `artifacts.draftedReplies`. |
+| `boundNote` | Which comments the controller wants triaged this round, if it narrowed the set. |
 | `recentLessons` | Short lessons you wrote at the end of past code.triage-pr-comments runs. Skim them before drafting — they encode patterns about this reviewer or repo. |
 
 ```bash
@@ -43,7 +43,7 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 ```bash
 JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
 STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
-PENDING=$(jq -c '.typePayload.round.comments' "$OUTPOST_ENVELOPE")
+PENDING=$(jq -c '[.pr.comments[]? | select(.respondedAt | not)]' "$OUTPOST_ENVELOPE")
 ```
 
 `DAEMON_AUTH` and `OUTPOST_HOOK_PORT` are inherited from the original session spawn.
@@ -110,23 +110,29 @@ When you do write a draftReply, keep it short (1–3 sentences) and specific. Ci
 
 ## Step 3 — Submit replies
 
-The outpost MCP tools are deferred behind ToolSearch — load `submit_replies` (and `submit_journal`) first:
+The outpost MCP tools are deferred behind ToolSearch — load `submit_step_progress` (and `submit_journal`) first:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_replies,mcp__outpost__submit_journal", max_results: 2 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__submit_journal", max_results: 2 })
 ```
 
 If the tool doesn't come back, halt. The daemon will not scrape the transcript.
 
-Then call the `mcp__outpost__submit_replies` tool:
+Report the drafts as a markdown artifact — one section per comment, each carrying the
+comment id, your recommendation, the rationale, and the drafted reply verbatim:
 
 ```
-mcp__outpost__submit_replies({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  drafts: [ /* your drafts array, native JSON */ ]
+  phase: "pr_comments",
+  memo: "<how many comments, the split by recommendation, anything you're unsure of>",
+  artifacts: { draftedReplies: "<your drafts as markdown>" },
+  next: { kind: "self-round" }
 })
 ```
+
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and whether the user is asked to approve anything — so do not pick that yourself.
 
 Then write a one-line summary in chat: how many decisions, breakdown by kind, any uncertainty for the human.
 
@@ -154,7 +160,7 @@ Reviewer-specific lessons are gold ("@avichalp consistently asks for benchmarks 
 
 ## Step 5 — Exit
 
-This skill doesn't wait for approval. The orchestrator publishes per-thread when the user clicks Reply in the PWA, queues an `EditJob` when they click Edit, and marks resolved when they click Ignore — all without messaging back to this session. If a new thread arrives or an existing one changes, the orchestrator resumes this session with a fresh round envelope.
+This round doesn't wait for approval. `code.orchestrate-pr` takes the next decision turn on this same session: it gates the drafts with the user, posts the approved ones, and runs a `code.fix-pr-comment` round for the ones that need code changes.
 
 ## Failure modes
 

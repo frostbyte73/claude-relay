@@ -1,5 +1,5 @@
 import { linearQuery as defaultQuery } from './linear-api.js';
-import type { JobRecord, OpenPrStep } from '../work/work-types.js';
+import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 
 type QueryFn = typeof defaultQuery;
 
@@ -50,26 +50,28 @@ function shortRepoName(cwd: string): string {
   return parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : (parts[0] ?? cwd);
 }
 
-function prStepLine(s: OpenPrStep): string {
-  const name = shortRepoName(s.workspace.repoCwd);
-  if (!s.prUrl) return `- ${name} — (no PR yet)`;
+function prStepLine(s: OrchestratedStep): string {
+  const ws = s.workspace;
+  const name = ws.kind === 'none' ? s.title : shortRepoName(ws.repoCwd);
+  const pr = s.pr;
+  if (!pr?.prUrl) return `- ${name} — (no PR yet)`;
   const stateBits: string[] = [];
-  if (s.prState === 'merged') stateBits.push('merged');
-  else if (s.prState === 'closed') stateBits.push('closed');
+  if (pr.prState === 'merged') stateBits.push('merged');
+  else if (pr.prState === 'closed') stateBits.push('closed');
   else stateBits.push('open');
-  if (s.reviewState === 'changes_requested' && s.comments?.length) {
-    stateBits.push(`${s.comments.length} comment${s.comments.length === 1 ? '' : 's'}`);
+  if (pr.reviewState === 'changes_requested' && pr.comments?.length) {
+    stateBits.push(`${pr.comments.length} comment${pr.comments.length === 1 ? '' : 's'}`);
   }
-  if (s.ciState === 'success') stateBits.push('CI ✅');
-  else if (s.ciState === 'failure') stateBits.push('CI ❌');
-  else if (s.ciState === 'pending') stateBits.push('CI ⏳');
-  return `- ${name} — PR ${s.prUrl} (${stateBits.join(', ')})`;
+  if (pr.ciState === 'success') stateBits.push('CI ✅');
+  else if (pr.ciState === 'failure') stateBits.push('CI ❌');
+  else if (pr.ciState === 'pending') stateBits.push('CI ⏳');
+  return `- ${name} — PR ${pr.prUrl} (${stateBits.join(', ')})`;
 }
 
 export function formatStatusBody(j: JobRecord): string {
   const lines = ['Outpost status:'];
-  const openPrSteps = j.steps.filter((s): s is OpenPrStep => s.type === 'open-pr' && !s.cancelled);
-  for (const s of openPrSteps) lines.push(prStepLine(s));
+  const prSteps = j.steps.filter((s): s is OrchestratedStep => s.type === 'orchestrated' && !s.cancelled);
+  for (const s of prSteps) lines.push(prStepLine(s));
   return lines.join('\n');
 }
 

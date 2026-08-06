@@ -1,52 +1,102 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.spec input",
+  "description": "The orchestrated step envelope as code.spec sees it, on a turn where boundAction is code.spec.",
   "type": "object",
-  "required": ["jobId", "stepId", "goal", "workspace", "typePayload"],
+  "required": [
+    "jobId",
+    "stepId",
+    "goal",
+    "workspace"
+  ],
   "properties": {
-    "jobId": { "type": "string" },
-    "stepId": { "type": "string" },
-    "goal": { "type": "string" },
-    "approach": { "type": "string" },
-    "risks": { "type": "string" },
-    "spec": {
-      "type": "string",
-      "description": "The step's current spec, if one already exists (present on a re-spec round after user feedback)."
+    "jobId": {
+      "type": "string"
+    },
+    "stepId": {
+      "type": "string"
+    },
+    "type": {
+      "const": "orchestrated"
+    },
+    "controller": {
+      "const": "code.orchestrate-pr"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Planner-supplied inputs for the step \u2014 `approach` and `risks` for a PR step.",
+      "properties": {
+        "approach": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        }
+      }
     },
     "workspace": {
       "type": "object",
-      "required": ["repoCwd", "branch"],
+      "required": [
+        "kind"
+      ],
       "properties": {
-        "repoCwd": { "type": "string" },
-        "branch": { "type": "string" }
+        "kind": {
+          "enum": [
+            "none",
+            "readonly",
+            "writable"
+          ]
+        },
+        "repoCwd": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
       }
+    },
+    "phase": {
+      "type": "string",
+      "description": "Where the controller thinks the step stands."
+    },
+    "memo": {
+      "type": "string",
+      "description": "The controller's durable narrative from prior turns."
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "Existing artifacts. `spec` is present on a re-spec round \u2014 revise it rather than starting over.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "boundAction": {
+      "const": "code.spec",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "What the controller asked this round to do, including any revision notes."
     },
     "previousSteps": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "title": { "type": "string" },
-          "action": { "type": "string" },
-          "output": { "type": "string" }
-        }
-      }
-    },
-    "typePayload": {
-      "type": "object",
-      "required": ["branch", "round"],
-      "properties": {
-        "branch": { "type": "string" },
-        "round": {
-          "type": "object",
-          "required": ["kind"],
-          "properties": {
-            "kind": { "const": "spec" },
-            "feedback": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Present when the user rejected a prior spec draft with revision notes — accumulates across gate loops."
-            }
+          "title": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
           }
         }
       }
@@ -54,14 +104,37 @@
     "job": {
       "type": "object",
       "properties": {
-        "title": { "type": "string" },
-        "description": { "type": "string" },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
         "externalRef": {
           "type": "object",
-          "properties": { "url": { "type": "string", "format": "uri" } }
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
         }
       }
     },
-    "recentLessons": { "type": "array", "items": { "type": "object" } }
+    "gateApproved": {
+      "type": "boolean"
+    },
+    "gateFeedback": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recentLessons": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
   }
 }

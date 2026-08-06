@@ -1,4 +1,4 @@
-import type { JobRecord, OpenPrStep, Step } from './work-types.js';
+import type { JobRecord, Step } from './work-types.js';
 import { actionNameForStep } from './engine.js';
 import type { ActionRunOutcome } from '../storage/action-runs-store.js';
 
@@ -10,8 +10,8 @@ import type { ActionRunOutcome } from '../storage/action-runs-store.js';
 // mutation instead of once at read time and the whole round history falls out. So
 // this module is the only place round semantics live, and the engine stays untouched.
 //
-// Emission order within a unit is load-bearing: close → verdict → open. rejectSpec
-// appends to specFeedback and flips state back to `speccing` in a single mutate, so
+// Emission order within a unit is load-bearing: close → verdict → open. rejectGate
+// appends to gateFeedback and flips the step back to `running` in a single mutate, so
 // a verdict emitted after the open would land on the wrong attempt.
 
 export interface RunKey { jobId: string; stepId?: string }
@@ -26,27 +26,9 @@ export interface DeriveOpts {
   isHumanGate: (action: string) => boolean;
 }
 
-// Round in flight for a step, or null when nothing is dispatched. Flags outrank
-// state for the same reason actionNameForStep checks them first: a conflict or
-// ci-fix round runs on top of whatever durable state the step is parked in.
+// Round in flight for a step, or null when nothing is dispatched.
 function roundOf(s: Step, opts: DeriveOpts): string | null {
   if (s.cancelled || s.failure || !s.sessionId) return null;
-  if (s.type === 'open-pr') {
-    if (s.conflictResolving || s.state === 'conflicting') return 'conflict';
-    if (s.ciFixing) return 'ci-fix';
-    if ((s.editQueue ?? []).some((e) => e.status === 'running')) return 'edit';
-    switch (s.state) {
-      case 'speccing': return 'spec';
-      case 'planning': return 'plan';
-      case 'implementing': return 'implement';
-      case 'comment_pending_response':
-      case 'reply_pending_review':
-        return (s.iterations ?? []).some((it) => it.status === 'in_progress' && !it.postedAt)
-          ? 'pr-comments'
-          : null;
-      default: return null;
-    }
-  }
   // A meta.wait hold parks in `waiting` and never binds a session, so it never
   // opens a run — a builtin hold is not a run of anything. Orchestrated steps
   // track their own round semantics elsewhere; nothing to derive here yet.
@@ -66,31 +48,10 @@ function orchestratorRound(j: JobRecord): string | null {
   return started?.body ?? 'initial';
 }
 
-function editJustFailed(prev: OpenPrStep, next: OpenPrStep): boolean {
-  const before = new Map((prev.editQueue ?? []).map((e) => [e.id, e.status]));
-  return (next.editQueue ?? []).some((e) => e.status === 'failed' && before.get(e.id) === 'running');
-}
-
-// `submitted` means a verdict is still owed — by a user gate, or by the PR itself.
-// Rounds that reach a terminal state with nobody left to rule on them are scored
-// here and never sit pending.
-function closeOutcome(round: string, prev: Step, next: Step): ActionRunOutcome {
+// `submitted` means a verdict is still owed — by a user gate. Rounds that reach a
+// terminal state with nobody left to rule on them are scored here and never sit pending.
+function closeOutcome(round: string): ActionRunOutcome {
   switch (round) {
-    case 'spec':
-    case 'implement':
-    case 'pr-comments':
-    case 'draft':
-    case 'redraft':
-      return 'submitted';
-    case 'ci-fix':
-      return next.type === 'open-pr' && next.ciFixGaveUp ? 'gave_up' : 'accepted';
-    case 'conflict':
-      return next.type === 'open-pr' && next.state === 'conflict_unresolved' ? 'gave_up' : 'accepted';
-    case 'edit':
-      return prev.type === 'open-pr' && next.type === 'open-pr' && editJustFailed(prev, next)
-        ? 'failed'
-        : 'accepted';
-    case 'plan':
     case 'commit':
     case 'run':
       return 'accepted';
@@ -114,7 +75,7 @@ function stepEvents(prev: Step | undefined, next: Step | undefined, jobId: strin
     } else if ((next.cancelled && !prev!.cancelled) || (job.state === 'abandoned' && prevJob?.state !== 'abandoned')) {
       out.push({ t: 'close', key, outcome: 'abandoned', at });
     } else {
-      out.push({ t: 'close', key, outcome: closeOutcome(prevRound, prev!, next), at });
+      out.push({ t: 'close', key, outcome: closeOutcome(prevRound), at });
     }
   }
 
@@ -128,31 +89,6 @@ function stepEvents(prev: Step | undefined, next: Step | undefined, jobId: strin
 
 function verdictEvents(key: RunKey, prev: Step, next: Step, at: number): RunEvent[] {
   const out: RunEvent[] = [];
-  if (prev.type === 'open-pr' && next.type === 'open-pr') {
-    if (prev.state === 'spec_pending_review' && next.state === 'planning') {
-      out.push({ t: 'verdict', key, round: 'spec', outcome: 'accepted', at });
-    }
-    const specGrew = (next.specFeedback ?? []).length - (prev.specFeedback ?? []).length;
-    if (specGrew > 0) {
-      const note = (next.specFeedback ?? []).at(-1) ?? '';
-      out.push({ t: 'verdict', key, round: 'spec', outcome: 'revised', at, feedbackChars: note.length });
-    }
-    if (prev.prState !== 'merged' && next.prState === 'merged') {
-      out.push({ t: 'verdict', key, round: 'implement', outcome: 'merged', at });
-    }
-    if (prev.prState !== 'closed' && next.prState === 'closed') {
-      out.push({ t: 'verdict', key, round: 'implement', outcome: 'abandoned', at });
-    }
-    const before = new Map((prev.iterations ?? []).map((it) => [it.id, it.status]));
-    for (const it of next.iterations ?? []) {
-      if (before.get(it.id) !== 'in_progress') continue;
-      if (it.status === 'approved') out.push({ t: 'verdict', key, round: 'pr-comments', outcome: 'accepted', at });
-      else if (it.status === 'rejected') {
-        out.push({ t: 'verdict', key, round: 'pr-comments', outcome: 'revised', at, feedbackChars: (it.feedback ?? '').length });
-      }
-    }
-    return out;
-  }
   if (prev.type === 'action' && next.type === 'action') {
     const prevNotes = (prev.gateFeedback ?? []).length;
     const nextNotes = (next.gateFeedback ?? []).length;

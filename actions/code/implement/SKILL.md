@@ -1,6 +1,6 @@
 ---
 name: code.implement
-description: Use when invoked as `/code.implement` in a session spawned by the Outpost work orchestrator inside a per-step worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.round == "initial"`. Reads the envelope (goal/approach/risks/branch + any previous-step findings) and edits files to implement the changes as uncommitted working-tree edits — NO git commit, NO git push, NO PR creation. The user reviews the diff via the PWA git view, then commits / pushes / opens the PR themselves. For subsequent rounds, the orchestrator resumes this session as `code.triage-pr-comments` (drafts replies) or `code.fix-pr-comment` (per-comment edits).
+description: Use when invoked as `/code.implement` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.implement"`. Reads the envelope (goal/approach/risks/branch + any previous-step findings) and edits files to implement the changes as uncommitted working-tree edits — NO git commit, NO git push, NO PR creation. The user reviews the diff via the PWA git view, then commits / pushes / opens the PR themselves. For subsequent rounds, `code.orchestrate-pr` rebinds this same session to `code.triage-pr-comments` (drafts replies) or `code.fix-pr-comment` (per-comment edits).
 outpost:
   kind: action
   category: code
@@ -13,9 +13,9 @@ outpost:
 
 # Project implementer
 
-You're running in a worktree the Outpost orchestrator created for the *initial* implementation of one open-pr step. The orchestrator proposed it and the user approved the plan. Your job: implement the change as **uncommitted file edits** in the worktree. When done, write a summary to chat and exit. The user reviews via the PWA's git view and handles every git operation themselves — `git add`, `git commit`, `git push`, `gh pr create`. Your output is files; the user takes it from there.
+You're running in the worktree `code.orchestrate-pr` owns, bound to the *initial* implementation round of its step. Your job: implement the change as **uncommitted file edits** in the worktree. When done, write a summary to chat and exit. The user reviews via the PWA's git view and handles every git operation themselves — `git add`, `git commit`, `git push`, `gh pr create`. Your output is files; the user takes it from there.
 
-This skill handles the initial round. **This same session is resumed for every later round** — when review comments arrive it continues as `/code.triage-pr-comments`, and each per-comment fix continues as `/code.fix-pr-comment`. So leave your reasoning legible in the conversation as you work (why the code is shaped this way, tradeoffs you weighed) — future rounds inherit this context, and it's what lets a one-line review fix stay a one-line fix. If `typePayload.round` is anything other than `"initial"`, that later round's slash command will have been dispatched instead; just follow it.
+This skill handles the initial round. **This same session runs every later round** — when review comments arrive it is rebound to `code.triage-pr-comments`, and each fix round to `code.fix-pr-comment`. So leave your reasoning legible in the conversation as you work (why the code is shaped this way, tradeoffs you weighed) — future rounds inherit this context, and it's what lets a one-line review fix stay a one-line fix.
 
 The worktree is a fresh branch under `~/.outpost/worktrees/<stepId>/`. Your cwd is already inside it. You can `Edit`, `Write`, and run any `Bash` command that doesn't move the branch.
 
@@ -36,14 +36,14 @@ You'll find:
 | Field | Meaning |
 |---|---|
 | `goal` | One paragraph — what this step needs to deliver. |
-| `approach` | Two-three paragraphs on the planned approach. |
-| `risks` | Optional — things the orchestrator flagged for sanity-checks. |
-| `spec` | The approved design spec, as markdown. You (or an earlier session) drafted it in the spec round and the user approved it at the gate. |
-| `implPlan` | The task-by-task implementation plan, as markdown. You (or an earlier session) drafted it in the plan round, against the approved spec. |
+| `inputs.approach` | Two-three paragraphs on the planned approach. |
+| `inputs.risks` | Optional — things the planner flagged for sanity-checks. |
+| `artifacts.spec` | The approved design spec, as markdown. You (or an earlier session) drafted it in the spec round and the user approved it at the gate. |
+| `artifacts.implPlan` | The task-by-task implementation plan, as markdown. You (or an earlier session) drafted it in the plan round, against the approved spec. |
 | `workspace.branch` | The branch name this step is implementing against. |
 | `workspace.repoCwd` | The parent repo's path (your cwd is the worktree, not the parent). |
 | `previousSteps[]` | Earlier `action` steps' `output` strings (only those with `forwardOutput: true`). High-signal context for the implementation. **Read these before charging ahead.** |
-| `typePayload.round` | Always `"initial"` for this skill. Any other value means a later round's slash command was dispatched into this same session — follow it. |
+| `boundNote` | What the controller asked this round to do, in its own words. |
 | `job.title`, `job.description`, `job.externalRef.url` | Original ticket context. |
 | `recentLessons` | Short lessons you wrote at the end of past project-implementer runs. Skim them before starting — they encode mistakes worth not repeating. The envelope's actual instructions still win if they conflict. |
 

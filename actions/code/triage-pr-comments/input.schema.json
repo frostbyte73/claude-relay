@@ -1,56 +1,240 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.triage-pr-comments input",
+  "description": "The orchestrated step envelope as code.triage-pr-comments sees it. `pr.comments` is the full comment set; drafts already made are recorded in artifacts.draftedReplies.",
   "type": "object",
-  "required": ["jobId", "stepId", "workspace", "typePayload"],
+  "required": [
+    "jobId",
+    "stepId",
+    "workspace",
+    "pr"
+  ],
   "properties": {
-    "jobId": { "type": "string" },
-    "stepId": { "type": "string" },
-    "workspace": {
+    "jobId": {
+      "type": "string"
+    },
+    "stepId": {
+      "type": "string"
+    },
+    "type": {
+      "const": "orchestrated"
+    },
+    "controller": {
+      "const": "code.orchestrate-pr"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "inputs": {
       "type": "object",
-      "required": ["repoCwd", "branch"],
+      "description": "Planner-supplied inputs for the step \u2014 `approach` and `risks` for a PR step.",
       "properties": {
-        "repoCwd": { "type": "string" },
-        "branch": { "type": "string" }
+        "approach": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        }
       }
     },
-    "goal": { "type": "string" },
-    "approach": { "type": "string" },
-    "risks": { "type": "string" },
+    "workspace": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "none",
+            "readonly",
+            "writable"
+          ]
+        },
+        "repoCwd": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    },
+    "phase": {
+      "type": "string",
+      "description": "Where the controller thinks the step stands."
+    },
+    "memo": {
+      "type": "string",
+      "description": "The controller's durable narrative from prior turns."
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "`draftedReplies` holds replies drafted on earlier triage rounds \u2014 do not re-draft those.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "boundAction": {
+      "const": "code.triage-pr-comments",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "Which comments the controller wants triaged this round."
+    },
     "previousSteps": {
       "type": "array",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          }
+        }
+      }
     },
-    "typePayload": {
+    "job": {
       "type": "object",
-      "required": ["round"],
       "properties": {
-        "round": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "externalRef": {
           "type": "object",
-          "required": ["kind", "comments"],
           "properties": {
-            "kind": { "const": "pr-comments" },
-            "comments": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["id", "author", "body"],
-                "properties": {
-                  "id": { "type": "string" },
-                  "author": { "type": "string" },
-                  "body": { "type": "string" },
-                  "createdAt": { "type": "string", "format": "date-time" },
-                  "file": { "type": "string" },
-                  "line": { "type": "integer" },
-                  "diffHunk": { "type": "string" }
-                }
-              }
+            "url": {
+              "type": "string",
+              "format": "uri"
             }
           }
         }
       }
     },
-    "job": { "type": "object" },
-    "recentLessons": { "type": "array", "items": { "type": "object" } }
+    "gateApproved": {
+      "type": "boolean"
+    },
+    "gateFeedback": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recentLessons": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher. Absent until a PR exists.",
+      "properties": {
+        "prUrl": {
+          "type": "string"
+        },
+        "prState": {
+          "enum": [
+            "open",
+            "merged",
+            "closed"
+          ]
+        },
+        "ciState": {
+          "enum": [
+            "pending",
+            "success",
+            "failure"
+          ]
+        },
+        "ciChecks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "state"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "success",
+                  "failure",
+                  "pending",
+                  "skipped"
+                ]
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "reviewState": {
+          "enum": [
+            "approved",
+            "changes_requested",
+            "review_required"
+          ]
+        },
+        "mergeable": {
+          "enum": [
+            "mergeable",
+            "conflicting",
+            "unknown"
+          ]
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "author",
+              "body"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "diffHunk": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "number"
+              },
+              "respondedAt": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }

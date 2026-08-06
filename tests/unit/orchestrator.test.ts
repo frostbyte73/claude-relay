@@ -7,7 +7,7 @@ import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import { LaunchGovernor } from '../../src/work/launch-governor.js';
 import { OUTPOST_MCP_TOOLS } from '../../src/mcp-server.js';
-import type { DraftedReply, Finding, JobRecord, OpenPrStep, OrchestratedStep, ProposedStep, Step, WorkspaceRef } from '../../src/work/work-types.js';
+import type { Finding, JobRecord, OrchestratedStep, ProposedStep, Step, WorkspaceRef } from '../../src/work/work-types.js';
 
 function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
   const queue = new JobQueue(dir);
@@ -119,9 +119,9 @@ describe('Orchestrator.rehydrateSessionBindings', () => {
     await first.engine.launchOrchestrator(job.id);
     const orchestratorSessionId = first.queue.get(job.id)!.orchestratorSessionId!;
 
-    // Give the job an executing open-pr step with a live session id, as a running step
-    // would have persisted.
-    const step = addOpenPrStep(first.engine, job.id);
+    // Give the job an executing orchestrated step with a live session id, as a running
+    // step would have persisted.
+    const step = addOrchestratedStep(first.engine, job.id);
     first.queue.mutate(job.id, (j) => ({
       ...j,
       steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'step-sess-1' } : s)),
@@ -135,10 +135,9 @@ describe('Orchestrator.rehydrateSessionBindings', () => {
     second.engine.rehydrateSessionBindings();
 
     expect(second.engine.actionForSession(orchestratorSessionId)).toBe('meta.orchestrate');
-    // Loading migrates the persisted open-pr step into an orchestrated step (see
-    // src/storage/jobs-migrate.ts), whose session rebinds to its controller — the
-    // controller then picks which action's hat to wear per round via submit_step_progress,
-    // rather than the engine deriving an action from open-pr round state.
+    // An orchestrated step's session rebinds to its controller — the controller then picks
+    // which action's hat to wear per round via submit_step_progress, rather than the engine
+    // deriving an action from step state.
     expect(second.engine.actionForSession('step-sess-1')).toBe('code.orchestrate-pr');
   });
 });
@@ -176,24 +175,6 @@ describe('Orchestrator.reconcileInterruptedSteps', () => {
     expect(queue.get(job.id)!.events!.some((e) => e.kind === 'step_retried' && e.who === 'system')).toBe(true);
   });
 
-  it('marks an orphaned implementing open-pr step failed (partial edits are unresumable)', () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    // materialize() now starts open-pr steps in 'speccing' (spec/plan flow); force
-    // 'implementing' here since that's the state under test, not the initial one.
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, state: 'implementing', sessionId: 'dead-sess' } as OpenPrStep : s)),
-    }));
-
-    engine.reconcileInterruptedSteps();
-
-    const reloaded = queue.get(job.id)!.steps.find((s) => s.id === step.id)!;
-    expect(reloaded.failure?.reason).toContain('daemon restart');
-  });
-
   it('leaves steps without a sessionId untouched (never spawned, not orphaned)', () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
@@ -206,53 +187,18 @@ describe('Orchestrator.reconcileInterruptedSteps', () => {
     expect(reloaded.failure).toBeUndefined();
     expect(queue.get(job.id)!.events?.some((e) => e.kind === 'step_retried')).toBeFalsy();
   });
-
-  // A daemon bounce mid-triage leaves the `replies` iteration in_progress/postedAt:null.
-  // The open-pr handler's `busy` guard then blocks a fresh triage round forever, so the
-  // thread hangs on "Claude is deciding…" with no way to retry. Boot must drop the orphan.
-  it('drops an orphaned in-progress triage iteration so a fresh round can dispatch', async () => {
-    const { engine, queue, resumed } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? {
-        ...s,
-        state: 'comment_pending_response',
-        prState: 'open',
-        sessionId: 'dead-sess',
-        comments: [{ id: 'c1', author: 'bot', body: 'b', createdAt: 1 }],
-        iterations: [{ id: 'it1', kind: 'replies', status: 'in_progress', startedAt: 1 }],
-      } as OpenPrStep : s)),
-    }));
-
-    engine.reconcileInterruptedEdits();
-
-    const reloaded = queue.get(job.id)!.steps.find((s) => s.id === step.id)! as OpenPrStep;
-    expect(reloaded.iterations ?? []).toHaveLength(0);
-
-    // With the orphan cleared, the next tick re-dispatches triage onto the shared session.
-    await engine.tick(job.id);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(resumed.some((r) => r.env.STEP_ID === step.id)).toBe(true);
-  });
 });
 
-function draft(commentId: string, extra: Partial<DraftedReply> = {}): DraftedReply {
-  return { commentId, recommendation: 'reply', rationale: 'r', draftReply: 'd', ...extra };
-}
-
-function addOpenPrStep(engine: WorkEngine, jobId: string): OpenPrStep {
+function addOrchestratedStep(engine: WorkEngine, jobId: string): OrchestratedStep {
   const proposed: ProposedStep = {
-    type: 'open-pr',
+    type: 'orchestrated',
+    controller: 'code.orchestrate-pr',
     title: 't',
     description: 'd',
     goal: 'g',
-    approach: 'a',
     workspace: { kind: 'writable', repoCwd: '/tmp', branch: 'feat/x' },
   };
-  return engine.addStepManually(jobId, proposed) as OpenPrStep;
+  return engine.addStepManually(jobId, proposed) as OrchestratedStep;
 }
 
 describe('Orchestrator — parallel group dispatch', () => {
@@ -350,308 +296,6 @@ describe('Orchestrator — rerunLatest', () => {
   });
 });
 
-describe('Orchestrator.mergeDraftedReplies', () => {
-  it('upserts drafts by commentId, adding new ones without touching existing', () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { rationale: 'first' })]);
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c2', { rationale: 'second' })]);
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.state).toBe('reply_pending_review');
-    expect(s.draftedReplies?.map((d) => [d.commentId, d.rationale])).toEqual([
-      ['c1', 'first'],
-      ['c2', 'second'],
-    ]);
-  });
-
-  it('preserves userEdited drafts against re-triage', () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { draftReply: 'original' })]);
-    engine.setDraftUserEdited(job.id, step.id, 'c1', true);
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { draftReply: 'clobbered' })]);
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    const kept = s.draftedReplies?.find((d) => d.commentId === 'c1');
-    expect(kept?.draftReply).toBe('original');
-    expect(kept?.userEdited).toBe(true);
-  });
-});
-
-describe('Orchestrator.resolveCompletedEditDrafts', () => {
-  function setupStepWithComments(engine: WorkEngine) {
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    engine.applyOpenPrPatch(job.id, step.id, {
-      comments: [
-        { id: 'c1', author: 'a', body: 'edit me', createdAt: 1 },
-        { id: 'c2', author: 'a', body: 'reply me', createdAt: 1 },
-      ],
-    });
-    return { job, step };
-  }
-
-  it('marks edit-drafts responded on push when their edit job is done', () => {
-    const { engine, queue } = makeEngine();
-    const { job, step } = setupStepWithComments(engine);
-    engine.mergeDraftedReplies(job.id, step.id, [
-      draft('c1', { recommendation: 'edit' }),
-      draft('c2', { recommendation: 'reply' }),
-    ]);
-    const edit = engine.enqueueEditJob(job.id, step.id, 'c1')!;
-    engine.markEditDone(job.id, step.id, edit.id, { status: 'done' });
-    const resolved = engine.resolveCompletedEditDrafts(job.id, step.id);
-    expect(resolved).toBe(1);
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.comments?.find((c) => c.id === 'c1')?.respondedAt).toBeDefined();
-    expect(s.comments?.find((c) => c.id === 'c2')?.respondedAt).toBeUndefined();
-    expect(s.draftedReplies?.map((d) => d.commentId)).toEqual(['c2']);
-  });
-
-  it('leaves edit-drafts untouched when the edit job is still running', () => {
-    const { engine, queue } = makeEngine();
-    const { job, step } = setupStepWithComments(engine);
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { recommendation: 'edit' })]);
-    engine.enqueueEditJob(job.id, step.id, 'c1');
-    const resolved = engine.resolveCompletedEditDrafts(job.id, step.id);
-    expect(resolved).toBe(0);
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.comments?.find((c) => c.id === 'c1')?.respondedAt).toBeUndefined();
-    expect(s.draftedReplies?.map((d) => d.commentId)).toEqual(['c1']);
-  });
-});
-
-describe('Orchestrator open-pr session continuity', () => {
-  it('resumes the implementer session for a triage round instead of spawning fresh', async () => {
-    const { engine, queue, spawned, resumed } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    // Simulate the initial implement round having established the session.
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'impl-sess' } : s)),
-    }));
-    engine.applyOpenPrPatch(job.id, step.id, {
-      state: 'comment_pending_response',
-      comments: [{ id: 'c1', author: 'a', body: 'why poll here?', createdAt: 1 }],
-    });
-    const spawnCountBefore = spawned.length;
-
-    await engine.tick(job.id);
-
-    expect(resumed.map((r) => r.sessionId)).toContain('impl-sess');
-    expect(spawned.length).toBe(spawnCountBefore); // no new session minted
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.sessionId).toBe('impl-sess'); // not overwritten
-    expect(resumed.find((r) => r.sessionId === 'impl-sess')?.env.OUTPOST_ENVELOPE).toBeTruthy();
-  });
-
-  it('resumes the implementer session for an edit round instead of spawning fresh', async () => {
-    const { engine, queue, spawned, resumed } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'impl-sess' } : s)),
-    }));
-    engine.applyOpenPrPatch(job.id, step.id, {
-      comments: [{ id: 'c1', author: 'a', body: 'log nodes not triedNodes', createdAt: 1 }],
-    });
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { recommendation: 'edit' })]);
-    const spawnCountBefore = spawned.length;
-
-    engine.enqueueEditJob(job.id, step.id, 'c1');
-    await engine.tick(job.id);
-
-    expect(resumed.map((r) => r.sessionId)).toContain('impl-sess');
-    expect(resumed.every((r) => r.sessionId === 'impl-sess')).toBe(true);
-    expect(spawned.length).toBe(spawnCountBefore); // no new session minted
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.editQueue!.find((e) => e.status === 'running')?.sessionId).toBe('impl-sess');
-  });
-
-  it('defers an edit round while a triage iteration is in flight', async () => {
-    const { engine, queue, spawned, resumed } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'impl-sess' } : s)),
-    }));
-    engine.applyOpenPrPatch(job.id, step.id, {
-      comments: [{ id: 'c1', author: 'a', body: 'x', createdAt: 1 }],
-      iterations: [{ id: 'i1', kind: 'replies', status: 'in_progress', startedAt: 0 }],
-    });
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { recommendation: 'edit' })]);
-    const spawnCountBefore = spawned.length;
-
-    engine.enqueueEditJob(job.id, step.id, 'c1');
-    await engine.tick(job.id);
-
-    expect(resumed).toHaveLength(0);
-    expect(spawned.length).toBe(spawnCountBefore);
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.editQueue!.find((e) => e.commentId === 'c1')?.status).toBe('queued');
-  });
-
-  it('preserves the persistent session id across a replies rejection', () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'impl-sess' } : s)),
-    }));
-    engine.applyOpenPrPatch(job.id, step.id, {
-      comments: [{ id: 'c1', author: 'a', body: 'x', createdAt: 1 }],
-    });
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1')]);
-    engine.rejectReplies(job.id, step.id, 'try again');
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.state).toBe('comment_pending_response');
-    expect(s.sessionId).toBe('impl-sess'); // NOT cleared
-  });
-
-  it('lets an edit round proceed once the triage round has posted', async () => {
-    const { engine, queue, resumed } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'impl-sess' } : s)),
-    }));
-    engine.applyOpenPrPatch(job.id, step.id, {
-      comments: [{ id: 'c1', author: 'a', body: 'x', createdAt: 1 }],
-      iterations: [{ id: 'i1', kind: 'replies', status: 'in_progress', startedAt: 0, postedAt: 5 }],
-    });
-    engine.mergeDraftedReplies(job.id, step.id, [draft('c1', { recommendation: 'edit' })]);
-
-    engine.enqueueEditJob(job.id, step.id, 'c1');
-    await engine.tick(job.id);
-
-    expect(resumed.map((r) => r.sessionId)).toContain('impl-sess');
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect(s.editQueue!.find((e) => e.commentId === 'c1')?.status).toBe('running');
-  });
-
-  it('starts an in-flight iteration when it dispatches a triage round', async () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'impl-sess' } : s)),
-    }));
-    engine.applyOpenPrPatch(job.id, step.id, {
-      state: 'comment_pending_response',
-      comments: [{ id: 'c1', author: 'a', body: 'why poll?', createdAt: 1 }],
-    });
-
-    await engine.tick(job.id);
-
-    const s = queue.get(job.id)!.steps.find((x) => x.id === step.id) as OpenPrStep;
-    expect((s.iterations ?? []).some((it) => it.kind === 'replies' && it.status === 'in_progress' && !it.postedAt)).toBe(true);
-  });
-});
-
-describe('Orchestrator applyOpenPrPatch — merge advances the plan', () => {
-  // Lets a fire-and-forget `void this.tickOne` settle (tickOne awaits worktree provision).
-  const flush = () => new Promise((r) => setTimeout(r, 0));
-
-  it('reviews before advancing, then dispatches the next step once the review continues, when the watcher observes a merge', async () => {
-    const { engine, queue, spawned } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const prStep = addOpenPrStep(engine, job.id);
-    const followUp = engine.addStepManually(job.id, {
-      type: 'action', action: 'read.investigate', title: 'follow-up',
-      inputs: {}, workspace: { kind: 'none' },
-    } as ProposedStep)!;
-    // State while the PR is open: executing, PR step live at pr_open, follow-up
-    // materialized 'running' with no session (exactly the regression's shape).
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'executing',
-      steps: j.steps.map((s) => (s.id === prStep.id
-        ? ({ ...s, sessionId: 'impl-sess', state: 'pr_open', prUrl: 'http://x', prState: 'open' } as Step)
-        : s)),
-    }));
-    const spawnCountBefore = spawned.length;
-
-    // Watcher observes the merge — no explicit tick, no PWA nudge.
-    engine.applyOpenPrPatch(job.id, prStep.id, { state: 'merged', prState: 'merged' });
-    await flush();
-
-    const events = queue.get(job.id)!.events ?? [];
-    expect(events.some((e) => e.kind === 'step_merged' && e.stepId === prStep.id && e.who === 'pr-watcher')).toBe(true);
-
-    // The merged group is settled but unreviewed, so tickOne runs a step-review
-    // instead of dispatching the follow-up directly.
-    const s2 = queue.get(job.id)!.steps.find((s) => s.id === followUp.id)!;
-    expect(s2.sessionId).toBeUndefined();
-    expect(queue.get(job.id)!.reviewingStepId).toBe(prStep.id);
-    expect(queue.get(job.id)!.state).toBe('executing');   // a review is not a planning phase
-    expect(spawned.length).toBe(spawnCountBefore + 1);          // step-review orchestrator spawned
-    expect(spawned[spawned.length - 1]!.action).toBe('meta.orchestrate');
-
-    // Once the orchestrator continues, the follow-up actually starts.
-    engine.onOrchestratorContinue(job.id);
-    await flush();
-    const s2After = queue.get(job.id)!.steps.find((s) => s.id === followUp.id)!;
-    expect(s2After.sessionId).toBeDefined();
-  });
-
-  it('clears a stale interrupt failure when the watcher advances a live (unmerged) PR, lifting the job halt', async () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const prStep = addOpenPrStep(engine, job.id);
-    // Shape of the CS-1552 regression: a daemon bounce marked the implementing step
-    // failed and halted the job; the user then opened the PR from the worktree edits,
-    // so the step recovered to comment_pending_response with a live PR — but the stale
-    // failure lingered, keeping the job permanently `failed` (stranding parallel
-    // siblings and the comment-triage round).
-    queue.mutate(job.id, (j) => ({
-      ...j,
-      state: 'failed',
-      steps: j.steps.map((s) => (s.id === prStep.id
-        ? ({
-            ...s, state: 'comment_pending_response', prUrl: 'http://x', prState: 'open',
-            failure: { reason: 'implement session interrupted by daemon restart', at: 1 },
-          } as Step)
-        : s)),
-    }));
-
-    // A routine watcher poll (CI update, no merge) flows through the choke point.
-    engine.applyOpenPrPatch(job.id, prStep.id, { ciState: 'success' });
-
-    const reloaded = queue.get(job.id)!.steps.find((s) => s.id === prStep.id)! as OpenPrStep;
-    expect(reloaded.failure).toBeUndefined();
-
-    // With the stale failure gone, the next tick lifts the halt.
-    await engine.tick(job.id);
-    expect(queue.get(job.id)!.state).toBe('executing');
-  });
-
-  it('does not re-emit step_merged for a patch on an already-merged step', async () => {
-    const { engine, queue } = makeEngine();
-    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const prStep = addOpenPrStep(engine, job.id);
-    queue.mutate(job.id, (j) => ({ ...j, state: 'executing' }));
-    engine.applyOpenPrPatch(job.id, prStep.id, { state: 'merged', prState: 'merged' });
-    await flush();
-    engine.applyOpenPrPatch(job.id, prStep.id, { prState: 'merged' });
-    await flush();
-    const merges = (queue.get(job.id)!.events ?? []).filter((e) => e.kind === 'step_merged');
-    expect(merges).toHaveLength(1);
-  });
-});
-
 const sampleFinding = {
   findings: '## Verified\nNPE reproduces at session.go:142.',
   evidence: [{ kind: 'repo-file', source: 'session.go:142', summary: 'nil deref' }],
@@ -662,7 +306,7 @@ describe('Orchestrator.onPlanReady — findings', () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     const proposed: ProposedStep = {
-      type: 'open-pr', title: 't', description: 'd', goal: 'g', approach: 'a',
+      type: 'orchestrated', controller: 'code.orchestrate-pr', title: 't', description: 'd', goal: 'g',
       workspace: { kind: 'writable', repoCwd: '/tmp', branch: 'feat/x' },
     };
     engine.onPlanReady(job.id, 'initial', [proposed], undefined, undefined, sampleFinding as unknown as Finding);
@@ -673,7 +317,7 @@ describe('Orchestrator.onPlanReady — findings', () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     const proposed: ProposedStep = {
-      type: 'open-pr', title: 't', description: 'd', goal: 'g', approach: 'a',
+      type: 'orchestrated', controller: 'code.orchestrate-pr', title: 't', description: 'd', goal: 'g',
       workspace: { kind: 'writable', repoCwd: '/tmp', branch: 'feat/x' },
     };
     engine.onPlanReady(job.id, 'initial', [proposed]);
@@ -684,7 +328,7 @@ describe('Orchestrator.onPlanReady — findings', () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     const first: ProposedStep = {
-      type: 'open-pr', title: 't', description: 'd', goal: 'g', approach: 'a',
+      type: 'orchestrated', controller: 'code.orchestrate-pr', title: 't', description: 'd', goal: 'g',
       workspace: { kind: 'writable', repoCwd: '/tmp', branch: 'feat/x' },
     };
     engine.onPlanReady(job.id, 'initial', [first], undefined, undefined, sampleFinding as unknown as Finding);
@@ -705,7 +349,7 @@ describe('Orchestrator.onPlanReady — findings', () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     const proposed: ProposedStep = {
-      type: 'open-pr', title: 't', description: 'd', goal: 'g', approach: 'a',
+      type: 'orchestrated', controller: 'code.orchestrate-pr', title: 't', description: 'd', goal: 'g',
       workspace: { kind: 'writable', repoCwd: '/tmp', branch: 'feat/x' },
     };
     engine.onPlanReady(job.id, 'initial', [proposed], undefined, undefined, sampleFinding as unknown as Finding);
@@ -857,11 +501,11 @@ describe('Orchestrator — workspace validation', () => {
     expect(queue.get(job.id)!.steps).toHaveLength(0);
   });
 
-  it('rejects an open-pr workspace with a blank branch', () => {
+  it('rejects a writable workspace with a blank branch', () => {
     const { engine } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     const step = {
-      type: 'open-pr', title: 'bump', description: '', goal: 'g', approach: 'a',
+      type: 'orchestrated', controller: 'code.orchestrate-pr', title: 'bump', description: '', goal: 'g',
       workspace: { kind: 'writable', repoCwd: '/tmp/repo', branch: '' },
     } as unknown as ProposedStep;
     expect(() => engine.onPlanReady(job.id, 'initial', [step])).toThrow(/requires branch/);
@@ -922,8 +566,9 @@ describe('Orchestrator — workspace validation', () => {
 describe('Orchestrator — orchestrated steps through the plan-rejection round-trip', () => {
   const orchestratedProposal: ProposedStep = {
     type: 'orchestrated', title: 'shepherd the PR', description: 'd', controller: 'code.orchestrate-pr',
+    // No dispatches/inbox/roundsSpent/consecutiveSelfRounds: ProposedStep omits pure runtime
+    // state, and materialize() seeds it. A planner supplying them is a type error.
     goal: 'ship the fix', inputs: { prUrl: 'https://example.com/pr/1' },
-    dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
   };
 
   it('stepToProposed round-trips controller/goal/inputs into the rejected iteration snapshot', () => {
@@ -1178,7 +823,7 @@ describe('WorkEngine.markStepResolved', () => {
     ];
     // Seeded already-failed: force-resolving a step that failed must not leave it reading as
     // failed forever after — step-card.js's stateLabel/stateTone and vm/tracked.js give
-    // `.failure` priority over `state`, mirroring rerunLatest's retry path and the open-pr
+    // `.failure` priority over `state`, mirroring rerunLatest's retry path and the merge
     // merge path, both of which clear `.failure` on their own recovery.
     const { jobId, stepId } = makeOrchestratedJob(queue, dispatches, { failure: { reason: 'boom', at: 1 } });
 
@@ -1359,5 +1004,135 @@ describe('WorkEngine — orchestrated terminal cleanup', () => {
     expect(h.archived).toEqual([]);
     expect(h.closed).toEqual([h.controllerSessionId]);
     expect((h.queue.get(h.jobId)!.steps[0] as OrchestratedStep).state).toBe('failed');
+  });
+});
+
+// Boot rehydration for dispatch children. `roleBySession` is in-memory, but a dispatch's
+// sessionId is persisted on its Dispatch record — so after a restart the daemon knew the
+// session existed but not that it belonged to a child. Its Stop then fell through to the
+// generic step path and settled the PARENT on the child's behalf.
+describe('WorkEngine.rehydrateSessionBindings — running dispatches', () => {
+  function persistedJobWithRunningDispatch(dir: string) {
+    const queue = new JobQueue(dir);
+    const step: OrchestratedStep = {
+      id: 'step-1', title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches: [
+        { id: 'disp-1', action: 'code.review-diff', brief: 'review it', status: 'running', sessionId: 'child-sess', attempts: 1 },
+        { id: 'disp-2', action: 'code.review-ui', brief: 'settled already', status: 'done', sessionId: 'old-sess', attempts: 1 },
+      ],
+      inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'waiting', createdAt: 1, updatedAt: 1, sessionId: 'controller-sess',
+    };
+    queue.upsert({
+      id: 'job-1', source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    });
+  }
+
+  function bootedEngine(dir: string, unresolvedGraceMs: number) {
+    const queue = new JobQueue(dir);
+    const engine = new WorkEngine({
+      queue,
+      sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
+      worktreeManager: { provision: async () => ({ path: null }), get: () => undefined, archive: async () => {} } as never,
+      linearWriter: { setState: async () => undefined } as never,
+      actionsStore: {} as never,
+      jobsDir: join(dir, 'jobs'), now: () => 1, unresolvedGraceMs,
+    });
+    engine.rehydrateSessionBindings();
+    return { engine, queue };
+  }
+
+  it('rebinds the child session to its action, and only for dispatches still running', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rehydrate-disp-'));
+    persistedJobWithRunningDispatch(dir);
+    const { engine } = bootedEngine(dir, 0);
+    expect(engine.actionForSession('child-sess')).toBe('code.review-diff');
+    expect(engine.actionForSession('controller-sess')).toBe('code.orchestrate-pr');
+    // A settled dispatch's session is history — rebinding it would grant a dead session
+    // its action's allowlist for as long as the daemon lives.
+    expect(engine.actionForSession('old-sess')).toBeUndefined();
+  });
+
+  it('routes a rehydrated child session\'s turn-end to the dispatch, leaving the parent step alone', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rehydrate-disp-'));
+    persistedJobWithRunningDispatch(dir);
+    const { engine, queue } = bootedEngine(dir, 0);
+
+    expect(engine.armUnresolvedCheck('child-sess', 'never submitted')).toBe(true);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const step = queue.get('job-1')!.steps[0] as OrchestratedStep;
+    expect(step.dispatches.find((d) => d.id === 'disp-1')).toMatchObject({
+      status: 'failed', failure: 'never submitted',
+    });
+    expect(step.failure).toBeUndefined();
+    expect(step.state).not.toBe('failed');
+  });
+});
+
+// resumeControllerRound and spawnDispatchSession are invoked fire-and-forget, and only their
+// provision() call is guarded internally. A throw anywhere else — envelope construction, the
+// action catalog, lesson augmentation — used to be an unhandled rejection that left the step
+// hung or the dispatch stuck `queued`, with no failure event and no global handler to catch it.
+describe('WorkEngine — a throw outside provision() still settles the round', () => {
+  function makeThrowingEngine(throwFor: string) {
+    const dir = mkdtempSync(join(tmpdir(), 'orch-throw-'));
+    const queue = new JobQueue(dir);
+    const engine = new WorkEngine({
+      queue,
+      sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
+      // provision SUCCEEDS — the point is that the failure is somewhere else.
+      worktreeManager: { provision: async () => ({ path: dir }), get: () => undefined, archive: async () => {} } as never,
+      linearWriter: { setState: async () => undefined } as never,
+      actionRegistry: {
+        listActions: () => [],
+        getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+      } as never,
+      journalStore: {
+        hasEntryForStep: () => true,
+        append: () => {},
+        recent: (action: string) => {
+          if (action === throwFor) throw new Error('lesson lookup blew up');
+          return [];
+        },
+      } as never,
+      jobsDir: join(dir, 'jobs'), newId: (() => { let n = 0; return () => `id-${++n}`; })(), now: () => 1,
+    });
+    const step: OrchestratedStep = {
+      id: 'step-1', title: 'shepherd', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      state: 'running', createdAt: 1, updatedAt: 1, sessionId: 'controller-sess',
+    };
+    queue.upsert({
+      id: 'job-1', source: 'manual', title: 't', description: 'd', state: 'executing',
+      steps: [step], createdAt: 1, updatedAt: 1,
+    });
+    return { engine, queue };
+  }
+
+  it('fails the step when the controller\'s own resume throws before it reaches the session', async () => {
+    const { engine, queue } = makeThrowingEngine('code.orchestrate-pr');
+    engine.onStepProgress('job-1', 'step-1', { phase: 'spec', next: { kind: 'self-round' } });
+    await flushLaunch();
+
+    const step = queue.get('job-1')!.steps[0] as OrchestratedStep;
+    expect(step.state).toBe('failed');
+    expect(step.failure?.reason).toContain('lesson lookup blew up');
+  });
+
+  it('fails the dispatch (not the parent) when a child\'s spawn throws after provision', async () => {
+    const { engine, queue } = makeThrowingEngine('code.review-diff');
+    engine.onStepProgress('job-1', 'step-1', {
+      next: { kind: 'dispatch', dispatches: [{ action: 'code.review-diff', brief: 'review it' }] },
+    });
+    await flushLaunch();
+
+    const step = queue.get('job-1')!.steps[0] as OrchestratedStep;
+    expect(step.dispatches[0]).toMatchObject({ status: 'failed' });
+    expect(step.dispatches[0]!.failure).toContain('lesson lookup blew up');
+    expect(step.failure).toBeUndefined();
   });
 });

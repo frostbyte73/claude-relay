@@ -19,13 +19,6 @@ const WORKSPACE_SHAPE =
 
 export const STEP_TYPE_CATALOG: StepTypeCatalogEntry[] = [
   {
-    type: 'open-pr',
-    description: 'Implement code changes in one repo and open a PR. Implementer + PR comment handling are handled by Outpost; you provide goal/approach/risks/branch.',
-    required: ['title', 'description', 'goal', 'approach', 'workspace.repoCwd', 'workspace.branch'],
-    optional: ['risks', 'parallelGroup'],
-    workspace: WORKSPACE_SHAPE,
-  },
-  {
     type: 'action',
     description: 'Spawn a named action (skill) for one-shot work — investigation, code review, ops, etc. Pick the action from the catalog passed alongside this entry. Set forwardOutput=true (default) when downstream steps should see this step\'s output; false for ops work that doesn\'t produce findings.',
     required: ['title', 'description', 'action', 'goal'],
@@ -112,26 +105,6 @@ export interface StepEnvelopeBase {
   recentLessons?: JournalEntry[];
 }
 
-export interface OpenPrEnvelope extends StepEnvelopeBase {
-  type: 'open-pr';
-  goal: string;
-  approach: string;
-  risks?: string;
-  spec?: string;      // present from the plan round onward
-  implPlan?: string;  // present in the implement round
-  workspace: { kind: 'writable'; repoCwd: string; branch: string };
-  typePayload: {
-    branch: string;
-    round:
-      | 'initial'
-      | { kind: 'spec'; feedback?: string[] }
-      | { kind: 'plan' }
-      | { kind: 'pr-comments'; comments: unknown[] }
-      | { kind: 'conflict'; base?: string; push?: boolean; postAction?: 'squash-to-base' }
-      | { kind: 'ci-fix'; checks: { name: string; url?: string }[] };
-  };
-}
-
 export interface ActionEnvelope extends StepEnvelopeBase {
   type: 'action';
   action: string;
@@ -165,4 +138,4 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   actionCatalog?: ActionCatalogEntry[];
 }
 
-export type StepEnvelope = OpenPrEnvelope | ActionEnvelope | OrchestratedEnvelope;
+export type StepEnvelope = ActionEnvelope | OrchestratedEnvelope;

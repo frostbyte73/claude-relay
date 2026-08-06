@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { deriveRunEvents, type RunEvent } from '../../src/work/action-run-derive.js';
-import type { ActionStep, JobRecord, OpenPrStep, Step } from '../../src/work/work-types.js';
+import type { ActionStep, JobRecord, Step } from '../../src/work/work-types.js';
 
 const NOW = 1_700_000_000_000;
 const GATED = new Set(['write.linear-comment']);
@@ -10,15 +10,6 @@ function job(steps: Step[], over: Partial<JobRecord> = {}): JobRecord {
   return {
     id: 'j1', source: 'manual', title: 't', description: '', state: 'executing',
     steps, createdAt: 0, updatedAt: 0, ...over,
-  };
-}
-
-function openPr(over: Partial<OpenPrStep> = {}): OpenPrStep {
-  return {
-    id: 's1', type: 'open-pr', title: 'step', description: '',
-    workspace: { kind: 'writable', repoCwd: '/r', branch: 'b' },
-    goal: 'g', approach: 'a', state: 'speccing', sessionId: 'sess1',
-    createdAt: 0, updatedAt: 0, ...over,
   };
 }
 
@@ -33,113 +24,6 @@ function action(over: Partial<ActionStep> = {}): ActionStep {
 function diff(prev: Step, next: Step): RunEvent[] {
   return deriveRunEvents(job([prev]), job([next]), OPTS);
 }
-
-describe('deriveRunEvents — open-pr rounds', () => {
-  it('opens a spec run when the step first binds a session', () => {
-    const events = deriveRunEvents(
-      job([openPr({ sessionId: undefined })]),
-      job([openPr()]),
-      OPTS,
-    );
-    expect(events).toEqual([
-      { t: 'open', key: { jobId: 'j1', stepId: 's1' }, action: 'code.spec', round: 'spec', sessionId: 'sess1', at: NOW },
-    ]);
-  });
-
-  it('closes the spec run as submitted when it parks on the gate', () => {
-    const events = diff(openPr(), openPr({ state: 'spec_pending_review' }));
-    expect(events).toEqual([
-      { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'submitted', at: NOW },
-    ]);
-  });
-
-  it('accepts the spec and opens the plan round when the user approves', () => {
-    const events = diff(openPr({ state: 'spec_pending_review' }), openPr({ state: 'planning' }));
-    expect(events).toEqual([
-      { t: 'verdict', key: { jobId: 'j1', stepId: 's1' }, round: 'spec', outcome: 'accepted', at: NOW },
-      { t: 'open', key: { jobId: 'j1', stepId: 's1' }, action: 'code.plan', round: 'plan', sessionId: 'sess1', at: NOW },
-    ]);
-  });
-
-  // rejectSpec appends the note and flips state back in one mutate — the verdict has
-  // to land on the attempt that was rejected, not on the one replacing it.
-  it('verdicts the rejected spec before reopening the next attempt', () => {
-    const events = diff(
-      openPr({ state: 'spec_pending_review' }),
-      openPr({ state: 'speccing', specFeedback: ['tighten the scope'] }),
-    );
-    expect(events.map((e) => e.t)).toEqual(['verdict', 'open']);
-    expect(events[0]).toMatchObject({ round: 'spec', outcome: 'revised', feedbackChars: 17 });
-  });
-
-  it('closes plan as accepted and opens implement', () => {
-    const events = diff(openPr({ state: 'planning' }), openPr({ state: 'implementing' }));
-    expect(events).toEqual([
-      { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'accepted', at: NOW },
-      { t: 'open', key: { jobId: 'j1', stepId: 's1' }, action: 'code.implement', round: 'implement', sessionId: 'sess1', at: NOW },
-    ]);
-  });
-
-  it('leaves implement pending at PR-open and merges it later', () => {
-    const opened = diff(
-      openPr({ state: 'implementing' }),
-      openPr({ state: 'pr_open', prUrl: 'u', prState: 'open' }),
-    );
-    expect(opened).toEqual([{ t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'submitted', at: NOW }]);
-
-    const merged = diff(
-      openPr({ state: 'pr_open', prState: 'open' }),
-      openPr({ state: 'merged', prState: 'merged' }),
-    );
-    expect(merged).toEqual([
-      { t: 'verdict', key: { jobId: 'j1', stepId: 's1' }, round: 'implement', outcome: 'merged', at: NOW },
-    ]);
-  });
-
-  it('scores a ci-fix round by whether it gave up', () => {
-    const fixed = diff(
-      openPr({ state: 'pr_open', ciFixing: true }),
-      openPr({ state: 'pr_open', ciFixing: false }),
-    );
-    expect(fixed).toEqual([{ t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'accepted', at: NOW }]);
-
-    const gaveUp = diff(
-      openPr({ state: 'pr_open', ciFixing: true }),
-      openPr({ state: 'pr_open', ciFixing: false, ciFixGaveUp: true }),
-    );
-    expect(gaveUp).toEqual([{ t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'gave_up', at: NOW }]);
-  });
-
-  it('scores an unresolvable conflict as gave_up', () => {
-    const events = diff(
-      openPr({ state: 'conflicting', conflictResolving: true }),
-      openPr({ state: 'conflict_unresolved', conflictResolving: false }),
-    );
-    expect(events).toEqual([{ t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'gave_up', at: NOW }]);
-  });
-
-  it('tracks a triage round through its iteration', () => {
-    const running = openPr({
-      state: 'comment_pending_response',
-      iterations: [{ id: 'i1', kind: 'replies', status: 'in_progress', startedAt: 1 }],
-    });
-    const posted = openPr({
-      state: 'comment_pending_response',
-      iterations: [{ id: 'i1', kind: 'replies', status: 'in_progress', startedAt: 1, postedAt: 2 }],
-    });
-    expect(diff(running, posted)).toEqual([
-      { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'submitted', at: NOW },
-    ]);
-
-    const rejected = openPr({
-      state: 'comment_pending_response',
-      iterations: [{ id: 'i1', kind: 'replies', status: 'rejected', startedAt: 1, postedAt: 2, feedback: 'no' }],
-    });
-    expect(diff(posted, rejected)).toEqual([
-      { t: 'verdict', key: { jobId: 'j1', stepId: 's1' }, round: 'pr-comments', outcome: 'revised', at: NOW, feedbackChars: 2 },
-    ]);
-  });
-});
 
 describe('deriveRunEvents — action steps', () => {
   it('closes a plain action run as accepted when it resolves', () => {
@@ -198,10 +82,13 @@ describe('deriveRunEvents — failure and cancellation', () => {
     ]);
   });
 
+  // The round rule would score a parked draft as `submitted`; a failure landing in the
+  // same mutate has to win, and produce exactly one close.
   it('emits exactly one close when a state change and a failure land together', () => {
+    const gated = (over: Partial<ActionStep> = {}) => action({ action: 'write.linear-comment', ...over });
     const events = diff(
-      openPr({ state: 'implementing' }),
-      openPr({ state: 'pr_open', prUrl: 'u', failure: { reason: 'boom', at: 5 } }),
+      gated(),
+      gated({ state: 'gate_pending_approval', draft: 'body', failure: { reason: 'boom', at: 5 } }),
     );
     expect(events).toEqual([
       { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'failed', at: NOW, failureReason: 'boom' },

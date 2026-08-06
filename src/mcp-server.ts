@@ -205,32 +205,6 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
-    name: 'submit_spec',
-    description: 'Post the design spec for this open-pr step back to Outpost. `spec` is the full design doc as markdown. Sets the step to spec_pending_review — the user reviews the rendered spec and either accepts (→ plan round) or proposes changes (resumes this session as code.spec with their feedback). Call once, at the end of the spec round, after your self-review.',
-    inputSchema: {
-      type: 'object',
-      required: ['jobId', 'stepId', 'spec'],
-      properties: {
-        jobId: { type: 'string' },
-        stepId: { type: 'string' },
-        spec: { type: 'string', description: 'Full design spec as markdown.' },
-      },
-    },
-  },
-  {
-    name: 'submit_impl_plan',
-    description: 'Post the implementation plan for this open-pr step back to Outpost. `plan` is the task-by-task plan as markdown. Advances the step to the implement round (no user gate). Call once, at the end of the plan round, after your self-review. NOTE: this is the step-level implementation plan — distinct from the job-level orchestrator `submit_plan`.',
-    inputSchema: {
-      type: 'object',
-      required: ['jobId', 'stepId', 'plan'],
-      properties: {
-        jobId: { type: 'string' },
-        stepId: { type: 'string' },
-        plan: { type: 'string', description: 'Task-by-task implementation plan as markdown.' },
-      },
-    },
-  },
-  {
     name: 'submit_step_failed',
     description: 'Report that this step could not be completed and why. Terminal — the orchestrator will not retry.',
     inputSchema: {
@@ -240,63 +214,6 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
         jobId: { type: 'string' },
         stepId: { type: 'string' },
         reason: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'submit_replies',
-    description: 'Post drafted PR-comment replies from code.triage-pr-comments back to the orchestrator. Sets the step to `reply_pending_review` and records the triage iteration.',
-    inputSchema: {
-      type: 'object',
-      required: ['jobId', 'stepId', 'drafts'],
-      properties: {
-        jobId: { type: 'string' },
-        stepId: { type: 'string' },
-        drafts: { type: 'array', items: { type: 'object' } },
-        threadHash: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'submit_edit_done',
-    description: 'Signal completion (or failure) of one code.fix-pr-comment edit job. `status` is `done` or `failed`; include `failure` only on failure.',
-    inputSchema: {
-      type: 'object',
-      required: ['jobId', 'stepId', 'editId', 'status'],
-      properties: {
-        jobId: { type: 'string' },
-        stepId: { type: 'string' },
-        editId: { type: 'string' },
-        status: { type: 'string', enum: ['done', 'failed'] },
-        failure: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'submit_conflict_resolved',
-    description: 'Signal completion of one code.resolve-conflicts round. `status` is `resolved` (merged origin/main, resolved, committed, pushed) or `unresolvable` (aborted the merge — needs a human). Include `failure` only when unresolvable.',
-    inputSchema: {
-      type: 'object',
-      required: ['jobId', 'stepId', 'status'],
-      properties: {
-        jobId: { type: 'string' },
-        stepId: { type: 'string' },
-        status: { type: 'string', enum: ['resolved', 'unresolvable'] },
-        failure: { type: 'string' },
-      },
-    },
-  },
-  {
-    name: 'submit_ci_fixed',
-    description: 'Signal completion of one code.fix-ci round. `status` is `fixed` (edited the code to fix the failing checks, committed, pushed) or `unfixable` (could not confidently fix — e.g. infra/flake or unclear cause; needs a human). Include `failure` only when unfixable.',
-    inputSchema: {
-      type: 'object',
-      required: ['jobId', 'stepId', 'status'],
-      properties: {
-        jobId: { type: 'string' },
-        stepId: { type: 'string' },
-        status: { type: 'string', enum: ['fixed', 'unfixable'] },
-        failure: { type: 'string' },
       },
     },
   },

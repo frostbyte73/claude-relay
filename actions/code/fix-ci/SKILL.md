@@ -1,6 +1,6 @@
 ---
 name: code.fix-ci
-description: Use when invoked as `/code.fix-ci` in a session spawned by the Outpost work orchestrator inside an open-pr step's worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.round.kind == "ci-fix"`. Read the failing checks from the envelope, pull their logs, fix the code, run the relevant tests locally, then commit and push (append — never force-push). Finish with `mcp__outpost__submit_ci_fixed`.
+description: Use when invoked as `/code.fix-ci` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.fix-ci"`. Read the failing checks from the envelope's `pr.ciChecks`, pull their logs, fix the code, run the relevant tests locally, then commit and push (append — never force-push). Finish with `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
@@ -27,7 +27,7 @@ problem), do NOT guess — report it unfixable and hand it back.
 test -r "$OUTPOST_ENVELOPE" || { echo "missing envelope: $OUTPOST_ENVELOPE"; exit 1; }
 JOB_ID=$(jq -r '.jobId' "$OUTPOST_ENVELOPE")
 STEP_ID=$(jq -r '.stepId' "$OUTPOST_ENVELOPE")
-jq -r '.typePayload.round.checks[] | "\(.name)\t\(.url // "")"' "$OUTPOST_ENVELOPE"
+jq -r '.pr.ciChecks[]? | select(.state == "failure") | "\(.name)\t\(.url // "")"' "$OUTPOST_ENVELOPE"
 ```
 
 Skim any lessons from past runs:
@@ -36,7 +36,8 @@ Skim any lessons from past runs:
 jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 ```
 
-`goal`/`approach` restate the PR's intent — useful when a failure is ambiguous.
+`goal` and `inputs.approach` restate the PR's intent — useful when a failure is ambiguous.
+`boundNote` is what the controller asked for this round.
 `DAEMON_AUTH` and `OUTPOST_HOOK_PORT` are inherited. Your cwd is the worktree.
 
 ## Step 2 — Pull the failing logs
@@ -79,19 +80,25 @@ git push
 Load the MCP tools (deferred behind ToolSearch), then report:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_ci_fixed,mcp__outpost__submit_journal", max_results: 2 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__submit_journal", max_results: 2 })
 ```
 
+`memo` carries the outcome — there is no status field. Say plainly whether you pushed a
+fix or gave up, and why; the decision turn reads only this.
+
 ```
-mcp__outpost__submit_ci_fixed({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  status: "fixed" | "unfixable",
-  failure: "<one-line reason, only when unfixable>"
+  phase: "pr_open",
+  memo: "ci-fix: pushed <commit> fixing <checks> — OR — ci-fix: unfixable, <one-line reason>",
+  next: { kind: "self-round" }
 })
 ```
 
-Use `unfixable` (with a short `failure`) rather than pushing a guessed fix.
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and whether the user is asked to approve anything — so do not pick that yourself.
+
+Report unfixable (with the reason in `memo`) rather than pushing a guessed fix.
 
 ## Step 6 — Journal one lesson
 

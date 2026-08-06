@@ -1,6 +1,6 @@
 ---
 name: code.resolve-conflicts
-description: Use when invoked as `/code.resolve-conflicts` in a session spawned by the Outpost work orchestrator inside an open-pr step's worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.round.kind == "conflict"`. Merge the round's base branch (default `origin/main`) into the branch, resolve conflicts using knowledge of why the code exists, commit with the default merge message and push when the round asks (default yes) — or `git merge --abort` and report unresolvable. Finish with `mcp__outpost__submit_conflict_resolved`.
+description: Use when invoked as `/code.resolve-conflicts` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.resolve-conflicts"`. Merge the base branch (default `origin/main`) into the branch, resolve conflicts using knowledge of why the code exists, commit with the default merge message and push — or `git merge --abort` and report unresolvable. Finish with `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
@@ -33,16 +33,16 @@ Skim any lessons from past runs:
 jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 ```
 
-`goal`/`approach` restate the PR's intent — useful when a conflict hunk is ambiguous.
+`goal` and `inputs.approach` restate the PR's intent — useful when a conflict hunk is ambiguous.
+`boundNote` is what the controller asked for this round.
 `DAEMON_AUTH` and `OUTPOST_HOOK_PORT` are inherited from the spawn. Your cwd is the worktree.
 
 ## Step 2 — Merge the base branch
 
-The base to merge and whether to push are carried on the round:
+The base is `origin/main` unless `boundNote` names a different one:
 
 ```bash
-BASE=$(jq -r '.typePayload.round.base // "origin/main"' "$OUTPOST_ENVELOPE")
-PUSH=$(jq -r 'if .typePayload.round.push == false then "false" else "true" end' "$OUTPOST_ENVELOPE")
+BASE=origin/main    # override only if boundNote says so
 case "$BASE" in */*) git fetch "${BASE%%/*}" ;; esac   # only remote refs need a fetch
 git merge "$BASE"
 ```
@@ -57,12 +57,12 @@ git merge "$BASE"
 
 ## Step 3 — Commit and push (confident resolution only)
 
-Commit with git's default merge message (no `-m`). Push only when the round asks for it
-(a local squash-to-base handoff sets `push:false` — there's no PR branch to update):
+Commit with git's default merge message (no `-m`), then push so the PR picks the merge up
+— unless `boundNote` explicitly says not to:
 
 ```bash
 git commit --no-edit
-[ "$PUSH" != "false" ] && git push
+git push
 ```
 
 If the push is rejected (branch moved again under you), you may re-run Step 2 once. If it
@@ -73,12 +73,23 @@ still fails, abort and report unresolvable.
 Load the MCP tools (deferred behind ToolSearch), then report:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_conflict_resolved,mcp__outpost__submit_journal", max_results: 2 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__submit_journal", max_results: 2 })
 ```
 
+`memo` carries the outcome — there is no status field. Say plainly that the conflicts are
+resolved and what you reconciled; the decision turn reads only this.
+
 ```
-mcp__outpost__submit_conflict_resolved({ jobId: "<$JOB_ID>", stepId: "<$STEP_ID>", status: "resolved" })
+mcp__outpost__submit_step_progress({
+  jobId: "<$JOB_ID>",
+  stepId: "<$STEP_ID>",
+  phase: "conflict",
+  memo: "conflicts resolved: <files> reconciled by <how>; merge committed and pushed",
+  next: { kind: "self-round" }
+})
 ```
+
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and whether the user is asked to approve anything — so do not pick that yourself.
 
 Write a one-line summary in chat of what conflicted and how you reconciled it — the user
 reads this in the activity stream.
@@ -92,11 +103,12 @@ git merge --abort
 ```
 
 ```
-mcp__outpost__submit_conflict_resolved({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  status: "unresolvable",
-  failure: "<one-line reason>"
+  phase: "conflict",
+  memo: "conflicts UNRESOLVABLE: <files>, <one-line reason>; merge aborted, tree clean",
+  next: { kind: "self-round" }
 })
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: code.spec
-description: Use when invoked as `/code.spec` in a session spawned by the Outpost work orchestrator inside an open-pr step's worktree, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=open-pr`, and `typePayload.round.kind == "spec"`. Reads the envelope (goal/approach/risks + any previous-step findings), drafts a headless design spec borrowing the brainstorming methodology, self-reviews it, and submits it via `mcp__outpost__submit_spec` for the user's gate. Read-only — no edits, no commits, no PR. On approval the same session resumes as `code.plan`, then `code.implement`.
+description: Use when invoked as `/code.spec` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.spec"`. Reads the envelope (goal/approach/risks + any previous-step findings), drafts a headless design spec borrowing the brainstorming methodology, self-reviews it, and reports it as the step's `spec` artifact via `mcp__outpost__submit_step_progress`. Read-only — no edits, no commits, no PR.
 outpost:
   kind: action
   category: code
@@ -13,9 +13,9 @@ outpost:
 
 # Spec drafter
 
-You're running in the worktree the Outpost orchestrator created for an open-pr step, at the **spec round** — the first of three rounds (spec → plan → implement) that precede the actual diff. Your job: produce a design spec as markdown and submit it for the user's review gate. You do not touch any files in the worktree. If the user rejects the spec with feedback, this same session is resumed with your own prior reasoning still in context — revise and resubmit. Once the user approves, the session is resumed as `/code.plan`, then `/code.implement`. Leave your reasoning legible in the conversation; those later rounds inherit it.
+You're running in the worktree `code.orchestrate-pr` owns, bound to the **spec round** — the first of three rounds (spec → plan → implement) that precede the actual diff. Your job: produce a design spec as markdown and report it as the step's `spec` artifact. You do not touch any files in the worktree. If the spec comes back with feedback, this same session is resumed with your own prior reasoning still in context — revise and resubmit. Leave your reasoning legible in the conversation; the later rounds run on this session and inherit it.
 
-**Never run `Edit`, `Write`, `git add`, `git commit`, `git push`, `gh pr create`, or any command that touches the worktree's files or the branch.** This round is pure thinking — the deliverable is a markdown string handed to `mcp__outpost__submit_spec`, not a file.
+**Never run `Edit`, `Write`, `git add`, `git commit`, `git push`, `gh pr create`, or any command that touches the worktree's files or the branch.** This round is pure thinking — the deliverable is a markdown string handed to `mcp__outpost__submit_step_progress`, not a file.
 
 ## Step 0 — Read your envelope
 
@@ -30,13 +30,14 @@ You'll find:
 | Field | Meaning |
 |---|---|
 | `goal` | One paragraph — what this step needs to deliver. |
-| `approach` | Two-three paragraphs on the planned approach. |
-| `risks` | Optional — things the orchestrator flagged for sanity-checks. |
-| `spec` | Optional — a spec you (or a prior round) already drafted. Present when this is a re-spec after the user requested changes. |
+| `inputs.approach` | Two-three paragraphs on the planned approach. |
+| `inputs.risks` | Optional — things the planner flagged for sanity-checks. |
+| `artifacts.spec` | Optional — a spec you (or a prior round) already drafted. Present when this is a re-spec after the user requested changes. |
 | `workspace.branch` | The branch name this step will eventually implement against. |
 | `workspace.repoCwd` | The parent repo's path (your cwd is the worktree, not the parent). |
 | `previousSteps[]` | Earlier `action` steps' `output` strings (only those with `forwardOutput: true`). High-signal context. **Read these before drafting.** |
-| `typePayload.round` | `{ kind: "spec", feedback?: string[] }` for this skill. `feedback` is present and non-empty on a re-spec — the user's accumulated revision notes across every gate loop so far. |
+| `gateFeedback` | The user's accumulated revision notes across every gate loop so far. Non-empty means this is a re-spec. |
+| `boundNote` | What the controller asked this round to do, in its own words. |
 | `job.title`, `job.description`, `job.externalRef.url` | Original ticket context. |
 | `recentLessons` | Short lessons from past runs of this action. Skim before starting. |
 
@@ -76,11 +77,11 @@ A typical non-trivial spec covers, as sections (rename/reorder/drop freely to fi
 - **Assumptions** — every judgment call you made in place of asking a question, listed explicitly so the gate reviewer can override any of them.
 - **Out of scope** — anything the goal could be read to include that you're deliberately not doing, and why.
 
-## Step 3 — Revision (if `typePayload.round.feedback` is present)
+## Step 3 — Revision (if `gateFeedback` is present)
 
-A non-empty `feedback` array means the user rejected a previous draft (available at the envelope's top-level `spec` field) with revision notes. Treat this as a revision, not a rewrite from scratch:
+A non-empty `gateFeedback` array means the user rejected a previous draft (available at `artifacts.spec`) with revision notes. Treat this as a revision, not a rewrite from scratch:
 
-- Address **every item** in `feedback` — don't silently drop one because it seems minor or because you disagree; if you disagree, say so in the spec and explain the tradeoff, don't just ignore it.
+- Address **every item** in `gateFeedback` — don't silently drop one because it seems minor or because you disagree; if you disagree, say so in the spec and explain the tradeoff, don't just ignore it.
 - Keep what still holds from the prior draft. Don't reshuffle sections or re-litigate settled decisions just to look busy.
 - Add a short **"What changed"** note (a few bullets) at the top of the revised spec so the reviewer doesn't have to diff two markdown blobs by eye.
 
@@ -100,20 +101,25 @@ Fix issues inline; don't submit a draft you'd flag in someone else's review.
 The outpost MCP tools are deferred behind ToolSearch — load the schema first:
 
 ```
-ToolSearch({ query: "select:mcp__outpost__submit_spec", max_results: 1 })
+ToolSearch({ query: "select:mcp__outpost__submit_step_progress", max_results: 1 })
 ```
 
-Then call it with the full markdown:
+Then report the spec as this step's `spec` artifact:
 
 ```
-mcp__outpost__submit_spec({
+mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  spec: "<full design spec as markdown>"
+  phase: "spec",
+  memo: "<what this round produced and any open risk, written for a cold-resumed you>",
+  artifacts: { spec: "<full design spec as markdown>" },
+  next: { kind: "self-round" }
 })
 ```
 
-Do NOT write the spec to any file in the repo or worktree — the daemon stores it as job state, not a repo artifact, so the eventual PR diff stays pure implementation. Do NOT submit the spec as your final chat message; the daemon does not scrape transcripts. After the tool call returns, stop — the user reviews the rendered spec via the PWA gate and either approves (this session resumes as `/code.plan`) or sends feedback (this session resumes as `/code.spec` again, with `typePayload.round.feedback` populated).
+`next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and whether the user is asked to approve anything — so do not pick that yourself.
+
+Do NOT write the spec to any file in the repo or worktree — the daemon stores it as step state, not a repo artifact, so the eventual PR diff stays pure implementation. Do NOT submit the spec as your final chat message; the daemon does not scrape transcripts. After the tool call returns, stop.
 
 ## Before you exit — journal a blocker
 

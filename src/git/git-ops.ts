@@ -377,7 +377,7 @@ export async function gitSquashMergeToBase(opts: SquashMergeToBaseOpts): Promise
     return { ok: false, reason: 'error', message: 'invalid branch name' };
   }
   // The merge takes only what's committed on the branch. If the worktree has
-  // uncommitted or untracked files (the open-pr flow's edits often start that way),
+  // uncommitted or untracked files (an implement round's edits often start that way),
   // squashing would silently drop them from the base commit — mirror the commit-clean
   // requirement gitFinalizeSquashToBranch enforces and make the caller commit first.
   const wtDirty = await runGit(opts.worktreePath, ['status', '--porcelain']);

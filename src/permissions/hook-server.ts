@@ -1,6 +1,6 @@
 // Loopback-only HTTP listener for the PreToolUse + Stop hook callbacks from `claude`,
-// plus the orchestrator's per-session work hooks (plan-ready, replies-ready, edits-done,
-// step-resolved, step-failed). Every endpoint requires the per-launch secret in
+// plus the orchestrator's per-session work hooks (plan-ready, step-resolved,
+// step-failed). Every endpoint requires the per-launch secret in
 // `x-daemon-auth`; the PWA-facing surface is in `src/server.ts`.
 
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -12,8 +12,6 @@ export interface HookServerOpts {
   onStopHook: (body: string) => Promise<void>;
   onStatusLineHook: (body: string) => Promise<void>;
   onWorkPlanReady: (body: string) => Promise<void>;
-  onWorkRepliesReady: (body: string) => Promise<void>;
-  onWorkEditDone: (body: string) => Promise<void>;
   onWorkStepResolved: (body: string) => Promise<void>;
   onWorkStepFailed: (body: string) => Promise<void>;
   onActionProposal: (body: string) => Promise<void>;
@@ -47,8 +45,6 @@ export class HookServer {
       '/hook/stop',
       '/hook/statusline',
       '/work/plan-ready',
-      '/work/replies-ready',
-      '/work/edits/done',
       '/work/step-resolved',
       '/work/step-failed',
       '/work/action-proposal',
@@ -87,14 +83,6 @@ export class HookServer {
           res.end();
         } else if (url === '/work/plan-ready') {
           await this.opts.onWorkPlanReady(body);
-          res.statusCode = 204;
-          res.end();
-        } else if (url === '/work/replies-ready') {
-          await this.opts.onWorkRepliesReady(body);
-          res.statusCode = 204;
-          res.end();
-        } else if (url === '/work/edits/done') {
-          await this.opts.onWorkEditDone(body);
           res.statusCode = 204;
           res.end();
         } else if (url === '/work/step-resolved') {

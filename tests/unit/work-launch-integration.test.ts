@@ -6,7 +6,7 @@ import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import { LaunchGovernor } from '../../src/work/launch-governor.js';
 import type { TokenUsageSnapshot } from '../../src/schedules/headroom.js';
-import type { OpenPrStep, ProposedStep } from '../../src/work/work-types.js';
+import type { OrchestratedStep, ProposedStep } from '../../src/work/work-types.js';
 
 const NOW_S = Math.floor(Date.now() / 1000);
 // Healthy: 7d well behind pace (near reset, barely used), 5h low → headroom ok.
@@ -46,8 +46,16 @@ function makeHarness(opts: { snapshot?: TokenUsageSnapshot; concurrency?: number
     getConcurrency: () => concurrency,
     now: () => Date.now(),
   });
+  // Just enough registry for the orchestrated policy to recognise the actions these tests
+  // bind rounds to; without it validateNext rejects every named self-round as unknown.
+  const actionRegistry = {
+    listActions: () => [],
+    getAction: (name: string) => ({
+      frontmatter: { outpost: { side_effects: name === 'code.fix-pr-comment' ? 'worktree-edit' : 'none' } },
+    }),
+  } as never;
   const engine = new WorkEngine({
-    queue, sessionManager, worktreeManager, linearWriter, actionsStore: {} as never, governor,
+    queue, sessionManager, worktreeManager, linearWriter, actionsStore: {} as never, governor, actionRegistry,
     jobsDir: join(dir, 'jobs'),
     newId: (() => { let n = 0; return () => `id-${++n}`; })(),
     now: () => 1,
@@ -101,19 +109,24 @@ describe('WorkEngine ↔ LaunchGovernor', () => {
     expect(h.spawns).toHaveLength(2);   // freed slot → second fires
   });
 
-  it('a reactive round (resolve-conflicts) fires immediately under a blocking snapshot', async () => {
+  it('a reactive round (a PR-comment fix) fires immediately under a blocking snapshot', async () => {
     const h = makeHarness({ snapshot: blocking, concurrency: 1 });
     const job = h.engine.createJob({ source: 'manual', title: 't', description: 'd' });
-    const step: OpenPrStep = {
-      id: 'step-1', title: 't', description: 'd', type: 'open-pr',
+    const step: OrchestratedStep = {
+      id: 'step-1', title: 't', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr',
       workspace: { kind: 'writable', repoCwd: '/tmp/repo', branch: 'feat/x' },
-      goal: 'g', approach: 'a', state: 'conflicting', sessionId: 'sess-c',
-      prUrl: 'https://example/pull/1', createdAt: 1, updatedAt: 1,
+      goal: 'g', state: 'running', sessionId: 'sess-c',
+      pr: { prUrl: 'https://example/pull/1', mergeable: 'conflicting' },
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      createdAt: 1, updatedAt: 1,
     };
     h.queue.upsert({ ...h.queue.get(job.id)!, steps: [step], state: 'executing' });
-    await h.engine.resolveConflicts(job.id, 'step-1');
+    h.engine.onStepProgress(job.id, 'step-1', {
+      phase: 'pr_comments', next: { kind: 'self-round', action: 'code.fix-pr-comment' },
+    });
     await flush();
-    expect(h.resumes).toEqual([{ sessionId: 'sess-c', content: '/code.resolve-conflicts' }]);
+    expect(h.resumes).toEqual([{ sessionId: 'sess-c', content: '/code.fix-pr-comment' }]);
   });
 
   it('a high-priority job spawns its first step immediately under a blocking snapshot', async () => {

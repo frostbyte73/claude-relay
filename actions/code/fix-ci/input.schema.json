@@ -1,45 +1,240 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.fix-ci input",
+  "description": "The orchestrated step envelope as code.fix-ci sees it. The failing checks are pr.ciChecks entries with state 'failure'.",
   "type": "object",
-  "required": ["jobId", "stepId", "workspace", "typePayload"],
+  "required": [
+    "jobId",
+    "stepId",
+    "workspace",
+    "pr"
+  ],
   "properties": {
-    "jobId": { "type": "string" },
-    "stepId": { "type": "string" },
-    "goal": { "type": "string" },
-    "approach": { "type": "string" },
-    "workspace": {
+    "jobId": {
+      "type": "string"
+    },
+    "stepId": {
+      "type": "string"
+    },
+    "type": {
+      "const": "orchestrated"
+    },
+    "controller": {
+      "const": "code.orchestrate-pr"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "inputs": {
       "type": "object",
-      "required": ["repoCwd", "branch"],
+      "description": "Planner-supplied inputs for the step \u2014 `approach` and `risks` for a PR step.",
       "properties": {
-        "repoCwd": { "type": "string" },
-        "branch": { "type": "string" }
+        "approach": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        }
       }
     },
-    "typePayload": {
+    "workspace": {
       "type": "object",
-      "required": ["round"],
+      "required": [
+        "kind"
+      ],
       "properties": {
-        "round": {
+        "kind": {
+          "enum": [
+            "none",
+            "readonly",
+            "writable"
+          ]
+        },
+        "repoCwd": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    },
+    "phase": {
+      "type": "string",
+      "description": "Where the controller thinks the step stands."
+    },
+    "memo": {
+      "type": "string",
+      "description": "The controller's durable narrative from prior turns."
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "Artifacts from earlier rounds.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "boundAction": {
+      "const": "code.fix-ci",
+      "description": "Set to this action on the turn it runs."
+    },
+    "boundNote": {
+      "type": "string",
+      "description": "What the controller wants fixed this round."
+    },
+    "previousSteps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "externalRef": {
           "type": "object",
-          "required": ["kind", "checks"],
           "properties": {
-            "kind": { "const": "ci-fix" },
-            "checks": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["name"],
-                "properties": {
-                  "name": { "type": "string" },
-                  "url": { "type": "string" }
-                }
-              }
+            "url": {
+              "type": "string",
+              "format": "uri"
             }
           }
         }
       }
     },
-    "recentLessons": { "type": "array", "items": { "type": "object" } }
+    "gateApproved": {
+      "type": "boolean"
+    },
+    "gateFeedback": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recentLessons": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "pr": {
+      "type": "object",
+      "description": "Live PR facts kept by the watcher. Absent until a PR exists.",
+      "properties": {
+        "prUrl": {
+          "type": "string"
+        },
+        "prState": {
+          "enum": [
+            "open",
+            "merged",
+            "closed"
+          ]
+        },
+        "ciState": {
+          "enum": [
+            "pending",
+            "success",
+            "failure"
+          ]
+        },
+        "ciChecks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "state"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "success",
+                  "failure",
+                  "pending",
+                  "skipped"
+                ]
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "reviewState": {
+          "enum": [
+            "approved",
+            "changes_requested",
+            "review_required"
+          ]
+        },
+        "mergeable": {
+          "enum": [
+            "mergeable",
+            "conflicting",
+            "unknown"
+          ]
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "author",
+              "body"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
+              },
+              "diffHunk": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "number"
+              },
+              "respondedAt": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }

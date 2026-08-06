@@ -125,27 +125,11 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.resumeWait(id, payload.stepId, payload.note);
           break;
-        case 'replies':
-          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-          engine.approveReplies(id, payload.stepId);
-          break;
-        case 'spec':
-          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-          engine.approveSpec(id, payload.stepId);
-          break;
         case 'gate':
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.approveGate(id, payload.stepId);
           break;
-        case 'merge':
-          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-          engine.mergePr(id, payload.stepId);
-          break;
-        case 'resolve-conflicts':
-          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-          await engine.resolveConflicts(id, payload.stepId);
-          break;
-        default: res.statusCode = 400; res.end('gate must be plan|wait|replies|spec|gate|merge|resolve-conflicts'); return;
+        default: res.statusCode = 400; res.end('gate must be plan|wait|gate'); return;
       }
     } catch (e) {
       res.statusCode = 500; res.end(`error: ${(e as Error).message}`); return;
@@ -167,26 +151,12 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
         if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
         engine.onPlanRejected(id, payload.feedback);
         break;
-      case 'replies':
-        if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-        if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
-        engine.rejectReplies(id, payload.stepId, payload.feedback);
-        break;
-      case 'spec':
-        if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-        if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
-        engine.rejectSpec(id, payload.stepId, payload.feedback);
-        break;
       case 'gate':
         if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
         if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
         engine.rejectGate(id, payload.stepId, payload.feedback);
         break;
-      case 'resolve-conflicts':
-        if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-        engine.markConflictResolved(id, payload.stepId, { status: 'unresolvable', failure: payload.feedback?.trim() || 'user chose to resolve manually' });
-        break;
-      default: res.statusCode = 400; res.end('gate must be plan|replies|spec|gate|resolve-conflicts'); return;
+      default: res.statusCode = 400; res.end('gate must be plan|gate'); return;
     }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -324,7 +294,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     const body = await readBody(req);
     let payload: Record<string, unknown>;
     try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    const EDITABLE_FIELDS = ['title', 'description', 'goal', 'approach', 'risks', 'inputs', 'action', 'workspace'];
+    const EDITABLE_FIELDS = ['title', 'description', 'goal', 'inputs', 'action', 'workspace'];
     const patch: Record<string, unknown> = {};
     for (const field of EDITABLE_FIELDS) if (field in payload) patch[field] = payload[field];
     let ok: boolean;
@@ -459,35 +429,6 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
   });
 
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/comments', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/comments$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { kind?: 'replies'; file?: string; line?: number; body?: string; iterationId?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    if (typeof payload.body !== 'string' || !payload.body.length) { res.statusCode = 400; res.end('body required'); return; }
-    if (payload.kind !== 'replies') { res.statusCode = 400; res.end('kind must be replies'); return; }
-    const comment = engine.addReviewComment(m[1]!, m[2]!, {
-      kind: payload.kind,
-      author: 'user',
-      body: payload.body,
-      ...(payload.file ? { file: payload.file } : {}),
-      ...(payload.line !== undefined ? { line: payload.line } : {}),
-      ...(payload.iterationId ? { iterationId: payload.iterationId } : {}),
-    });
-    if (!comment) { res.statusCode = 404; res.end('not found / no iteration to attach'); return; }
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ comment }));
-  });
-
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/comments/:commentId/resolve', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/comments\/([\w-]+)\/resolve$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    engine.resolveReviewComment(m[1]!, m[2]!, m[3]!);
-    res.statusCode = 204; res.end();
-  });
-
   server.route('POST', '/api/work/sync', async (_req, res) => {
     try {
       await scheduler.runNow('linear');
@@ -498,76 +439,6 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     } catch (e) {
       res.statusCode = 502; res.end(`sync error: ${(e as Error).message}`);
     }
-  });
-
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/replies/resolve', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/replies\/resolve$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { commentId?: string; action?: 'approve' | 'ignore' | 'reject'; feedback?: string; body?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    if (!payload.commentId || !payload.action) { res.statusCode = 400; res.end('commentId, action required'); return; }
-    if (!['approve','ignore','reject'].includes(payload.action)) { res.statusCode = 400; res.end('action must be approve|ignore|reject'); return; }
-    try {
-      engine.resolveReplyComment(m[1]!, m[2]!, payload.commentId, payload.action, payload.feedback, payload.body);
-    } catch (e) { res.statusCode = 500; res.end(`resolve error: ${(e as Error).message}`); return; }
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
-  });
-
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/replies/regenerate', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/replies\/regenerate$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { commentId?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    if (!payload.commentId) { res.statusCode = 400; res.end('commentId required'); return; }
-    const ok = engine.regenerateReply(m[1]!, m[2]!, payload.commentId);
-    if (!ok) { res.statusCode = 404; res.end('job/step/comment not found or step merged'); return; }
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ ok: true, job: jobQueue.get(m[1]!) ?? null }));
-  });
-
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/reactions', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/reactions$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { commentId?: string; content?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    const ALLOWED = ['THUMBS_UP','THUMBS_DOWN','LAUGH','HOORAY','CONFUSED','HEART','ROCKET','EYES'];
-    if (!payload.commentId || !payload.content || !ALLOWED.includes(payload.content)) {
-      res.statusCode = 400; res.end('commentId + content (' + ALLOWED.join('|') + ') required'); return;
-    }
-    engine.reactToComment(m[1]!, m[2]!, payload.commentId, payload.content);
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
-  });
-
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/edits/enqueue', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/edits\/enqueue$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { commentId?: string; userNote?: string };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    if (!payload.commentId) { res.statusCode = 400; res.end('commentId required'); return; }
-    engine.enqueueEdit(m[1]!, m[2]!, payload.commentId, payload.userNote);
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
-  });
-
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/replies/lock', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/replies\/lock$/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const body = await readBody(req);
-    let payload: { commentId?: string; edited?: boolean };
-    try { payload = JSON.parse(body); } catch { res.statusCode = 400; res.end('invalid json'); return; }
-    if (!payload.commentId || typeof payload.edited !== 'boolean') { res.statusCode = 400; res.end('commentId + edited required'); return; }
-    engine.setDraftUserEdited(m[1]!, m[2]!, payload.commentId, payload.edited);
-    res.statusCode = 204; res.end();
   });
 
   server.route('POST', '/api/work/jobs/:id/sync', async (req, res) => {

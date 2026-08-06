@@ -96,11 +96,9 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     }
   });
 
-  // Diff-overlay "Send review" endpoint. When the session belongs to an open-pr
-  // step whose last edit round has landed and is awaiting the user's verdict,
-  // the review text is used as feedback for a re-run of `code.fix-pr-comment`.
-  // Otherwise responds `{ handled: 'chat' }` so the caller sends the text as a
-  // plain user message over the session WS (pre-existing behavior).
+  // Diff-overlay "Send review" endpoint. Validates the text, then answers
+  // `{ handled: 'chat' }` so the caller sends it as a plain user message over the
+  // session WS.
   server.route('POST', '/api/sessions/:id/git/review', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/review$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
@@ -123,10 +121,9 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     if (payload.text.length > 20000) {
       res.statusCode = 400; res.end('text too long (20000 char max)'); return;
     }
-    const result = engine.handleGitReview(sessionId, payload.text);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(result));
+    res.end(JSON.stringify({ handled: 'chat' }));
   });
 
   server.route('POST', '/api/sessions/:id/git/commit', async (req, res) => {
@@ -306,12 +303,6 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
         message,
         push: payload.push === true,
       });
-      if (result.ok) {
-        // Record the merge on the job's open-pr step so the tracked view reflects
-        // it without waiting on pr-watcher (same posture as /git/push below).
-        const ref = engine.openPrStepForSession(sessionId);
-        if (ref) engine.applyOpenPrPatch(ref.jobId, ref.stepId, { state: 'merged', prState: 'merged' });
-      }
       res.statusCode = result.ok ? 200 : 409;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(result));
@@ -328,21 +319,11 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       const result: GitCommandResult & { url?: string } = exists
         ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch })
         : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message });
+      // The PR head moved (or a new PR opened) — nudge the watcher so the owning step's
+      // controller learns of it without waiting on the hourly sweep.
       if (result.ok) {
-        const ref = engine.openPrStepForSession(sessionId);
-        const url = result.url;
-        if (ref && url) {
-          // Fresh open: record the PR now (finalize has the URL) so the tracked view
-          // doesn't wait on pr-watcher to poll.
-          engine.applyOpenPrPatch(ref.jobId, ref.stepId, { prUrl: url, prState: 'open', state: 'pr_open', ciState: 'pending' });
-          prWatcher.noteChanged(ref.jobId);
-        } else if (ref) {
-          // Append: the PR head moved, so mirror the /git/push success path — resolve
-          // addressed edit drafts and flip CI to pending for the new run.
-          engine.resolveCompletedEditDrafts(ref.jobId, ref.stepId);
-          engine.applyOpenPrPatch(ref.jobId, ref.stepId, { ciState: 'pending' });
-          prWatcher.noteChanged(ref.jobId);
-        }
+        const jobId = engine.jobIdForSession(sessionId);
+        if (jobId) prWatcher.noteChanged(jobId);
       }
       res.statusCode = result.ok ? 200 : 409;
       res.setHeader('content-type', 'application/json');
@@ -353,30 +334,17 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
   });
 
   // One-click squash-merge of a worktree branch onto its base branch, local only.
-  // Open-pr step sessions go through the engine so a conflict hands off to the
-  // resolve-conflicts round and success completes+archives the step; plain sessions
-  // just get the local squash and resolve conflicts by hand.
+  // Conflicts come back to the user to resolve by hand.
   server.route('POST', '/api/sessions/:id/git/squash-to-base', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/squash-to-base$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const sessionId = m[1]!;
-    const ref = engine.openPrStepForSession(sessionId);
     const respond = (code: number, body: unknown) => {
       res.statusCode = code; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(body));
     };
 
-    if (ref) {
-      try {
-        const outcome = await engine.squashMergeToBase(ref.jobId, ref.stepId);
-        respond(outcome === 'error' ? 409 : 200, { status: outcome });
-      } catch (e) {
-        respond(500, { status: 'error', message: (e as Error).message });
-      }
-      return;
-    }
-
-    // Plain session: squash locally via the git-op, no step/conflict machinery.
-    const rec = worktreeManager.get(sessionId);
+    // Step sessions key their worktree by stepId, so resolve through the engine first.
+    const rec = engine.worktreeRecordForSession(sessionId) ?? worktreeManager.get(sessionId);
     if (!rec || rec.archivedAt || !rec.worktreePath) {
       respond(400, { status: 'error', message: 'squash-to-base is only valid for active worktree sessions' });
       return;
@@ -405,16 +373,11 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       return;
     }
     const result = await gitPush(resolved.cwd);
+    // The push moves the head, so any prior CI result is stale. Arm the watcher's
+    // 1m/5m/15m ladder so the new run's status lands without waiting on the hourly sweep.
     if (result.ok) {
-      const ref = engine.openPrStepForSession(m[1]!);
-      if (ref) {
-        engine.resolveCompletedEditDrafts(ref.jobId, ref.stepId);
-        // The push moves the head, so any prior CI result is stale. Flip to pending
-        // immediately and arm the 1m/5m/15m ladder so the new run's status lands
-        // without waiting on the hourly sweep.
-        engine.applyOpenPrPatch(ref.jobId, ref.stepId, { ciState: 'pending' });
-        prWatcher.noteChanged(ref.jobId);
-      }
+      const jobId = engine.jobIdForSession(m[1]!);
+      if (jobId) prWatcher.noteChanged(jobId);
     }
     let status;
     try { status = await gitStatus(resolved.cwd); } catch { status = null; }

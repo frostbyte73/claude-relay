@@ -63,30 +63,6 @@ describe('JobQueue legacy planner migration', () => {
     expect(existsSync(join(runtimeDir, 'jobs', 'job-1', 'orchestrator', 'envelope.json'))).toBe(true);
   });
 
-  it('resets never-dispatched legacy open-pr steps (implementing/planning, no session/PR) to speccing', () => {
-    const raw = {
-      id: 'job-3', source: 'manual', title: 't', description: 'd', state: 'executing',
-      createdAt: 1, updatedAt: 1,
-      steps: [
-        // Legacy orphan: materialized as 'implementing' pre-spec-flow, never dispatched.
-        { id: 'a', type: 'open-pr', title: 'a', state: 'implementing', workspace: { kind: 'writable', repoCwd: '/x', branch: 'b' } },
-        // Same, but 'planning'.
-        { id: 'b', type: 'open-pr', title: 'b', state: 'planning', workspace: { kind: 'writable', repoCwd: '/x', branch: 'b' } },
-        // Live implementing step with a session — must NOT be touched.
-        { id: 'c', type: 'open-pr', title: 'c', state: 'implementing', sessionId: 's', workspace: { kind: 'writable', repoCwd: '/x', branch: 'b' } },
-        // Recovered step with a PR — must NOT be touched.
-        { id: 'd', type: 'open-pr', title: 'd', state: 'implementing', prUrl: 'http://x', workspace: { kind: 'writable', repoCwd: '/x', branch: 'b' } },
-        // Cancelled — must NOT be touched.
-        { id: 'e', type: 'open-pr', title: 'e', state: 'implementing', cancelled: true, workspace: { kind: 'writable', repoCwd: '/x', branch: 'b' } },
-      ],
-      events: [],
-    };
-    const { job, changed } = migrateJobRecord(raw);
-    expect(changed).toBe(true);
-    const byId = Object.fromEntries(job.steps.map((s: any) => [s.id, s.state]));
-    expect(byId).toEqual({ a: 'speccing', b: 'speccing', c: 'implementing', d: 'implementing', e: 'implementing' });
-  });
-
   it('is a no-op for an already-migrated record (idempotent, no rewrite)', () => {
     const runtimeDir = tempRuntimeDir();
     const jobsDir = join(runtimeDir, 'jobs');

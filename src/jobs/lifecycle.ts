@@ -1,4 +1,4 @@
-import type { JobRecord, OpenPrStep } from '../work/work-types.js';
+import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 import { handlerFor } from '../steps/index.js';
 
 // JobTransitions are pure, side-effect-free descriptions of what the orchestrator
@@ -45,14 +45,14 @@ function linearReady(j: JobRecord): j is JobRecord & { externalRef: { linearUuid
   return j.source === 'linear' && !!j.externalRef?.linearUuid;
 }
 
-function hasUncancelledOpenPr(j: JobRecord): boolean {
-  return j.steps.some((s) => s.type === 'open-pr' && !s.cancelled);
+// The ticket moves to "in review" once every PR-bearing step actually has its PR up.
+// Only orchestrated steps carry PR facts; a job of pure action steps never qualifies.
+function prBearingSteps(j: JobRecord): OrchestratedStep[] {
+  return j.steps.filter((s): s is OrchestratedStep => s.type === 'orchestrated' && !s.cancelled);
 }
 
-function allOpenPrsHaveRemotePr(j: JobRecord): boolean {
-  return j.steps
-    .filter((s): s is OpenPrStep => s.type === 'open-pr' && !s.cancelled)
-    .every((s) => s.prState === 'open' || s.prState === 'merged');
+function allPrsAreRemote(steps: OrchestratedStep[]): boolean {
+  return steps.every((s) => s.pr?.prState === 'open' || s.pr?.prState === 'merged');
 }
 
 // Pure decision: given a job record, what job-level transitions are needed?
@@ -93,7 +93,8 @@ export function decideJobTransitions(j: JobRecord): JobTransition[] {
     if (!j.linearStateMarked?.inProgress) {
       out.push({ kind: 'mark-linear-state', state: 'inProgress' });
     }
-    if (!j.linearStateMarked?.inReview && hasUncancelledOpenPr(j) && allOpenPrsHaveRemotePr(j)) {
+    const prSteps = prBearingSteps(j);
+    if (!j.linearStateMarked?.inReview && prSteps.length > 0 && allPrsAreRemote(prSteps)) {
       out.push({ kind: 'mark-linear-state', state: 'inReview' });
     }
   }

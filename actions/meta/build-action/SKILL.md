@@ -63,12 +63,12 @@ expects when it picks the action as a step in a job:
 3. Produce a proposal (working-tree edits, a structured plan, a comment draft —
    whatever the step type calls for). Do NOT commit, push, or post anything yet.
 4. Deliver the proposal via an `mcp__outpost__submit_*` tool (the daemon exposes
-   one per output shape — `submit_plan`, `submit_step_output`, `submit_replies`,
-   `submit_edit_done`, `submit_action_proposal`).
+   one per output shape — `submit_plan`, `submit_step_output`, `submit_step_progress`,
+   `submit_action_proposal`).
 5. The orchestrator runs a feedback/approval loop. When approved, execute the
    final proposal (apply edits, post comments, etc.).
 6. Signal completion via the same MCP surface (e.g. `submit_step_output` /
-   `submit_edit_done`).
+   `submit_step_progress`).
 
 Actions are 1:1 with plan steps. The orchestrator picks from the catalog when it
 builds a job plan, so the action's `description:` frontmatter is what the

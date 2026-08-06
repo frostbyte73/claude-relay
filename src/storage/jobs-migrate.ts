@@ -1,11 +1,51 @@
-import type { JobRecord, OpenPrStep, OrchestratedStep, PrFacts, Step, WaitSpec } from '../work/work-types.js';
+import type {
+  CiCheck, DraftedReply, IterationRecord, JobRecord, OrchestratedStep, PrComment, PrFacts,
+  ReviewComment, Step, StepEvent, WaitSpec,
+} from '../work/work-types.js';
+
+// The persisted shape of the deleted `open-pr` step type. It is declared here, and
+// nowhere else, because on-disk records written before the orchestrated rewrite still
+// have to load — the live type system knows nothing about it.
+interface LegacyOpenPrStep {
+  id: string;
+  title: string;
+  description: string;
+  type: 'open-pr';
+  workspace: { kind: 'writable'; repoCwd: string; branch: string };
+  goal: string;
+  approach: string;
+  risks?: string;
+  state: string;
+  spec?: string;
+  implPlan?: string;
+  specFeedback?: string[];
+  prUrl?: string;
+  prState?: 'open' | 'merged' | 'closed';
+  ciState?: 'pending' | 'success' | 'failure';
+  ciChecks?: CiCheck[];
+  reviewState?: 'approved' | 'changes_requested' | 'review_required';
+  mergeable?: 'mergeable' | 'conflicting' | 'unknown';
+  comments?: PrComment[];
+  threadHash?: string;
+  parallelGroup?: string;
+  sessionId?: string;
+  events?: StepEvent[];
+  failure?: { reason: string; at: number };
+  cancelled?: boolean;
+  reviewed?: boolean;
+  iterations?: IterationRecord[];
+  reviewComments?: ReviewComment[];
+  draftedReplies?: DraftedReply[];
+  createdAt: number;
+  updatedAt: number;
+}
 
 const PR_WAIT: WaitSpec = {
   reason: 'PR is open — watching CI, reviews, and comments',
   events: ['ci', 'review-state', 'pr-state', 'pr-comments'],
 };
 
-const PHASE: Record<OpenPrStep['state'], string> = {
+const PHASE: Record<string, string> = {
   speccing: 'spec',
   spec_pending_review: 'spec',
   planning: 'plan',
@@ -19,7 +59,7 @@ const PHASE: Record<OpenPrStep['state'], string> = {
   failed: 'failed',
 };
 
-const STATE: Record<OpenPrStep['state'], OrchestratedStep['state']> = {
+const STATE: Record<string, OrchestratedStep['state']> = {
   speccing: 'running',
   spec_pending_review: 'running',
   planning: 'running',
@@ -33,7 +73,9 @@ const STATE: Record<OpenPrStep['state'], OrchestratedStep['state']> = {
   failed: 'failed',
 };
 
-export function migrateOpenPrStep(s: OpenPrStep): OrchestratedStep {
+export function migrateOpenPrStep(raw: Record<string, unknown>): OrchestratedStep {
+  const s = raw as unknown as LegacyOpenPrStep;
+
   const pr: PrFacts = {};
   if (s.prUrl !== undefined) pr.prUrl = s.prUrl;
   if (s.prState !== undefined) pr.prState = s.prState;
@@ -48,6 +90,19 @@ export function migrateOpenPrStep(s: OpenPrStep): OrchestratedStep {
   if (s.spec) artifacts.spec = s.spec;
   if (s.implPlan) artifacts.implPlan = s.implPlan;
 
+  // Pre-spec-flow records were materialized straight into 'implementing'; the
+  // spec → plan → implement rounds came later. A step sitting in 'implementing'/'planning'
+  // with no session, no PR and no artifacts was never actually dispatched — those states
+  // were only reachable via a transition that also set a sessionId — so migrating it at
+  // face value would hand the controller a phase it never earned and skip the spec round.
+  const stranded = (s.state === 'implementing' || s.state === 'planning')
+    && !s.sessionId && !s.prUrl && !s.spec && !s.implPlan && !s.cancelled;
+  const state = stranded ? 'speccing' : s.state;
+
+  // A hand-edited or corrupt record with an unknown state lands in "Needs you" rather
+  // than carrying `state: undefined` into the engine, where nothing can recover it.
+  const known = state in STATE;
+
   const out: OrchestratedStep = {
     id: s.id,
     title: s.title,
@@ -57,8 +112,8 @@ export function migrateOpenPrStep(s: OpenPrStep): OrchestratedStep {
     workspace: s.workspace,
     goal: s.goal,
     inputs: { approach: s.approach, ...(s.risks ? { risks: s.risks } : {}) },
-    phase: PHASE[s.state],
-    state: STATE[s.state],
+    phase: known ? PHASE[state] : 'failed',
+    state: known ? STATE[state]! : 'failed',
     dispatches: [],
     inbox: [],
     roundsSpent: 0,
@@ -69,7 +124,7 @@ export function migrateOpenPrStep(s: OpenPrStep): OrchestratedStep {
   if (Object.keys(pr).length) out.pr = pr;
   if (Object.keys(artifacts).length) out.artifacts = artifacts;
   if (s.specFeedback?.length) out.gateFeedback = s.specFeedback;
-  if (s.state === 'pr_open') out.waitingOn = PR_WAIT;
+  if (state === 'pr_open') out.waitingOn = PR_WAIT;
   if (s.parallelGroup !== undefined) out.parallelGroup = s.parallelGroup;
   if (s.sessionId !== undefined) out.sessionId = s.sessionId;
   if (s.events !== undefined) out.events = s.events;
@@ -82,8 +137,13 @@ export function migrateOpenPrStep(s: OpenPrStep): OrchestratedStep {
   return out;
 }
 
+function isLegacyOpenPr(s: Step): boolean {
+  return (s as unknown as { type: string }).type === 'open-pr';
+}
+
 export function migrateJob(job: JobRecord): JobRecord {
-  if (!job.steps.some((s) => s.type === 'open-pr')) return job;
-  const steps: Step[] = job.steps.map((s) => s.type === 'open-pr' ? migrateOpenPrStep(s) : s);
+  if (!job.steps.some(isLegacyOpenPr)) return job;
+  const steps: Step[] = job.steps.map((s) =>
+    isLegacyOpenPr(s) ? migrateOpenPrStep(s as unknown as Record<string, unknown>) : s);
   return { ...job, steps };
 }

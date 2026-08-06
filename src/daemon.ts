@@ -597,9 +597,6 @@ async function main() {
         )) {
           console.log(`[work] stop session=${sessionId.slice(0,8)} → unresolved-step check armed`);
         }
-        // Plan→implement hand-off: if code.plan just ended its turn, dispatch the implement
-        // round now that the shared session is idle (see WorkEngine.onSessionTurnEnded).
-        engine.onSessionTurnEnded(sessionId);
       }
       if (!shouldNotify) return;
       const title = findSessionTitle(sessionId);
@@ -709,23 +706,6 @@ async function main() {
       const payload = JSON.parse(body) as { jobId: string; mode?: 'initial' | 'replan'; steps: unknown[]; drops?: string[]; feedback?: string; findings?: unknown };
       engine.onPlanReady(payload.jobId, payload.mode ?? 'initial', payload.steps as never, payload.drops, payload.feedback, payload.findings as never);
     },
-    onWorkRepliesReady: async (body) => {
-      try {
-        const payload = JSON.parse(body) as { jobId: string; stepId: string; drafts: unknown[]; threadHash?: string };
-        engine.applyOpenPrPatch(payload.jobId, payload.stepId, {
-          state: 'reply_pending_review',
-          draftedReplies: payload.drafts as never,
-          ...(payload.threadHash ? { threadHash: payload.threadHash } : {}),
-        });
-        engine.markIterationPosted(payload.jobId, payload.stepId, 'replies');
-      } catch (e) { console.error('[hook] /work/replies-ready:', (e as Error).message); }
-    },
-    onWorkEditDone: async (body) => {
-      try {
-        const payload = JSON.parse(body) as { jobId: string; stepId: string; editId: string; status: 'done' | 'failed'; failure?: string };
-        engine.markEditDone(payload.jobId, payload.stepId, payload.editId, { status: payload.status, failure: payload.failure });
-      } catch (e) { console.error('[hook] /work/edits/done:', (e as Error).message); }
-    },
     onWorkStepResolved: async (body) => {
       try {
         const payload = JSON.parse(body) as { jobId: string; stepId: string; output?: string };
@@ -797,45 +777,6 @@ async function main() {
       },
       submit_write_draft: async (a) => {
         engine.onWriteDraftReady(a.jobId as string, a.stepId as string, a.draft as string);
-        return { ok: true };
-      },
-      submit_spec: async (a) => {
-        engine.onSpecReady(a.jobId as string, a.stepId as string, a.spec as string);
-        return { ok: true };
-      },
-      submit_impl_plan: async (a) => {
-        engine.onImplPlanReady(a.jobId as string, a.stepId as string, a.plan as string);
-        return { ok: true };
-      },
-      submit_replies: async (a) => {
-        engine.mergeDraftedReplies(
-          a.jobId as string,
-          a.stepId as string,
-          a.drafts as never,
-          a.threadHash as string | undefined,
-        );
-        engine.markIterationPosted(a.jobId as string, a.stepId as string, 'replies');
-        return { ok: true };
-      },
-      submit_edit_done: async (a) => {
-        engine.markEditDone(a.jobId as string, a.stepId as string, a.editId as string, {
-          status: a.status as 'done' | 'failed',
-          failure: a.failure as string | undefined,
-        });
-        return { ok: true };
-      },
-      submit_conflict_resolved: async (a) => {
-        engine.markConflictResolved(a.jobId as string, a.stepId as string, {
-          status: a.status as 'resolved' | 'unresolvable',
-          failure: a.failure as string | undefined,
-        });
-        return { ok: true };
-      },
-      submit_ci_fixed: async (a) => {
-        engine.markCiFixed(a.jobId as string, a.stepId as string, {
-          status: a.status as 'fixed' | 'unfixable',
-          failure: a.failure as string | undefined,
-        });
         return { ok: true };
       },
       submit_action_proposal: async (a) => {
@@ -1307,7 +1248,6 @@ async function main() {
   if (process.env.LINEAR_API_TOKEN) {
     // Actions are already seeded + loaded at startup (see the registry construction above).
     console.log(`[work] actions available: ${loadedActionCount}`);
-    engine.reconcileInterruptedEdits();
     engine.reconcileInterruptedSteps();
     engine.reconcileWaits();
     engine.reconcilePendingLaunches();
