@@ -186,4 +186,77 @@ describe('PrWatcher over an orchestrated step', () => {
       expect(calls()).toBe(boundedAt + 1);
     });
   });
+
+  describe('a readonly review step', () => {
+    function reviewStep(over: { inputsPrUrl?: string; storedPrUrl?: string } = {}) {
+      return {
+        id: 'rev-1', type: 'orchestrated', controller: 'code.review-pr',
+        title: 'review it', description: '', goal: 'review it',
+        state: 'waiting', sessionId: 'sess1', cancelled: false,
+        workspace: { kind: 'readonly', repoCwd: '/tmp/repo-ro', ref: 'refs/pull/7/head' },
+        dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+        iterations: [] as Array<Record<string, unknown>>,
+        ...(over.inputsPrUrl ? { inputs: { prUrl: over.inputsPrUrl } } : {}),
+        ...(over.storedPrUrl ? { pr: { prUrl: over.storedPrUrl, prState: 'open' } } : {}),
+        createdAt: 0, updatedAt: 0,
+      };
+    }
+
+    function harnessFor(step: ReturnType<typeof reviewStep>, gh: Facts = {}) {
+      const job = { id: 'j1', steps: [step] };
+      const queue = { get: () => job, list: () => [job] } as never;
+      const engine = { applyPrFacts: vi.fn(), pushStepInbox: vi.fn() };
+      const ghCalls: string[][] = [];
+      const stub = stubGh(gh);
+      const runGh = async (cwd: string, args: string[]) => { ghCalls.push(args); return stub(cwd, args); };
+      const watcher = new PrWatcher({ queue, engine: engine as never, runGh });
+      return { watcher, engine, ghCalls };
+    }
+
+    it('tracks a readonly orchestrated step by its inputs.prUrl', async () => {
+      const step = reviewStep({ inputsPrUrl: PR_URL });
+      const { watcher, engine } = harnessFor(step, { ciState: 'success' });
+      await watcher.syncJob('j1');
+      expect(engine.applyPrFacts).toHaveBeenCalledWith(
+        'j1', 'rev-1', expect.objectContaining({ prUrl: PR_URL }),
+      );
+    });
+
+    it('polls a readonly step by its already-stored pr.prUrl too', async () => {
+      const step = reviewStep({ storedPrUrl: PR_URL });
+      const { watcher, engine } = harnessFor(step, { ciState: 'failure' });
+      await watcher.syncJob('j1');
+      expect(engine.applyPrFacts).toHaveBeenCalledWith(
+        'j1', 'rev-1', expect.objectContaining({ ciState: 'failure' }),
+      );
+    });
+
+    it('never runs PR discovery for a readonly step', async () => {
+      const step = reviewStep(); // no inputs.prUrl, no stored pr — nothing to poll by
+      const { watcher, engine, ghCalls } = harnessFor(step);
+      await watcher.syncJob('j1');
+      expect(ghCalls.filter((c) => c[0] === 'pr' && c[1] === 'list')).toHaveLength(0);
+      expect(ghCalls).toHaveLength(0);
+      expect(engine.applyPrFacts).not.toHaveBeenCalled();
+    });
+
+    it('ignores a readonly step whose inputs.prUrl fails the anchored allowlist', async () => {
+      const step = reviewStep({ inputsPrUrl: 'https://github.com/acme/example/pull/15282; rm -rf /' });
+      const { watcher, engine, ghCalls } = harnessFor(step);
+      await watcher.syncJob('j1');
+      expect(ghCalls).toHaveLength(0);
+      expect(engine.applyPrFacts).not.toHaveBeenCalled();
+    });
+
+    it('skips a step with no workspace at all even if it carries a prUrl', async () => {
+      const step = {
+        ...reviewStep({ inputsPrUrl: PR_URL }),
+        workspace: { kind: 'none' },
+      } as unknown as ReturnType<typeof reviewStep>;
+      const { watcher, engine, ghCalls } = harnessFor(step);
+      await watcher.syncJob('j1');
+      expect(ghCalls).toHaveLength(0);
+      expect(engine.applyPrFacts).not.toHaveBeenCalled();
+    });
+  });
 });
