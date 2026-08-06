@@ -4,6 +4,7 @@
 // `x-daemon-auth`; the PWA-facing surface is in `src/server.ts`.
 
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { parseJsonObject } from '../routes/util.js';
 
 export interface HookServerOpts {
   port: number;
@@ -111,7 +112,11 @@ export class HookServer {
             res.end('not found');
             return;
           }
-          const raw = JSON.parse(body) as Record<string, unknown>;
+          // Same guard the daemon's other hook callbacks apply, and for the same reason:
+          // `JSON.parse("null")` succeeds, so a bare parse is not a shape check — the field
+          // checks below would then 400 on whatever TypeError they happened to raise.
+          const raw = parseJsonObject(body);
+          if (!raw) throw new Error('invalid json body');
           if (
             typeof raw.source !== 'string' || !raw.source.trim() ||
             typeof raw.title !== 'string' || !raw.title.trim()

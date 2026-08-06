@@ -1,11 +1,40 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-export function readBody(req: NodeJS.ReadableStream): Promise<string> {
+// Every request body the daemon serves comes through readBody, so an uncapped one is a
+// whole-process memory hazard from a single request. Sized for the largest thing the PWA
+// legitimately posts (a plan, a SKILL.md revision, a long commit message) with headroom.
+export const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+export class BodyTooLargeError extends Error {
+  constructor(readonly limit: number) {
+    super(`request body too large (limit ${limit} bytes)`);
+    this.name = 'BodyTooLargeError';
+  }
+}
+
+// Concatenate first, decode once: a chunk boundary lands wherever the socket puts it, and
+// decoding each Buffer on its own turns any multi-byte character straddling one into U+FFFD.
+export function readBody(req: NodeJS.ReadableStream, limit = MAX_BODY_BYTES): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (c: Buffer) => (data += c.toString('utf8')));
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    // A real IncomingMessage emits Buffers; a stream someone called setEncoding on (or a
+    // Readable.from over strings) emits strings, already decoded and safe to take as-is.
+    req.on('data', (chunk: Buffer | string) => {
+      if (done) return;
+      const c = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+      size += c.length;
+      if (size > limit) {
+        done = true;
+        (req as { destroy?: (e?: Error) => void }).destroy?.();
+        reject(new BodyTooLargeError(limit));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => { if (!done) { done = true; resolve(Buffer.concat(chunks).toString('utf8')); } });
+    req.on('error', (e) => { if (!done) { done = true; reject(e); } });
   });
 }
 
@@ -21,8 +50,14 @@ export function parseJsonObject(body: string): Record<string, unknown> | null {
   return isPlainObject(parsed) ? parsed : null;
 }
 
-export async function readJsonBody<T>(req: NodeJS.ReadableStream): Promise<T | null> {
-  return parseJsonObject(await readBody(req)) as T | null;
+// No `res` to answer 413 on, so an oversized body reads as "no usable payload" — the null
+// its callers already handle. readJsonObject is the variant that can say why.
+export async function readJsonBody<T>(req: NodeJS.ReadableStream, limit = MAX_BODY_BYTES): Promise<T | null> {
+  try {
+    return parseJsonObject(await readBody(req, limit)) as T | null;
+  } catch {
+    return null;
+  }
 }
 
 export interface JsonObjectOpts {
@@ -33,6 +68,8 @@ export interface JsonObjectOpts {
   allowEmpty?: boolean;
   // Routes whose 400 carries a JSON error body rather than the plain-text default.
   onInvalid?: () => void;
+  // Override for a route that legitimately accepts more (or should accept less) than the default.
+  limit?: number;
 }
 
 export async function readJsonObject<T>(
@@ -40,7 +77,17 @@ export async function readJsonObject<T>(
   res: ServerResponse,
   opts: JsonObjectOpts = {},
 ): Promise<T | null> {
-  const raw = await readBody(req);
+  let raw: string;
+  try {
+    raw = await readBody(req, opts.limit ?? MAX_BODY_BYTES);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) {
+      res.statusCode = 413;
+      res.end('payload too large');
+      return null;
+    }
+    throw e;
+  }
   if (!raw && opts.allowEmpty) return {} as T;
   const parsed = parseJsonObject(raw);
   if (parsed) return parsed as T;
