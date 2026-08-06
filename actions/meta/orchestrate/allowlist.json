@@ -1,0 +1,8 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:-X|--request)(?:(?:\\s|\\\\\\n)+|=)POST|(?:-d|--data)(?:(?:\\s|\\\\\\n)+|=)(?:\"\\$\\([\\s\\S]*\\)\"|\"[^-\"\\n@][^\"\\n]*\"|'[^-'\\n@][^'\\n]*'|\\$\\{?[A-Za-z_][A-Za-z0-9_}]*)))*(?:\\s|\\\\\\n)+[\"']?https://api\\.linear\\.app/graphql[\"']?(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:-X|--request)(?:(?:\\s|\\\\\\n)+|=)POST|(?:-d|--data)(?:(?:\\s|\\\\\\n)+|=)(?:\"\\$\\([\\s\\S]*\\)\"|\"[^-\"\\n@][^\"\\n]*\"|'[^-'\\n@][^'\\n]*'|\\$\\{?[A-Za-z_][A-Za-z0-9_}]*)))*(?:\\s|\\\\\\n)*$"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}

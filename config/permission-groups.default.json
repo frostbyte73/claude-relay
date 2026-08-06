@@ -25,9 +25,9 @@
   "pull": {
     "alwaysAllow": ["WebFetch", "WebSearch", "ListMcpResourcesTool", "ReadMcpResourceTool"],
     "alwaysAllowBashPatterns": [
-      "^curl -s ",
-      "^curl -fsS http",
-      "^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|workflow view|workflow list|api|repo view|issue view|issue list|search|release view|release list|label list|cache list|browse)(\\s|$)"
+      "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|[\"']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s\"'<>&|;\\\\]*[\"']?))*(?:\\s|\\\\\\n)*$",
+      "^gh api(?:(?:\\s|\\\\\\n)+(?:--paginate|--slurp|(?:--cache|--hostname|-H|--header|-q|--jq|-t|--template)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:--method|-X)(?:(?:\\s|\\\\\\n)+|=)GET|(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)))*(?:\\s|\\\\\\n)*$",
+      "^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|workflow view|workflow list|repo view|issue view|issue list|search|release view|release list|label list|cache list|browse)(\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [
       "^mcp__claude_ai_Linear__(get_|list_|search_)",
