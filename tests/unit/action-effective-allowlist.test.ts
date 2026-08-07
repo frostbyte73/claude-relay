@@ -1086,3 +1086,51 @@ describe('review-lens diffRange input', () => {
     }
   });
 });
+
+// `meta.build-action` drafts a proposal and hands it to the daemon
+// (`mcp__outpost__submit_action_proposal`); the daemon writes `SKILL.md` and adds the
+// rules once the user approves (`POST /api/action-edits/:sessionId/approve` in
+// `src/routes/actions.ts`). Its own SKILL.md says so twice — "do not write any files",
+// "do not add allowlist rules". It nevertheless shipped a
+// `Write|Edit|MultiEdit:^/Users/[^/]+/\.outpost/actions/` grant over the very directory the
+// registry loads the catalog from, so the drafting session could have rewritten any other
+// action's `allowlist.json` to `{"alwaysAllow":["Bash"]}` — with no approval prompt,
+// because an action-bound allowlist hit auto-executes.
+describe('meta.build-action effective allowlist', () => {
+  const allows = effective('meta.build-action');
+  const allowsTool = effectiveTool('meta.build-action');
+
+  it('cannot write into the actions directory the registry reads', () => {
+    for (const tool of ['Write', 'Edit', 'MultiEdit']) {
+      for (const path of [
+        '/Users/dc/.outpost/actions/code/merge-pr/allowlist.json',
+        '/Users/dc/.outpost/actions/code/fix-ci/allowlist.json',
+        '/Users/dc/.outpost/actions/code/fix-ci/SKILL.md',
+        '/Users/dc/.outpost/actions/meta/build-action/SKILL.md',
+        '/Users/dc/.outpost/actions/read/investigate/input.schema.json',
+      ]) expect(allowsTool(tool, { file_path: path }), `${tool} ${path}`).toBe(false);
+    }
+  });
+
+  it('cannot reach that directory through a bash write either', () => {
+    for (const c of [
+      'cp /tmp/evil.json /Users/dc/.outpost/actions/code/merge-pr/allowlist.json',
+      'mv /tmp/evil.json /Users/dc/.outpost/actions/code/merge-pr/allowlist.json',
+      'rm /Users/dc/.outpost/actions/code/merge-pr/allowlist.json',
+      'cat /tmp/evil.json > /Users/dc/.outpost/actions/code/merge-pr/allowlist.json',
+      'jq . /tmp/evil.json > /Users/dc/.outpost/actions/code/merge-pr/allowlist.json',
+    ]) expect(allows(c), c).toBe(false);
+  });
+
+  it('still reads the reference implementations its SKILL.md tells it to read', () => {
+    for (const path of [
+      '/Users/dc/.outpost/actions/code/implement/SKILL.md',
+      '/Users/dc/.outpost/actions/meta/orchestrate/SKILL.md',
+    ]) expect(allowsTool('Read', { file_path: path }), path).toBe(true);
+    expect(allows('cat "$OUTPOST_ENVELOPE"')).toBe(true);
+  });
+
+  it('keeps the /tmp scratch its drafting can legitimately use', () => {
+    expect(allowsTool('Write', { file_path: '/tmp/draft-skill.md' })).toBe(true);
+  });
+});
