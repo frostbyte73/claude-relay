@@ -67,12 +67,24 @@
   "push": {
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
-      "^gh (pr comment|pr merge|pr review|pr create|pr edit|pr ready|pr close|issue create|issue comment|issue close|release create)(\\s|$)",
-      "^git (push|commit|tag)(\\s|$)"
+      "^git push(?:[ \\t]+(?:-u|--set-upstream|-q|--quiet|--porcelain))*(?:[ \\t]+[\"']?[A-Za-z][A-Za-z0-9._-]*[\"']?(?:[ \\t]+(?![\"']?(?:main|master|trunk|develop|dev|release[/-][^\\s\"']*|(?:refs/)?heads/[^\\s\"']*)[\"']?[ \\t]*$)[\"']?(?:HEAD|[A-Za-z0-9_][A-Za-z0-9._/-]*)[\"']?)?)?[ \\t]*$",
+      "^git commit(?:[ \\t]+(?:-a|-n|-s|-q|--all|--no-verify|--signoff|--quiet|--allow-empty|--no-edit|--no-gpg-sign|(?:-m|-am|-an|-as|--message)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)))*[ \\t]*$",
+      "^git tag(?:[ \\t]+(?:-a|-s|--annotate|(?:-m|--message)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)))*[ \\t]+(?:\"[A-Za-z0-9_][^\"$`\\n]*\"|'[A-Za-z0-9_][^'\\n]*'|[A-Za-z0-9_][^\\s\"'$`\\n]*)(?:[ \\t]+(?:\"[A-Za-z0-9_][^\"$`\\n]*\"|'[A-Za-z0-9_][^'\\n]*'|[A-Za-z0-9_][^\\s\"'$`\\n]*))?[ \\t]*$",
+      "^gh pr comment[ \\t]+[0-9]+[ \\t]+(?:--(?:body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?)[ \\t]*$",
+      "^gh pr merge[ \\t]+[0-9]+[ \\t]+(?:--squash|--merge|--rebase)(?:[ \\t]+(?:--auto|--(?:subject|body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?))*[ \\t]*$",
+      "^gh pr review[ \\t]+[0-9]+[ \\t]+(?:--approve|--request-changes|--comment)(?:[ \\t]+(?:--(?:body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?))?[ \\t]*$",
+      "^gh pr create(?:[ \\t]+(?:--draft|--fill|--fill-verbose|--(?:title|body|base|head|assignee|reviewer|label|milestone)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?))*[ \\t]*$",
+      "^gh pr edit[ \\t]+[0-9]+(?:[ \\t]+(?:--(?:title|body|base|add-label|remove-label|add-reviewer|add-assignee|milestone)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?))*[ \\t]*$",
+      "^gh pr ready[ \\t]+[0-9]+(?:[ \\t]+--undo)?[ \\t]*$",
+      "^gh pr close[ \\t]+[0-9]+(?:[ \\t]+--(?:comment)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))?[ \\t]*$",
+      "^gh issue create(?:[ \\t]+(?:--(?:title|body|label|assignee|milestone|project)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?))*[ \\t]*$",
+      "^gh issue comment[ \\t]+[0-9]+[ \\t]+(?:--(?:body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?)[ \\t]*$",
+      "^gh issue close[ \\t]+[0-9]+(?:[ \\t]+--(?:comment|reason)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*[ \\t]*$",
+      "^gh release create[ \\t]+(?:\"[A-Za-z0-9_][^\"$`\\n]*\"|'[A-Za-z0-9_][^'\\n]*'|[A-Za-z0-9_][^\\s\"'$`\\n]*)(?:[ \\t]+(?:--draft|--prerelease|--generate-notes|--latest|--(?:title|notes|target)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--notes-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._/-]*[\"']?))*[ \\t]*$"
     ],
     "alwaysAllowMcpPatterns": [
       "^mcp__claude_ai_Linear__(save_|create_)",
-      "^mcp__github__(create_|update_|merge_|add_|delete_|push_|fork_|request_)",
+      "^mcp__github__(?:create_branch|create_pull_request|update_pull_request|update_pull_request_branch|add_issue_comment|add_comment_to_pending_review|add_reply_to_pull_request_comment|request_copilot_review)$",
       "^mcp__claude_ai_Slack__slack_(send_|schedule_|create_|update_)",
       "^mcp__notion__notion-(create-|update-|move-|duplicate-)"
     ],
