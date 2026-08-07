@@ -179,12 +179,11 @@ function humanizeKey(k) {
 }
 
 // An artifact key is whatever string the controller passed to submit_step_progress —
-// arbitrary, not a CSS identifier. Derive a safe class token from it so the renderer
-// never has to sanitize (or, worse, trust) a key it interpolates into `class="..."`.
-// Artifact keys are arbitrary strings the controller supplies, so they reach the DOM as a
-// class token only after normalising. Collisions have to be broken too: tracked/detail.js
-// keys each <details>'s open/closed state off its className, so two keys normalising to the
-// same slug would share one disclosure and toggle each other.
+// arbitrary, not a CSS identifier. Derive a safe class token from it so the renderer never
+// has to sanitize (or, worse, trust) a key it interpolates into `class="..."`. Collisions
+// have to be broken too: tracked/detail.js keys each <details>'s open/closed state off its
+// className, so two keys normalising to the same slug would share one disclosure and toggle
+// each other.
 function slugOf(k, taken) {
   const base = String(k).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '') || 'artifact';
   if (!taken) return base;
