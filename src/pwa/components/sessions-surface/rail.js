@@ -182,12 +182,26 @@ export function renderContext(mount) {
     wireHandlers(id);
   }
 
+  // Coalesce to one repaint per frame. The stores fan out synchronously with no
+  // batching (state/create-store.js), and paint() rebuilds the whole rail via
+  // innerHTML + rewires handlers — so hydrating a session with a long transcript
+  // and many subagents would otherwise run one full rebuild per store mutation,
+  // thousands of them, each O(subagents). Same guard session-view/index.js uses.
+  let paintRaf = 0;
+  const schedulePaint = () => {
+    if (paintRaf) return;
+    paintRaf = requestAnimationFrame(() => { paintRaf = 0; paint(); });
+  };
+
   fetchMcpStatus().then((servers) => { mcpServers = servers; paint(); });
 
   paint();
-  const unsubNav = nav.subscribe(paint);
-  const unsubSessions = sessions.subscribe(paint);
-  const unsubSubagents = subagents.subscribe(paint);
-  const unsubUsage = usage.subscribe(paint);
-  return () => { unsubNav(); unsubSessions(); unsubSubagents(); unsubUsage(); };
+  const unsubNav = nav.subscribe(schedulePaint);
+  const unsubSessions = sessions.subscribe(schedulePaint);
+  const unsubSubagents = subagents.subscribe(schedulePaint);
+  const unsubUsage = usage.subscribe(schedulePaint);
+  return () => {
+    if (paintRaf) cancelAnimationFrame(paintRaf);
+    unsubNav(); unsubSessions(); unsubSubagents(); unsubUsage();
+  };
 }

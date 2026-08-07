@@ -237,18 +237,28 @@ export function renderList(mount) {
       card.classList.toggle('active', card.dataset.sessionId === selected);
     }
   };
-  const unsubSessions = sessions.subscribe(paint);
-  const unsubApprovals = approvals.subscribe(paint);
-  const unsubSubagents = subagents.subscribe(paint);
+  // Coalesce to one repaint per frame — paint() re-derives every group twice and
+  // rebuilds the list via innerHTML, while the stores fan out synchronously with
+  // no batching (state/create-store.js). Without this, hydrating one long session
+  // drives a full rebuild per transcript append and per subagent entry.
+  let paintRaf = 0;
+  const schedulePaint = () => {
+    if (paintRaf) return;
+    paintRaf = requestAnimationFrame(() => { paintRaf = 0; paint(); });
+  };
+  const unsubSessions = sessions.subscribe(schedulePaint);
+  const unsubApprovals = approvals.subscribe(schedulePaint);
+  const unsubSubagents = subagents.subscribe(schedulePaint);
   const unsubNav = nav.subscribe(refreshActive);
   const unsubKeymap = keymap.subscribe(() => {
     filterKbd.textContent = formatCombo(keymap.bindingFor('shell.focusFilter'));
     newKbd.textContent = formatCombo(keymap.bindingFor('shell.togglePalette'));
   });
   const ticker = setInterval(() => {
-    if (runningSince.size > 0) paint();
+    if (runningSince.size > 0) schedulePaint();
   }, 1000);
   return () => {
+    if (paintRaf) cancelAnimationFrame(paintRaf);
     unsubSessions(); unsubApprovals(); unsubSubagents(); unsubNav(); unsubKeymap();
     clearInterval(ticker);
   };
