@@ -180,7 +180,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "verdict_submitted",
-  memo: "submitted REQUEST_CHANGES on <PR_URL>: 2 of 4 comments unaddressed. Last verified head: <headRefOid from resolutions>. <then the controller's narrative, carried forward>",
+  memo: "submitted REQUEST_CHANGES on <PR_URL>: 2 of 4 comments unaddressed. <then the controller's narrative, carried forward>",
   artifacts: { verdict: "REQUEST_CHANGES\n\n<the body exactly as submitted>" },
   next: { kind: "self-round" }
 })
@@ -201,7 +201,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "verdict_pending",
-  memo: "no verdict: <no resolutions artifact / gh said 'Can not approve your own pull request' / gh said '<stderr>'>. Last verified head: <headRefOid from resolutions>. <then the controller's narrative, carried forward>",
+  memo: "no verdict: <no resolutions artifact / gh said 'Can not approve your own pull request' / gh said '<stderr>'>. <then the controller's narrative, carried forward>",
   next: { kind: "self-round" }
 })
 ```

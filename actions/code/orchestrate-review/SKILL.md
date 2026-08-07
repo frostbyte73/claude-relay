@@ -318,12 +318,20 @@ that matters: the watcher fires it when the PR's head commit changes, which is e
 author pushed." A silent fixup on a repo with no CI checks, a force-push, an amend — all of
 them move the head and all of them wake you, with no timer and no polling of your own.
 
-**Do not arm a `resumeAt` on this row.** A wait on `head-moved` ends on its own when the thing
-you are waiting for happens, so a timer adds nothing but cost: every timer wake that finds an
-unchanged head burns two rounds (the delivery, plus the `wait` you re-arm) out of eighty. An
-indefinite wait costs zero until something real happens. If the author never pushes, the step
-should sit there — that is the correct outcome, and the user's "Mark resolved" is the way out
-of it, the same as rung 12's vigil.
+**Do not arm a `resumeAt` on this row** — with one exception below. A wait on `head-moved` ends
+on its own when the thing you are waiting for happens, so a timer adds nothing but cost: every
+timer wake that finds an unchanged head burns two rounds (the delivery, plus the `wait` you
+re-arm) out of eighty. An indefinite wait costs zero until something real happens. If the author
+never pushes, the step should sit there — that is the correct outcome, and the user's "Mark
+resolved" is the way out of it, the same as rung 12's vigil.
+
+**The exception: `pr.headRefOid` absent.** `head-moved` fires by comparing the head the watcher
+just read against the one it read before, so if the envelope's `pr` carries no `headRefOid` at
+all, the watcher has never recorded one and that event can never fire — the indefinite wait
+becomes a permanent one, with nothing to end it but the user noticing. Only in that case, arm
+`resumeAt` about six hours out alongside the events, and say so in `memo`. Two rounds a day is
+a cheap insurance premium against a step that would otherwise sit forever; once a `headRefOid`
+does appear, drop the timer and go back to the plain indefinite wait.
 
 When a delivery arrives, compare `pr.headRefOid` against the **last verified head** (§4) rather
 than trusting the event name. A batch can carry several events, a `wait` on one signal can fire
