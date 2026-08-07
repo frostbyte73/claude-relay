@@ -71,10 +71,19 @@ gh pr view "$PR_URL" --json state,mergeable,mergeStateStatus,reviewDecision,stat
 - Anything else that blocks the merge (a required check that went red again, a stale
   approval, branch protection) — hand it back with the specific blocker named.
 
-## Step 3 — Merge. Merge ONLY.
+**Read the PR number off `PR_URL` and remember it.** Step 3 takes the number as a literal
+digit string — not `"$PR_URL"`, not `$PR_NUM`. If the URL is ever ambiguous, ask GitHub:
 
 ```bash
-gh pr merge "$PR_URL" --squash
+gh pr view "$PR_URL" --json number --jq .number
+```
+
+## Step 3 — Merge. Merge ONLY.
+
+One line, in this exact order: `gh pr merge`, the **literal PR number**, the strategy.
+
+```bash
+gh pr merge <PR_NUMBER> --squash
 ```
 
 There is no second route to a merge: `gh api` is not granted, so the REST endpoint
@@ -89,28 +98,39 @@ a failure, the step never leaves its merge gate, and the PWA shows nothing happe
 the PR watcher reconciles the merge much later. The merge and the branch cleanup must be
 two separate commands so a cleanup failure can never be mistaken for a merge failure.
 
-The allowlist denies every *literal* spelling of `-d`/`--delete-branch` — `-d`, `-sd`,
-`-d=true`, `-db"msg"`, `"-d"`, `-d$X` are all denied, because it **whitelists**: `gh pr
-merge` is granted only when every word after it is one the action is meant to use, and
-anything else is denied by default. What it cannot see through is a value smuggled behind
-a shell variable — `F=--delete-branch; gh pr merge $F "$PR_URL" --squash` reads, on the
-command text, like an ordinary `$VAR` operand, and only becomes `--delete-branch` once the
-shell expands it. A command-text allowlist checks the text you wrote, not what it expands
-to (see CLAUDE.md) — so the instruction above is the actual guardrail, not the allowlist:
-never write `--delete-branch`, in any spelling, direct or behind a variable. What is
-allowed:
+The allowlist is a **whitelist**, not a blocklist: `gh pr merge` is granted only when every
+word after it is one this action is meant to use, and anything else denies by default. That
+is what makes it closed rather than a list of spellings to keep chasing — `-d`, `-sd`,
+`-d=true`, `-db"msg"`, `"-d"`, `-d$X` are all denied not because they are enumerated but
+because they are not in the table:
 
 | Allowed | Notes |
 |---|---|
-| the PR operand | a URL, a number, or `"$PR_URL"` / `$PR_URL` |
-| `--squash`, `--merge`, `--rebase` | the strategy; `--squash` unless `boundNote` says otherwise |
-| `--auto` | |
-| `--subject <text>`, `--body <text>` | the squash commit message, when `boundNote` asks for one |
+| the PR operand | **a bare number, typed literally.** Not a URL, not `"$PR_URL"`, not `$PR_NUM` |
+| `--squash`, `--merge`, `--rebase` | **exactly one**, immediately after the number; `--squash` unless `boundNote` says otherwise |
+| `--auto` | after the strategy |
+| `--subject <text>`, `--body <text>` | the squash commit message, when `boundNote` asks for one; literal text only — **no** `$VAR`, `$(…)` or backticks |
 
-Everything else is denied — including `--delete-branch` and every `-d` spelling, `--admin`,
-the `-s`/`-m`/`-r` shorthands, and a `\`-continued command split across lines. Write the
-merge on **one line**. If you see a denial here, you wrote something outside that table —
-drop it and re-run the plain merge, then do Step 4.
+**Why a number and not the URL.** A bare number is resolved by `gh` against the remote of
+the checkout you are standing in, which is this step's own worktree — so the number cannot
+name a PR in another repo. It also closes the one hole the old grant could not see through:
+`--delete-branch` behind a shell variable. `F=--delete-branch; gh pr merge $F "$PR_URL"
+--squash` reads, on the command text, like an ordinary `$VAR` operand and only becomes a
+flag once the shell expands it. A command-text allowlist checks the text you wrote, not
+what it expands to (see CLAUDE.md) — so no `$VAR` is accepted anywhere in this command:
+not as the operand, not as a flag, not as a `--subject`/`--body` value. Every word is a
+literal the checker can read.
+
+That is a real guarantee, and it is the *only* one: it stops the flag reaching `gh` through
+this action's grant. It says nothing about a `gh` alias, a repo-level config, or a future
+rule someone widens. The instruction stands on its own — never write `--delete-branch`, in
+any spelling.
+
+Everything else is denied — `--admin`, the `-s`/`-m`/`-r` shorthands, two strategies in one
+command, a bare `gh pr merge` with no number (it prompts interactively), and a
+`\`-continued command split across lines. Write the merge on **one line**. If you see a
+denial here, you wrote something outside that table — drop it and re-run the plain merge,
+then do Step 4.
 
 If `gh pr merge` itself fails, the PR did **not** merge. Do not retry blindly; `--admin`
 (bypassing branch protection) is denied for the same reason it is a bad idea. Hand it back

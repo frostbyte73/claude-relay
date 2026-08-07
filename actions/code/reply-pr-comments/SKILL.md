@@ -65,13 +65,19 @@ Comment ids carry their own routing:
 
 The inline threads need GitHub's integer comment id, and the envelope stores the GraphQL
 node id. Fetch the mapping once. Your cwd is the PR's worktree, so let `gh` fill in the
-repo — `{owner}` and `{repo}` are `gh api`'s own placeholders, and using them keeps this
-free of shell string-surgery:
+repo — `{owner}` and `{repo}` are `gh api`'s own placeholders, resolved from that
+worktree's own remote, and they are the only repo spelling this action is granted:
 
 ```bash
-PR_NUM=$(gh pr view "$PR_URL" --json number --jq .number)
-gh api "repos/{owner}/{repo}/pulls/$PR_NUM/comments" --paginate --jq '.[] | "\(.node_id)\t\(.id)"'
+gh pr view "$PR_URL" --json number --jq .number
+gh api "repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments" --paginate --jq '.[] | "\(.node_id)\t\(.id)"'
 ```
+
+**Read the PR number off that first command and type it in literally** — `<PR_NUMBER>` and
+`<id>` below are digits you write yourself, not `$PR_NUM` or `"$PR_URL"`. A `$VAR` in a
+target slot is whatever an earlier assignment put there, so the grant takes literals only;
+substituting one is the difference between "reply to the PR the user approved" and "reply
+to any PR on github.com".
 
 ## Step 3 — Post. Post ONLY what was approved.
 
@@ -88,8 +94,29 @@ gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" -f body=
 Top-level PR comment (issue comments, review summaries):
 
 ```bash
-gh pr comment "$PR_URL" --body "<the approved reply, verbatim>"
+gh pr comment <PR_NUMBER> --body "<the approved reply, verbatim>"
 ```
+
+**A double-quoted body is read by the shell**, so `$VAR`, `$(…)` and backticks are denied
+in one — a command substitution would put an unreviewed file's contents onto a public PR.
+Reply text that needs them (markdown backticks, most often) has two escape hatches:
+
+- **single-quote the body.** The shell expands nothing inside `'…'`, so
+  `--body 'wrap the `insert` in a transaction'` is fine. Only an apostrophe in the text
+  rules this out.
+- **write the body to a file first**, then hand `gh` the path. This action may `Write` under
+  `/tmp/` and read a body back from there, and nowhere else:
+
+  ```bash
+  gh pr comment <PR_NUMBER> --body-file /tmp/outpost-reply-<id>.md
+  gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" --input /tmp/outpost-reply-<id>.json
+  ```
+
+  Use a literal filename directly under `/tmp/` (write the id in yourself). The `--input`
+  payload is the endpoint's JSON body — `{"body": "…"}`.
+
+Either way the text is still exactly what `boundNote` approved. The file is a transport, not
+a licence to compose something new.
 
 One command per reply, in the order `boundNote` lists them. If one fails, keep going with
 the rest and record which failed — a partial post is a real outcome and the controller
