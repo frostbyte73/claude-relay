@@ -28,9 +28,14 @@ function controllerOptions(selected) {
   return optionsHtml(names, selected, 'code.orchestrate-pr');
 }
 
-// `editStep` is the current step when editing. Workspace fields stay editable: the dialog only
-// opens for steps that haven't started, so nothing has provisioned against the old ref — and a
-// planner-authored workspace that's wrong (missing repo, wrong path) is otherwise unfixable.
+// `editStep` is the current step when editing. Workspace fields stay editable: a planner-authored
+// workspace that's wrong (missing repo, wrong path) is otherwise unfixable. The dialog also opens
+// for a FAILED step now, where a worktree may already exist — the engine pins the workspace in
+// that case and 400s a repoint, which surfaces in #as-error.
+//
+// Edit mode swaps the friendly Approach/Risks boxes for the raw inputs JSON. They are just two
+// keys of that object, and rebuilding `inputs` from them dropped every other key — including the
+// `prUrl` that a failed code.orchestrate-review step exists to have corrected.
 function renderFields(type, editStep) {
   const s = editStep && editStep.type === type ? editStep : null;
   switch (type) {
@@ -54,14 +59,21 @@ function renderFields(type, editStep) {
           <div class="field-label">Goal</div>
           <textarea id="as-goal" class="field-textarea" placeholder="What outcome does this step deliver?">${escapeHtml(s?.goal ?? '')}</textarea>
         </div>
+        ${s ? `
+        <div>
+          <div class="field-label">Inputs <span class="field-hint">JSON — prUrl, approach, risks, …</span></div>
+          <textarea id="as-inputs" class="field-textarea" placeholder="{}">${escapeHtml(JSON.stringify(s.inputs ?? {}, null, 2))}</textarea>
+        </div>
+        ` : `
         <div>
           <div class="field-label">Approach</div>
-          <textarea id="as-approach" class="field-textarea" placeholder="Files / modules / functions to touch">${escapeHtml(s?.inputs?.approach ?? '')}</textarea>
+          <textarea id="as-approach" class="field-textarea" placeholder="Files / modules / functions to touch"></textarea>
         </div>
         <div>
           <div class="field-label">Risks <span class="field-hint">optional</span></div>
-          <textarea id="as-risks" class="field-textarea" placeholder="What could go wrong?">${escapeHtml(s?.inputs?.risks ?? '')}</textarea>
+          <textarea id="as-risks" class="field-textarea" placeholder="What could go wrong?"></textarea>
         </div>
+        `}
       `;
     case 'action':
     default:
@@ -183,15 +195,31 @@ export function openAddStepDialog(jobId, opts = {}) {
       if (!controller) return showError('Controller required');
       const goal = wrap.querySelector('#as-goal')?.value.trim();
       if (!goal) return showError('Goal required');
-      const approach = wrap.querySelector('#as-approach')?.value.trim();
-      const risks    = wrap.querySelector('#as-risks')?.value.trim();
       step.controller = controller;
       step.goal = goal;
-      step.inputs = { ...(approach ? { approach } : {}), ...(risks ? { risks } : {}) };
+      if (isEdit) {
+        const rawInputs = wrap.querySelector('#as-inputs')?.value.trim();
+        try { step.inputs = rawInputs ? JSON.parse(rawInputs) : {}; }
+        catch (e) { return showError(`Inputs isn't valid JSON: ${e.message}`); }
+      } else {
+        const approach = wrap.querySelector('#as-approach')?.value.trim();
+        const risks    = wrap.querySelector('#as-risks')?.value.trim();
+        step.inputs = { ...(approach ? { approach } : {}), ...(risks ? { risks } : {}) };
+      }
       const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
       const branch  = wrap.querySelector('#as-branch')?.value.trim();
       if (!repoCwd) return showError('Repo cwd required');
-      step.workspace = branch ? { kind: 'writable', repoCwd, branch } : { kind: 'readonly', repoCwd };
+      // Same "keep what still matches" rule as the action branch below, and load-bearing here:
+      // rebuilding always would drop a readonly step's pinned `ref` (`refs/pull/<N>/head`), which
+      // for a provisioned step is a repoint the engine refuses — so saving an unrelated field
+      // would fail outright.
+      const cur = editStep?.workspace ?? {};
+      const keepable = branch
+        ? cur.kind === 'writable' && cur.repoCwd === repoCwd && cur.branch === branch
+        : cur.kind === 'readonly' && cur.repoCwd === repoCwd;
+      if (!isEdit || !keepable) {
+        step.workspace = branch ? { kind: 'writable', repoCwd, branch } : { kind: 'readonly', repoCwd };
+      }
     } else {
       const action = wrap.querySelector('#as-action')?.value.trim();
       if (!action) return showError('Action required');

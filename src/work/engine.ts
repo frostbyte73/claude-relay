@@ -22,7 +22,7 @@ import type {
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
 import { readonlyView, workspaceError } from './workspace.js';
-import { expectRepoOf } from './pr-url.js';
+import { expectRepoOf, parsePrUrl } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
@@ -80,6 +80,34 @@ export function isReactiveAction(action: string): boolean {
 
 export function actionNameForStep(s: Step): string {
   return s.type === 'orchestrated' ? s.controller : s.action;
+}
+
+// A step accepts plan-editor patches before it starts, and again once it has FAILED. `sessionId`
+// alone can't be the gate: it is set on the first spawn and never cleared outside onStepRetry, so
+// a controller that validates its inputs and fails on turn 1 (code.orchestrate-review on a bad
+// prUrl) would be frozen with its bad inputs forever — Retry being the only enabled control, and
+// Retry re-spawns exactly what failed. A failure is terminal for dispatch (decide() returns null
+// for it, settleOrchestratedStep already closed its session), so nothing is racing the patch. A
+// live session with NO failure is mid-turn: it has already read the envelope a patch would
+// rewrite, so it stays locked.
+function stepAcceptsEdits(s: Step): boolean {
+  return !s.sessionId || !!s.failure;
+}
+
+function sameWorkspace(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): boolean {
+  const flat = (w: WorkspaceRef | undefined) => {
+    const r = w as { kind?: unknown; repoCwd?: unknown; ref?: unknown; branch?: unknown } | undefined;
+    return JSON.stringify([r?.kind ?? null, r?.repoCwd ?? null, r?.ref ?? null, r?.branch ?? null]);
+  };
+  return flat(a) === flat(b);
+}
+
+// The PR a workspace is checked out at, when it names one. `refs/pull/<N>/head` is the only
+// spelling a planner may author — WorktreeManager rewrites it to its own `refs/outpost/pr-<N>`.
+const WORKSPACE_PR_REF_RE = /^refs\/pull\/(\d+)\/head$/;
+function workspacePrNumber(ws: WorkspaceRef | undefined): string | undefined {
+  const ref = ws?.kind === 'readonly' ? ws.ref : undefined;
+  return ref ? WORKSPACE_PR_REF_RE.exec(ref)?.[1] : undefined;
 }
 
 export function activeGroup(j: JobRecord): Step[] {
@@ -1679,15 +1707,18 @@ export class WorkEngine {
     return step;
   }
 
-  // Cancels a not-yet-started step; refuses once a session exists or the step is terminal.
+  // Cancels a step that hasn't started or has failed; refuses one that is mid-turn or resolved.
+  // Cancelling does NOT reap the worktree: a failed step's checkout is the evidence of why it
+  // failed (see settleOrchestratedStep's `keep`), and terminateJobResources still sweeps every
+  // step — cancelled included — when the job ends, so nothing leaks.
   cancelStepManually(jobId: string, stepId: string): boolean {
     const j = this.opts.queue.get(jobId);
     if (!j) return false;
     const step = j.steps.find((s) => s.id === stepId);
     if (!step) return false;
-    if (step.sessionId) return false;
     if (step.state === 'resolved') return false;
     if (step.cancelled) return true;
+    if (!stepAcceptsEdits(step)) return false;
     this.mutate(jobId, (jj) => this.appendEvent(
       { ...jj, steps: jj.steps.map((s) => s.id === stepId ? { ...s, cancelled: true } : s) },
       { kind: 'plan_reconciled', who: 'user', body: 'step cancelled manually', stepId },
@@ -1719,33 +1750,66 @@ export class WorkEngine {
     return true;
   }
 
-  // Patches an existing step's editable fields; refuses once a session exists or the
-  // step is terminal/cancelled — same editability rule cancelStepManually and the PWA's
+  // Patches an existing step's editable fields; refuses a mid-turn session and a
+  // terminal/cancelled step — same editability rule cancelStepManually and the PWA's
   // stepIsEditable() enforce. Only fields applicable to the step's own type are applied.
   editStepManually(jobId: string, stepId: string, patch: StepEditPatch): boolean {
     const j = this.opts.queue.get(jobId);
     if (!j) return false;
     const step = j.steps.find((s) => s.id === stepId);
     if (!step) return false;
-    if (step.sessionId) return false;
     if (step.state === 'resolved') return false;
     if (step.cancelled) return false;
+    if (!stepAcceptsEdits(step)) return false;
 
-    // A step that failed because its ref couldn't provision is only repairable through this
-    // patch — and the failure keeps decide() returning null, so clearing the ref without
-    // clearing the failure would look like the repair did nothing. Retry after the mutate.
-    const wasUnprovisionable = !!step.failure && !!workspaceError(step.workspace);
+    // Whether a worktree exists for this step is the one fact the workspace rules turn on, and
+    // it is exactly what provision() itself keys on: given a stepId it already holds a live
+    // record for, it returns THAT worktree and ignores the ref it was passed
+    // (WorktreeManager.provision). A step that never provisioned — `kind: 'none'`, or one whose
+    // ref wouldn't resolve, both of which return/throw before the record is written — has none.
+    const wt = this.opts.worktreeManager.get(stepId);
+    const provisioned = !!wt && !wt.archivedAt;
 
     const fields: Partial<Step> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.description !== undefined) fields.description = patch.description;
-    // Safe only because of the no-sessionId guard above: nothing has provisioned against the
-    // old ref yet. This is also the only way to repair a step whose planner-authored workspace
-    // was wrong — dropping and re-adding loses the step's position and history.
+    // Before anything provisions, repointing the workspace is the only way to repair a step
+    // whose planner-authored ref was wrong — dropping and re-adding loses its position and
+    // history. Once a worktree exists the ref is pinned instead of repointed, because neither
+    // alternative is safe: leaving it means the re-run silently reuses the OLD tree (provision
+    // returns the existing path), and tearing it down to re-provision means
+    // `git worktree remove --force` + `branch -D` over the uncommitted work and the only
+    // evidence of why the step failed — precisely what settleOrchestratedStep's `keep` exists
+    // to protect. Cancel + insert a corrected step is the coherent recovery, and the message
+    // says so. An unchanged workspace is not a repoint: the plan editor re-sends every field
+    // it renders, so refusing on presence alone would re-lock the step it just unlocked.
     if (patch.workspace !== undefined) {
       const err = workspaceError(patch.workspace);
       if (err) throw new Error(err);
+      if (provisioned && !sameWorkspace(step.workspace, patch.workspace)) {
+        throw new Error(
+          `this step already provisioned a worktree at ${wt!.worktreePath} and would keep it — `
+          + 'a re-run reuses that checkout, not the new ref. Cancel this step and insert a '
+          + 'corrected one instead.',
+        );
+      }
       fields.workspace = patch.workspace as Step['workspace'];
+    }
+    // `inputs.prUrl` and `workspace.ref` describe the same PR. With the workspace pinned above,
+    // letting prUrl move on its own would leave a controller reporting on PR N while every lens
+    // it fans out reads the tree of PR M — an incoherence with no error anywhere. Only a
+    // genuine conflict is refused: a workspace that names no PR may legitimately be the branch
+    // the PR was opened from.
+    if (patch.inputs !== undefined && provisioned) {
+      const pinned = workspacePrNumber(step.workspace);
+      const next = typeof patch.inputs.prUrl === 'string' ? parsePrUrl(patch.inputs.prUrl)?.number : undefined;
+      if (pinned && next && pinned !== next) {
+        throw new Error(
+          `this step's worktree is checked out at refs/pull/${pinned}/head, which is pinned once `
+          + `provisioned — pointing prUrl at PR #${next} would review the wrong tree. Cancel this `
+          + 'step and insert a corrected one instead.',
+        );
+      }
     }
     if (step.type === 'action') {
       if (patch.action !== undefined) {
@@ -1765,7 +1829,12 @@ export class WorkEngine {
       { ...jj, steps: jj.steps.map((s) => s.id === stepId ? { ...s, ...fields, updatedAt: this.ctx.now() } as Step : s) },
       { kind: 'plan_reconciled', who: 'user', body: 'step edited manually', stepId },
     ));
-    if (wasUnprovisionable && patch.workspace !== undefined) this.onStepRetry(jobId, stepId);
+    // A failure keeps decide() returning null, so an edit that isn't followed by a retry looks
+    // like it did nothing — and re-running with the corrected fields is the only reason to edit
+    // a failed step. Skipped when the resulting workspace still wouldn't provision: onStepRetry
+    // throws on that, which would surface as a 400 for an edit that already landed.
+    const nextWorkspace = (fields.workspace ?? step.workspace) as WorkspaceRef | undefined;
+    if (step.failure && !workspaceError(nextWorkspace)) this.onStepRetry(jobId, stepId);
     else void this.tickOne(jobId);
     return true;
   }

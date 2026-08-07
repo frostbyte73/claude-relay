@@ -205,13 +205,11 @@ function phaseChipOf(s) {
 
 // "Mark resolved" is one button doing three different jobs, so it reads as an undifferentiated
 // "give up" action unless the label/hint names which job applies here:
-//  - a FAILED step: the controller's sessionId is now permanent (engine.ts sets it once on
-//    spawn and never clears it outside onStepRetry), which is also what backs stepIsEditable —
-//    so Edit and Cancel both refuse once a session ever ran, and Retry only reproduces the
-//    same failure for a bad input. Resolving force-clears `.failure` (engine.ts's
-//    markStepResolved does this explicitly) and unblocks the group, so a corrected replacement
-//    step can be added below (the plan editor's "+ insert" after any step, incl. a failed
-//    one, has no such gate) — the recovery code.orchestrate-review's own SKILL documents.
+//  - a FAILED step: correcting it in place is now the first move — Edit and Cancel both accept
+//    a failed step (engine.ts's stepAcceptsEdits), and an edit re-runs it automatically. Mark
+//    resolved is what's left for a step whose failure isn't in its inputs at all, or whose
+//    workspace is pinned to a worktree that already provisioned: it force-clears `.failure`
+//    (engine.ts's markStepResolved) and unblocks the group so a replacement can be inserted.
 //  - code.orchestrate-review's `until: "closed"` vigil (phase `watching`, SKILL.md row 12):
 //    ending it here is the sanctioned way to close out a review the user is satisfied with,
 //    not an emergency measure — same button, different meaning.
@@ -220,7 +218,7 @@ function markResolvedInfo(s) {
   if (s.state === 'failed') {
     return {
       label: 'Mark resolved — skip this step',
-      hint: 'This step already ran and failed; retrying reuses the same inputs. Marking it resolved unblocks the plan so you can add a corrected step below.',
+      hint: 'Retrying reuses the same inputs — edit the step instead if the inputs were wrong, and it re-runs on its own. Marking it resolved unblocks the plan so you can add a corrected step below.',
     };
   }
   if (s.phase === 'watching') {
