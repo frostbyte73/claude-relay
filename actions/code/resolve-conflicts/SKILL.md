@@ -43,7 +43,7 @@ The base is `origin/main` unless `boundNote` names a different one:
 
 ```bash
 BASE=origin/main    # override only if boundNote says so
-case "$BASE" in */*) git fetch "${BASE%%/*}" ;; esac   # only remote refs need a fetch
+git fetch origin    # skip this line if boundNote named a LOCAL branch — nothing to fetch
 git merge "$BASE"
 ```
 
