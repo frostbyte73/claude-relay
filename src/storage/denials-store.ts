@@ -13,7 +13,10 @@ export interface ActionDenial {
   sessionId: string;
   toolName: string;
   toolInput: unknown;
-  suggested: { kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string };
+  // `none` is the honest answer for a call no rule could unblock (an unresolvable redirect
+  // target, an unquoted expansion): `value` is then the reason, and the Allow button on that
+  // row is refused by POST /api/allowlist/rules — the fix belongs in the action's command.
+  suggested: { kind: 'tool' | 'bash' | 'mcp' | 'path' | 'none'; value: string };
   at: number;
   count: number;
   runId?: string;

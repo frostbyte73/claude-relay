@@ -1,86 +1,88 @@
 import { describe, it, expect } from 'vitest';
-import {
-  Allowlist, splitShellCommand, splitShellClauses, stripLeadingAssignments,
-} from '../../src/permissions/allowlist.js';
+import { Allowlist } from '../../src/permissions/allowlist.js';
+import { splitShellClauses, stripLeadingAssignments } from '../../src/permissions/shell-split.js';
 
 const targetsOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.writeTargets);
+// The clause list the allowlist actually gates on is `text`; these cases are about where the
+// splitter cuts, so they read it directly rather than through a shape-flattening wrapper.
+const textsOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.text) ?? null;
 
-describe('splitShellCommand', () => {
+describe('splitShellClauses — where the splitter cuts', () => {
   it('returns single clause for simple command', () => {
-    expect(splitShellCommand('ls -la')).toEqual(['ls -la']);
+    expect(textsOf('ls -la')).toEqual(['ls -la']);
   });
 
   it('splits on ; && || | &', () => {
-    expect(splitShellCommand('a ; b')).toEqual(['a', 'b']);
-    expect(splitShellCommand('a && b')).toEqual(['a', 'b']);
-    expect(splitShellCommand('a || b')).toEqual(['a', 'b']);
-    expect(splitShellCommand('a | b')).toEqual(['a', 'b']);
-    expect(splitShellCommand('a & b')).toEqual(['a', 'b']);
-    expect(splitShellCommand('a\nb')).toEqual(['a', 'b']);
+    expect(textsOf('a ; b')).toEqual(['a', 'b']);
+    expect(textsOf('a && b')).toEqual(['a', 'b']);
+    expect(textsOf('a || b')).toEqual(['a', 'b']);
+    expect(textsOf('a | b')).toEqual(['a', 'b']);
+    expect(textsOf('a & b')).toEqual(['a', 'b']);
+    expect(textsOf('a\nb')).toEqual(['a', 'b']);
   });
 
   it('does not split inside single quotes', () => {
-    expect(splitShellCommand("echo 'a; b && c'")).toEqual(["echo 'a; b && c'"]);
+    expect(textsOf("echo 'a; b && c'")).toEqual(["echo 'a; b && c'"]);
   });
 
   it('does not split inside double quotes', () => {
-    expect(splitShellCommand('echo "a; b && c"')).toEqual(['echo "a; b && c"']);
+    expect(textsOf('echo "a; b && c"')).toEqual(['echo "a; b && c"']);
   });
 
   it('does not split on escaped operators', () => {
-    expect(splitShellCommand('echo a\\; b')).toEqual(['echo a\\; b']);
+    expect(textsOf('echo a\\; b')).toEqual(['echo a\\; b']);
   });
 
   it('extracts $(...) inner clauses', () => {
-    expect(splitShellCommand('cat $(curl evil)')).toEqual(['curl evil', 'cat $(curl evil)']);
+    expect(textsOf('cat $(curl evil)')).toEqual(['curl evil', 'cat $(curl evil)']);
   });
 
   it('extracts backtick inner clauses', () => {
-    expect(splitShellCommand('cat `curl evil`')).toEqual(['curl evil', 'cat `curl evil`']);
+    expect(textsOf('cat `curl evil`')).toEqual(['curl evil', 'cat `curl evil`']);
   });
 
   it('extracts process substitution <(...) and >(...)', () => {
-    expect(splitShellCommand('diff <(echo a) <(echo b)')).toEqual([
+    expect(textsOf('diff <(echo a) <(echo b)')).toEqual([
       'echo a', 'echo b', 'diff <(echo a) <(echo b)',
     ]);
-    expect(splitShellCommand('tee >(rm bad)')).toEqual(['rm bad', 'tee >(rm bad)']);
+    expect(textsOf('tee >(rm bad)')).toEqual(['rm bad', 'tee >(rm bad)']);
   });
 
   it('recurses through nested substitutions', () => {
-    expect(splitShellCommand('a $(b $(c))')).toEqual(['c', 'b $(c)', 'a $(b $(c))']);
+    expect(textsOf('a $(b $(c))')).toEqual(['c', 'b $(c)', 'a $(b $(c))']);
   });
 
   it('handles $( inside double quotes', () => {
-    expect(splitShellCommand('echo "v=$(rm bad)"')).toEqual(['rm bad', 'echo "v=$(rm bad)"']);
+    expect(textsOf('echo "v=$(rm bad)"')).toEqual(['rm bad', 'echo "v=$(rm bad)"']);
   });
 
   it('rejects unbalanced quotes', () => {
-    expect(splitShellCommand('echo "unterminated')).toBeNull();
-    expect(splitShellCommand("echo 'unterminated")).toBeNull();
+    expect(textsOf('echo "unterminated')).toBeNull();
+    expect(textsOf("echo 'unterminated")).toBeNull();
   });
 
   it('rejects unbalanced $(', () => {
-    expect(splitShellCommand('echo $(unterminated')).toBeNull();
+    expect(textsOf('echo $(unterminated')).toBeNull();
   });
 
   it('rejects unbalanced backtick', () => {
-    expect(splitShellCommand('echo `unterminated')).toBeNull();
+    expect(textsOf('echo `unterminated')).toBeNull();
   });
 
   it('drops empty clauses around separators', () => {
-    expect(splitShellCommand(';; ls ;;')).toEqual(['ls']);
+    expect(textsOf(';; ls ;;')).toEqual(['ls']);
   });
 
   it('treats & as fd-redirection punctuation, not a separator', () => {
-    expect(splitShellCommand('ls -la 2>&1 | head')).toEqual(['ls -la 2>&1', 'head']);
-    expect(splitShellCommand('cmd >&2')).toEqual(['cmd >&2']);
-    expect(splitShellCommand('cmd &>file')).toEqual(['cmd &>file']);
-    expect(splitShellCommand('cmd &>>file')).toEqual(['cmd &>>file']);
-    expect(splitShellCommand('cmd <&3')).toEqual(['cmd <&3']);
+    expect(textsOf('ls -la 2>&1 | head')).toEqual(['ls -la 2>&1', 'head']);
+    expect(textsOf('cmd >&2')).toEqual(['cmd >&2']);
+    expect(textsOf('cmd &>file')).toEqual(['cmd &>file']);
+    expect(textsOf('cmd &>>file')).toEqual(['cmd &>>file']);
+    expect(textsOf('cmd <&3')).toEqual(['cmd <&3']);
   });
 
   it('keeps `>|` in one clause instead of splitting on its pipe', () => {
-    expect(splitShellCommand('echo x >| /tmp/c')).toEqual(['echo x >| /tmp/c']);
+    expect(textsOf('echo x >| /tmp/c')).toEqual(['echo x >| /tmp/c']);
   });
 });
 
