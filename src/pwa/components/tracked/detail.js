@@ -21,25 +21,36 @@ function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean)
 // must survive store-driven repaints without a round-trip.
 const editingPlanByJob = new Map();
 function isEditingPlan(jobId) { return editingPlanByJob.get(jobId) === true; }
-// Mirrors engine.ts's editStepManually/cancelStepManually exactly (their own comments
-// cross-reference this function) — once a session has ever run for a step, both refuse
-// server-side, so there is no point enabling these tools client-side only to 409. That
-// includes a FAILED step: its sessionId is set from turn 1 and never cleared outside a
-// Retry. The real escape for a broken failed step is "Mark resolved" (see markResolvedInfo
-// in vm/tracked.js) followed by inserting a corrected step — editBlockedReason below says so.
-function stepIsEditable(s) {
+// Mirrors engine.ts's stepAcceptsEdits (whose own comment cross-references this one) — a step
+// is editable and cancellable before it starts, and again once it has FAILED, so the inputs that
+// caused the failure can be corrected in place. Only a live session with no failure is locked:
+// it has already read the envelope the patch would rewrite. Anything this enables that the
+// server would still refuse just 409s, so the two rules have to stay identical.
+export function stepIsEditable(s) {
   if (s.cancelled) return false;
-  if (s.sessionId) return false;
   if (s.state === 'resolved') return false;
+  if (s.sessionId && !s.failure) return false;
   return true;
 }
 
-// The disabled tool's tooltip has to tell the truth: a FAILED step isn't "running or done",
-// and the fix isn't "wait" — it's mark-resolved-then-insert. Everything else keeps the
-// original wording.
-function editBlockedReason(s) {
-  if (s.failure) return 'Failed — mark resolved (⋯ menu), then add a corrected step below';
-  return 'Step already running or done';
+// Reordering keeps the STRICTER rule: engine.ts's reorderSteps still locks any step that ever
+// had a session to its original index, failed or not — moving one would reshuffle the parallel
+// groups around work that already ran. So the arrows can't ride on stepIsEditable.
+export function stepIsMovable(s) {
+  return stepIsEditable(s) && !s.sessionId;
+}
+
+// The disabled tool's tooltip has to name the actual blocker: a failed step is editable now, so
+// the only thing these tools are withheld from is a step that is still mid-turn or already over.
+export function editBlockedReason(s) {
+  if (s.state === 'resolved') return 'Step already finished';
+  if (s.cancelled) return 'Step is cancelled';
+  return 'Step is still running — editable once it finishes or fails';
+}
+
+function moveBlockedReason(s) {
+  if (!stepIsEditable(s)) return editBlockedReason(s);
+  return 'Step has already run — it keeps its place in the plan';
 }
 
 function primaryRepo(job) {
@@ -110,10 +121,11 @@ function renderLaunchRow(job) {
 
 function editTools(s, editable, canMoveUp, canMoveDown) {
   const blockedReason = editBlockedReason(s);
+  const moveReason = escapeHtml(moveBlockedReason(s));
   return `
     <div class="step-edit-tools" data-step-id="${escapeHtml(s.id)}">
-      <button class="step-edit-tool" type="button" data-step-action="move-up"   aria-label="Move up"   ${canMoveUp ? '' : 'disabled'} title="Move up">▲</button>
-      <button class="step-edit-tool" type="button" data-step-action="move-down" aria-label="Move down" ${canMoveDown ? '' : 'disabled'} title="Move down">▼</button>
+      <button class="step-edit-tool" type="button" data-step-action="move-up"   aria-label="Move up"   ${canMoveUp ? '' : 'disabled'} title="${canMoveUp ? 'Move up' : moveReason}">▲</button>
+      <button class="step-edit-tool" type="button" data-step-action="move-down" aria-label="Move down" ${canMoveDown ? '' : 'disabled'} title="${canMoveDown ? 'Move down' : moveReason}">▼</button>
       <button class="step-edit-tool" type="button" data-step-action="edit-step" aria-label="Edit" ${editable ? '' : 'disabled'} title="${editable ? 'Edit step' : escapeHtml(blockedReason)}">✎</button>
       <button class="step-edit-tool danger" type="button" data-step-action="cancel-step" aria-label="Cancel" ${editable ? '' : 'disabled'} title="${editable ? 'Cancel step' : escapeHtml(blockedReason)}">×</button>
     </div>
@@ -136,17 +148,19 @@ function renderStepsTimeline(job) {
 
   const rows = liveSteps.map((s, i) => {
     let insert = '';
-    if (editing && i === 0 && stepIsEditable(s)) {
+    // Inserting BEFORE a step that already ran would reorder it behind work it followed, which
+    // is the same thing reorderSteps refuses — so this rail tracks movability, not editability.
+    if (editing && i === 0 && stepIsMovable(s)) {
       insert = insertButton(`data-job-action="insert-step-before" data-before-id="${escapeHtml(s.id)}"`);
     } else if (editing && i > 0) {
       insert = insertButton(`data-job-action="insert-step-after" data-after-id="${escapeHtml(liveSteps[i - 1].id)}"`);
     }
     let tools = '';
     if (editing) {
-      const editable = stepIsEditable(s);
+      const movable = stepIsMovable(s);
       const prev = i > 0 ? liveSteps[i - 1] : null;
       const next = i < liveSteps.length - 1 ? liveSteps[i + 1] : null;
-      tools = editTools(s, editable, editable && prev && stepIsEditable(prev), editable && next && stepIsEditable(next));
+      tools = editTools(s, stepIsEditable(s), movable && prev && stepIsMovable(prev), movable && next && stepIsMovable(next));
     }
     return insert + renderTimelineStep(job, s, i, positions[i], { editTools: tools });
   }).join('');

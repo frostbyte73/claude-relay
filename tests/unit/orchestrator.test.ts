@@ -27,7 +27,25 @@ function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
       resumed.push({ sessionId, env });
     },
   } as never;
-  const worktreeManager = { provision: async () => ({ path: dir }) } as never;
+  // Mirrors WorktreeManager closely enough for the editability rules: `kind: 'none'` records
+  // nothing, every other kind records under the key it was provisioned with, and a second
+  // provision for a live key returns the FIRST worktree regardless of the ref passed in —
+  // which is the whole reason editStepManually has to pin the workspace of a provisioned step.
+  const worktrees = new Map<string, { worktreePath: string; projectCwd: string; baseRef?: string; archivedAt?: number }>();
+  const worktreeManager = {
+    provision: async (key: string, ref: WorkspaceRef) => {
+      if (!ref || ref.kind === 'none') return { path: null };
+      const existing = worktrees.get(key);
+      if (existing && !existing.archivedAt) return { path: existing.worktreePath };
+      worktrees.set(key, {
+        worktreePath: join(dir, key),
+        projectCwd: ref.repoCwd,
+        baseRef: ref.kind === 'readonly' ? ref.ref : ref.branch,
+      });
+      return { path: join(dir, key) };
+    },
+    get: (key: string) => worktrees.get(key),
+  } as never;
   const linearWriter = { setState: async () => undefined } as never;
   const actionsStore = {} as never;
   const engine = new WorkEngine({
@@ -42,7 +60,7 @@ function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
     if (entry) entry.action = name;
     orig(sid, name);
   };
-  return { engine, queue, spawned, resumed, dir };
+  return { engine, queue, spawned, resumed, dir, worktrees };
 }
 
 describe('Orchestrator.launchOrchestrator', () => {
@@ -1327,5 +1345,125 @@ describe('WorkEngine — a throw outside provision() still settles the round', (
     expect(step.dispatches[0]).toMatchObject({ status: 'failed' });
     expect(step.dispatches[0]!.failure).toContain('lesson lookup blew up');
     expect(step.failure).toBeUndefined();
+  });
+});
+
+// A controller that validates its inputs on turn 1 (code.orchestrate-review fails outright on a
+// missing/malformed prUrl) leaves a step whose sessionId is set forever. Edit and Cancel used to
+// key off sessionId alone, so the only enabled control was Retry — which re-spawns the SAME
+// inputs and reproduces the identical failure.
+describe('WorkEngine — recovering a step that failed on its first turn', () => {
+  const PR_12 = 'https://github.com/acme/widgets/pull/12';
+  const PR_99 = 'https://github.com/acme/widgets/pull/99';
+  const reviewStep = (
+    workspace: unknown,
+    inputs: Record<string, unknown>,
+  ): ProposedStep => ({
+    type: 'orchestrated', controller: 'code.orchestrate-review', title: 'review the PR',
+    description: '', goal: 'g', workspace, inputs,
+  } as unknown as ProposedStep);
+
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  async function runningReviewStep(opts: { workspace?: unknown; inputs?: Record<string, unknown> } = {}) {
+    const h = makeEngine();
+    const job = h.engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    h.engine.onPlanReady(job.id, 'initial', [reviewStep(
+      opts.workspace ?? { kind: 'readonly', repoCwd: '/tmp/repo', ref: 'refs/pull/12/head' },
+      opts.inputs ?? { prUrl: PR_12 },
+    )]);
+    h.engine.onPlanApproved(job.id);
+    await flush();
+    const stepId = h.queue.get(job.id)!.steps[0]!.id;
+    expect(h.queue.get(job.id)!.steps[0]!.sessionId).toBeTruthy();
+    return { ...h, job, stepId };
+  }
+
+  async function failedReviewStep(opts: { workspace?: unknown; inputs?: Record<string, unknown> } = {}) {
+    const h = await runningReviewStep(opts);
+    h.engine.onStepFailed(h.job.id, h.stepId, 'inputs.prUrl is missing', { journal: false });
+    return h;
+  }
+
+  it('edits the inputs of a failed step and re-runs it', async () => {
+    const h = await failedReviewStep({ workspace: { kind: 'none' }, inputs: {} });
+    const before = h.spawned.length;
+
+    expect(h.engine.editStepManually(h.job.id, h.stepId, { inputs: { prUrl: PR_12 } })).toBe(true);
+    await flush();
+
+    const step = h.queue.get(h.job.id)!.steps[0] as OrchestratedStep;
+    expect(step.inputs).toEqual({ prUrl: PR_12 });
+    expect(step.failure).toBeUndefined();
+    expect(h.spawned.length).toBe(before + 1);
+  });
+
+  it('cancels a failed step', async () => {
+    const h = await failedReviewStep({ workspace: { kind: 'none' } });
+    expect(h.engine.cancelStepManually(h.job.id, h.stepId)).toBe(true);
+    expect(h.queue.get(h.job.id)!.steps[0]!.cancelled).toBe(true);
+  });
+
+  it('still refuses to edit or cancel a step that is mid-turn', async () => {
+    const h = await runningReviewStep({ workspace: { kind: 'none' } });
+    expect(h.queue.get(h.job.id)!.steps[0]!.failure).toBeUndefined();
+
+    expect(h.engine.editStepManually(h.job.id, h.stepId, { goal: 'different' })).toBe(false);
+    expect(h.engine.cancelStepManually(h.job.id, h.stepId)).toBe(false);
+    expect((h.queue.get(h.job.id)!.steps[0] as OrchestratedStep).goal).toBe('g');
+    expect(h.queue.get(h.job.id)!.steps[0]!.cancelled).toBeFalsy();
+  });
+
+  it('pins the workspace of a failed step that already provisioned a worktree', async () => {
+    const h = await failedReviewStep();
+    expect(h.worktrees.get(h.stepId)).toBeTruthy();
+
+    expect(() => h.engine.editStepManually(h.job.id, h.stepId, {
+      workspace: { kind: 'readonly', repoCwd: '/tmp/repo', ref: 'refs/pull/99/head' },
+    })).toThrow(/already provisioned/);
+    expect(h.queue.get(h.job.id)!.steps[0]!.workspace).toEqual(
+      { kind: 'readonly', repoCwd: '/tmp/repo', ref: 'refs/pull/12/head' },
+    );
+  });
+
+  // The plan editor re-sends every field it renders, so a workspace it didn't change must not
+  // read as a repoint — otherwise no provisioned step could ever be edited at all.
+  it('accepts an unchanged workspace alongside the edit that matters', async () => {
+    const h = await failedReviewStep();
+    expect(h.engine.editStepManually(h.job.id, h.stepId, {
+      workspace: { kind: 'readonly', repoCwd: '/tmp/repo', ref: 'refs/pull/12/head' },
+      goal: 'review it properly',
+    })).toBe(true);
+    expect((h.queue.get(h.job.id)!.steps[0] as OrchestratedStep).goal).toBe('review it properly');
+  });
+
+  it('leaves the workspace editable on a failed step that never provisioned one', async () => {
+    const h = await failedReviewStep({ workspace: { kind: 'none' } });
+    expect(h.worktrees.get(h.stepId)).toBeUndefined();
+
+    expect(h.engine.editStepManually(h.job.id, h.stepId, {
+      workspace: { kind: 'readonly', repoCwd: '/tmp/repo', ref: 'refs/pull/12/head' },
+    })).toBe(true);
+    expect(h.queue.get(h.job.id)!.steps[0]!.workspace).toEqual(
+      { kind: 'readonly', repoCwd: '/tmp/repo', ref: 'refs/pull/12/head' },
+    );
+  });
+
+  // prUrl and workspace.ref name the same PR. With the workspace pinned, letting prUrl move
+  // alone would leave the controller reviewing PR 12's tree while reporting on PR 99.
+  it('refuses an inputs edit that repoints prUrl away from the provisioned PR', async () => {
+    const h = await failedReviewStep();
+    expect(() => h.engine.editStepManually(h.job.id, h.stepId, { inputs: { prUrl: PR_99 } }))
+      .toThrow(/refs\/pull\/12\/head/);
+    expect((h.queue.get(h.job.id)!.steps[0] as OrchestratedStep).inputs).toEqual({ prUrl: PR_12 });
+  });
+
+  it('allows an inputs edit that keeps the provisioned PR', async () => {
+    const h = await failedReviewStep();
+    expect(h.engine.editStepManually(h.job.id, h.stepId, {
+      inputs: { prUrl: PR_12, approach: 'security lens first' },
+    })).toBe(true);
+    expect((h.queue.get(h.job.id)!.steps[0] as OrchestratedStep).inputs)
+      .toEqual({ prUrl: PR_12, approach: 'security lens first' });
   });
 });
