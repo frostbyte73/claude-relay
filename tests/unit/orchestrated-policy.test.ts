@@ -72,11 +72,22 @@ describe('validateNext', () => {
   it('allows a wait naming any one wake condition', () => {
     const waits = [
       { reason: 'CI', events: ['ci' as const] },
+      { reason: 'the author pushes', events: ['head-moved' as const] },
       { reason: 'children', untilAllDispatchesDone: true },
       { reason: 'soak', resumeAt: 1_700_000_000_000 },
     ];
     for (const wait of waits) {
       expect(validateNext(step(), { kind: 'wait', wait }, info).kind, wait.reason).toBe('allow');
+    }
+  });
+
+  // The rejection text is the only place a controller learns the vocabulary at runtime, so
+  // it has to name every event the watcher can actually emit.
+  it('names every watched event in the nothing-to-wake-on rejection', () => {
+    const v = validateNext(step(), { kind: 'wait', wait: { reason: 'thinking' } }, info);
+    const reason = (v as { reason: string }).reason;
+    for (const e of ['ci', 'review-state', 'pr-state', 'pr-comments', 'head-moved', 'dispatches']) {
+      expect(reason, e).toContain(e);
     }
   });
 

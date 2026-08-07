@@ -27,6 +27,7 @@ interface GhPrView {
   state: 'OPEN' | 'CLOSED' | 'MERGED';
   reviewDecision?: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
   mergeable?: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
+  headRefOid?: string;
   statusCheckRollup?: GhCheckRollup[];
   reviews?: Array<{ id: string; author: { login: string }; body: string; createdAt: string; state: string; url?: string }>;
   comments?: Array<{ id: string; author: { login: string }; body: string; createdAt: string; url?: string }>;
@@ -168,6 +169,11 @@ function changedSignals(prev: PrFacts, next: Partial<PrFacts>): WatchedEvent[] {
   // Mergeability rides on `pr-state`: a PR that just started conflicting is the
   // controller's problem now, and there is no separate signal for it to wait on.
   if (moved('prUrl') || moved('prState') || moved('mergeable')) events.push('pr-state');
+  // Only once there is a previous sha to have moved *from*. A step polled for the first
+  // time — or resumed from PrFacts persisted before this field existed — has none, and
+  // reporting the sha it just learned as a push would send a live controller off to
+  // re-verify a head nobody touched.
+  if (prev.headRefOid !== undefined && moved('headRefOid')) events.push('head-moved');
   if (next.comments && hashComments(next.comments) !== hashComments(prev.comments ?? [])) {
     events.push('pr-comments');
   }
@@ -187,6 +193,7 @@ function summarize(events: WatchedEvent[], facts: Partial<PrFacts>, fresh: numbe
       case 'ci': return `CI ${facts.ciState}`;
       case 'review-state': return `review ${facts.reviewState}`;
       case 'pr-state': return `PR ${facts.prState}${facts.mergeable === 'conflicting' ? ' (conflicting)' : ''}`;
+      case 'head-moved': return `head now ${(facts.headRefOid ?? '').slice(0, 12)}`;
       case 'pr-comments': return fresh ? `${fresh} new comment${fresh === 1 ? '' : 's'}` : 'comment thread updated';
     }
   }).join('; ');
@@ -391,6 +398,7 @@ export class PrWatcher {
     const view = await this.fetchPr(cwd, prUrl);
     const inline = await this.fetchInlineComments(cwd, prUrl);
     facts.prState = view.state === 'MERGED' ? 'merged' : view.state === 'CLOSED' ? 'closed' : 'open';
+    if (view.headRefOid) facts.headRefOid = view.headRefOid;
     const checks = ciChecksFrom(view);
     if (checks.length) {
       facts.ciState = ciStateFrom(checks);
@@ -445,7 +453,7 @@ export class PrWatcher {
   private async fetchPr(cwd: string, url: string): Promise<GhPrView> {
     const out = await this.runGh(cwd, [
       'pr', 'view', url,
-      '--json', 'number,url,state,reviewDecision,mergeable,statusCheckRollup,reviews,comments',
+      '--json', 'number,url,state,reviewDecision,mergeable,headRefOid,statusCheckRollup,reviews,comments',
     ]);
     return JSON.parse(out) as GhPrView;
   }

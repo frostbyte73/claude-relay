@@ -18,6 +18,7 @@ interface Facts {
   reviewState?: string;
   prState?: string;
   mergeable?: string;
+  headRefOid?: string;
   comments?: Array<{ id: string; body: string }>;
 }
 
@@ -45,6 +46,7 @@ function stubGh(over: Facts = {}) {
     ...(over.ciState ? { statusCheckRollup: [ROLLUP[over.ciState]] } : {}),
     ...(over.reviewState ? { reviewDecision: REVIEW[over.reviewState] } : {}),
     ...(over.mergeable ? { mergeable: over.mergeable.toUpperCase() } : {}),
+    ...(over.headRefOid ? { headRefOid: over.headRefOid } : {}),
   });
   return async (_cwd: string, args: string[]) => (args[0] === 'api' ? '[]' : view);
 }
@@ -137,6 +139,78 @@ describe('PrWatcher over an orchestrated step', () => {
     expect(engine.pushStepInbox.mock.calls[0]![2].events).toEqual(['pr-state']);
   });
 
+  describe('the head sha', () => {
+    it('records the PR head as a fact', async () => {
+      const { watcher, engine } = harness(orchestratedStepWithPr({}), { headRefOid: 'abc1234' });
+      await watcher.syncJob('j1');
+      expect(engine.applyPrFacts.mock.calls[0]![2]).toMatchObject({ headRefOid: 'abc1234' });
+    });
+
+    it('reports a moved head as head-moved, and nothing else', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ headRefOid: 'abc1234' }), { headRefOid: 'def4567' },
+      );
+      await watcher.syncJob('j1');
+      const [, , item] = engine.pushStepInbox.mock.calls[0]!;
+      expect(item.events).toEqual(['head-moved']);
+      expect(item.summary).toContain('def4567');
+    });
+
+    it('stays quiet when the head is unchanged', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ headRefOid: 'abc1234' }), { headRefOid: 'abc1234' },
+      );
+      await watcher.syncJob('j1');
+      expect(engine.pushStepInbox).not.toHaveBeenCalled();
+    });
+
+    // PrFacts persisted before headRefOid existed carry none, so the first poll after a
+    // daemon bounce has nothing to compare against. Recording it is right; calling it a
+    // move would send a live controller off to re-verify a head that never moved.
+    it('does not call the first sha it ever sees a move', async () => {
+      const { watcher, engine } = harness(orchestratedStepWithPr({}), { headRefOid: 'abc1234' });
+      await watcher.syncJob('j1');
+      expect(engine.applyPrFacts.mock.calls[0]![2]).toMatchObject({ headRefOid: 'abc1234' });
+      expect(engine.pushStepInbox).not.toHaveBeenCalled();
+    });
+
+    // code.orchestrate-pr is live in production waiting on these four. A push that also
+    // moves one of them must still report exactly that one alongside head-moved — never
+    // fold them together, never drop one.
+    it('leaves the other four signals exactly as they were', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'success', headRefOid: 'abc1234' }),
+        { ciState: 'pending', headRefOid: 'def4567' },
+      );
+      await watcher.syncJob('j1');
+      const [, , item] = engine.pushStepInbox.mock.calls[0]!;
+      expect(new Set(item.events)).toEqual(new Set(['ci', 'head-moved']));
+    });
+
+    it('reports only ci when the head held still', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'pending', headRefOid: 'abc1234' }),
+        { ciState: 'failure', headRefOid: 'abc1234' },
+      );
+      await watcher.syncJob('j1');
+      expect(engine.pushStepInbox.mock.calls[0]![2].events).toEqual(['ci']);
+    });
+
+    it('asks gh for headRefOid in the same pr view call', async () => {
+      const ghCalls: string[][] = [];
+      const job = { id: 'j1', steps: [orchestratedStepWithPr({})] };
+      const queue = { get: () => job, list: () => [job] } as never;
+      const engine = { applyPrFacts: vi.fn(), pushStepInbox: vi.fn() };
+      const stub = stubGh({ headRefOid: 'abc1234' });
+      const runGh = async (cwd: string, args: string[]) => { ghCalls.push(args); return stub(cwd, args); };
+      await new PrWatcher({ queue, engine: engine as never, runGh }).syncJob('j1');
+
+      const views = ghCalls.filter((c) => c[0] === 'pr' && c[1] === 'view');
+      expect(views).toHaveLength(1);
+      expect(views[0]![views[0]!.indexOf('--json') + 1]).toContain('headRefOid');
+    });
+  });
+
   it('ignores steps the controller has already settled', async () => {
     const step = { ...orchestratedStepWithPr({}), state: 'resolved' };
     const { watcher, engine } = harness(step, { ciState: 'failure' });
@@ -148,7 +222,7 @@ describe('PrWatcher over an orchestrated step', () => {
   describe('a readonly review step', () => {
     function reviewStep(over: { inputsPrUrl?: string; storedPrUrl?: string } = {}) {
       return {
-        id: 'rev-1', type: 'orchestrated', controller: 'code.review-pr',
+        id: 'rev-1', type: 'orchestrated', controller: 'code.orchestrate-review',
         title: 'review it', description: '', goal: 'review it',
         state: 'waiting', sessionId: 'sess1', cancelled: false,
         workspace: { kind: 'readonly', repoCwd: '/tmp/repo-ro', ref: 'refs/pull/7/head' },

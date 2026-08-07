@@ -58,6 +58,7 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 | `artifacts.postedReview` | **The comment set to verify.** The review id and one line per comment: path, line, outcome, first 80 chars of the body. Every line is one item you must return a verdict for. |
 | `artifacts.resolutions` | An earlier round's verdicts, if this is not the first pass. Carry forward everything still true and re-judge only what the new commits could have changed. |
 | `pr.comments` | Every comment on the PR, including the author's replies. Context only — see Step 3. |
+| `pr.headRefOid` | The PR's head as the watcher last polled it. This is the head the controller's rung 8 compared against to send you here. |
 | `boundNote` | Which comments the controller wants re-checked this round, if it narrowed the set. |
 
 If `postedReview` is empty there is nothing to verify — skip to Step 4b and hand it back.
@@ -67,9 +68,13 @@ Do not verify comments you never posted.
 
 The review was anchored to a commit; `postedReview`'s first line records it as
 `review: <id> (commit <sha>)`. Everything that could address a comment is in the range from
-that commit to the PR's current head. Note the head you read here — Step 4a writes it to
-`resolutions` and to the memo, and it is the only record the controller has of what it has
-already looked at.
+that commit to the PR's current head.
+
+`pr.headRefOid` is the head the controller sent you here about, but it is as of the last poll
+and the author may have pushed again since. Read the head yourself and judge against *that* —
+then write the sha you actually judged, not the envelope's, into `resolutions` (Step 4a). If
+the two disagree the watcher will simply fire `head-moved` again and the controller will send
+you back, which is the correct outcome; recording a head you did not judge is not.
 
 ```bash
 gh pr view "$PR_URL" --json headRefOid,commits,state,comments
@@ -132,25 +137,28 @@ ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__sub
 it is falsified only when every comment in `postedReview` has a verdict here.
 
 **First line: `verified against <headRefOid>`** — the head you judged, from Step 2. Then one
-comment per line, in `postedReview`'s order, so the two can be diffed by eye. The head line is
-what lets the controller tell "the author pushed again" from "nothing has moved since I last
-looked": its rung fires on the PR's current head differing from the last head verified, and
-`pr` carries no head sha, so this line and `postedReview`'s are the only places that value ever
-gets written down.
+comment per line, in `postedReview`'s order, so the two can be diffed by eye.
+
+**The head line is not decoration — it is half of the controller's rung 8.** That rung fires
+when `pr.headRefOid` (the current head, which the watcher supplies) differs from the last head
+verified (this line). The daemon records the current side; only you record the verified side.
+Artifacts are merged and never replaced, so this line survives a cold resume — which is exactly
+why it lives here and not in `memo`. Omit it and the controller either re-verifies on every
+wake or stops verifying altogether.
 
 **Your `memo` replaces the controller's, wholesale.** The daemon overwrites `memo` with
 whatever this submit carries — it does not merge, and there is no second copy. Everything the
-controller was keeping there is gone unless you write it again: the head sha, what the review
-concluded and why, and any waiver the user gave it (which is the *only* thing that will let the
-verdict round approve over a `not-addressed` item). Put your counts first, then carry the
-controller's narrative forward.
+controller was keeping there is gone unless you write it again: what the review concluded and
+why, and any waiver the user gave it (which is the *only* thing that will let the verdict round
+approve over a `not-addressed` item). Put your counts first, then carry the controller's
+narrative forward.
 
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "resolutions_checked",
-  memo: "verified <n> comments against <k> new commits: <a> addressed, <b> not-addressed, <c> unclear. Last verified head: <headRefOid>. <then the controller's narrative, carried forward: what the review concluded, and any user waiver it had recorded>",
+  memo: "verified <n> comments against <k> new commits: <a> addressed, <b> not-addressed, <c> unclear. <then the controller's narrative, carried forward: what the review concluded, and any user waiver it had recorded>",
   artifacts: { resolutions: "verified against def4567\n- src/work/orchestrator.ts:412 — addressed — def4567 wraps the mutate() call in the queue drain, so the re-entrancy is gone\n- src/pwa/app.js:88 — not-addressed — author replied \"fixed in 9ab1234\", but 9ab1234 only renames the handler; removeEventListener is still never called\n- src/git/git-ops.ts:210 — unclear — the timeout moved to a constant, but nothing shows whether the 30s value was the point of the comment" },
   next: { kind: "self-round" }
 })
@@ -172,7 +180,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "resolutions_pending",
-  memo: "verified nothing: <postedReview was empty / no prUrl / gh said '<stderr>'>. <then the controller's narrative, carried forward — including the last verified head, which nothing else records>",
+  memo: "verified nothing: <postedReview was empty / no prUrl / gh said '<stderr>'>. <then the controller's narrative, carried forward: what the review concluded, and any user waiver it had recorded>",
   next: { kind: "self-round" }
 })
 ```

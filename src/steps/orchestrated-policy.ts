@@ -154,8 +154,8 @@ export function validateNext(
       return {
         kind: 'reject',
         reason: 'a wait must name something to wake on: `events` (ci, review-state, pr-state, '
-          + 'pr-comments, dispatches), `untilAllDispatchesDone: true`, or `resumeAt` (epoch ms). '
-          + 'To think without parking, take a self-round instead.',
+          + 'pr-comments, head-moved, dispatches), `untilAllDispatchesDone: true`, or `resumeAt` '
+          + '(epoch ms). To think without parking, take a self-round instead.',
       };
     }
   }

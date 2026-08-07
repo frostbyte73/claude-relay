@@ -190,19 +190,22 @@ machine-checkable, because `code.verify-resolutions` walks it comment by comment
 round.
 
 **First line: the review id and the commit you posted against**, exactly
-`review: <id> (commit <headRefOid from Step 2>)`. The commit is not decoration. The
-controller's rung 8 fires on "the PR's head differs from the last head I verified", and this
-line is where it initialises that value; `code.verify-resolutions` uses the same sha as the
-left-hand side of its compare range. A `postedReview` whose first line has no commit leaves
-that rung unreadable, and an unreadable rung either never fires (the controller waits forever
-while the author pushes fix after fix) or fires on every wake.
+`review: <id> (commit <headRefOid from Step 2>)`. The commit is not decoration, and it does
+two jobs the daemon cannot do for you. The controller's rung 8 fires on `pr.headRefOid` (the
+watcher's current head) differing from the last head verified — and until a verify round has
+run, *this* line is the last head verified, so it is where the comparison starts. Separately,
+`code.verify-resolutions` uses the same sha as the left-hand side of its compare range: it is
+the commit the review was anchored to, which no later fact can reconstruct. A `postedReview`
+whose first line has no commit leaves that rung unreadable, and an unreadable rung either never
+fires (the controller waits forever while the author pushes fix after fix) or fires on every
+wake.
 
 Then one line per comment: path, line, outcome, and the first 80 characters of the body.
 
 **Your `memo` replaces the controller's, wholesale.** The daemon overwrites `memo` with
 whatever this submit carries — it does not merge, and there is no second copy. Everything the
-controller was keeping there is gone unless you write it again: the head sha, what the review
-concluded and why, and any waiver or instruction the user gave it. Carry that narrative
+controller was keeping there is gone unless you write it again: what the review concluded and
+why, and any waiver or instruction the user gave it. Carry that narrative
 forward and add your line to it. A memo that is only a status line costs the controller a
 whole round to rebuild, and costs the review's reasoning outright.
 
@@ -211,7 +214,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "review_posted",
-  memo: "posted review <id> on <PR_URL> against head <headRefOid>: <n> line comments, <m> degraded to body. Last verified head: <headRefOid>. <then the controller's own narrative, carried forward verbatim: what the review concluded, and any user override it had recorded>",
+  memo: "posted review <id> on <PR_URL> against head <headRefOid>: <n> line comments, <m> degraded to body. <then the controller's own narrative, carried forward verbatim: what the review concluded, and any user override it had recorded>",
   artifacts: { postedReview: "review: 2314567890 (commit abc1234)\n- src/work/orchestrator.ts:412 — posted — \"This re-enters mutate() while the previous mutation is still…\"\n- src/pwa/app.js:88 — degraded-to-body (line not in diff) — \"The listener is never removed, so a second boot double-fires…\"" },
   next: { kind: "self-round" }
 })
