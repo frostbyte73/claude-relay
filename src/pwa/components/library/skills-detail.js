@@ -288,17 +288,25 @@ function wireEditCard(view, edit) {
 function denialsSectionHtml(item, state) {
   const list = state.denials?.[item.name] ?? [];
   if (list.length === 0) return '';
-  const rows = list.map((d) => `
+  // kind 'none' means the suggester found no rule that would unblock the call — an unresolvable
+  // redirect target, say. Offering Allow there posts a kind the route rejects with a 400, so the
+  // row shows why instead.
+  const rows = list.map((d) => {
+    const unfixable = d.suggested.kind === 'none';
+    return `
     <div class="lib-denial-row" data-denial-id="${escapeHtml(d.id)}">
       <div class="lib-denial-desc">
         <span class="lib-denial-tool">${escapeHtml(d.toolName)}</span>
-        <span class="o-pill code">${escapeHtml(d.suggested.kind)}: ${escapeHtml(d.suggested.value)}</span>
+        ${unfixable
+          ? `<span class="lib-denial-unfixable">${escapeHtml(d.suggested.reason ?? 'no rule can allow this call')}</span>`
+          : `<span class="o-pill code">${escapeHtml(d.suggested.kind)}: ${escapeHtml(d.suggested.value)}</span>`}
         ${d.count > 1 ? `<span class="lib-denial-count">×${d.count}</span>` : ''}
       </div>
-      <button type="button" class="o-btn o-btn--ghost" data-denial="allow">Allow</button>
+      ${unfixable ? '' : '<button type="button" class="o-btn o-btn--ghost" data-denial="allow">Allow</button>'}
       <button type="button" class="o-btn o-btn--ghost" data-denial="dismiss">Dismiss</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
   return `
     <div class="o-section lib-section lib-denials">
       <h4 class="lib-section-hdr o-microhead">Blocked calls · ${list.length}</h4>
