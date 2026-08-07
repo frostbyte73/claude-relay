@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { literalRedirectPath, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
-import { clausesShellSafe } from './shell-safety.js';
+import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
 
 export interface AllowlistConfig {
   alwaysAllow: string[];
@@ -110,6 +110,24 @@ function readPathInput(toolName: string, toolInput: unknown): string | undefined
     if (typeof v === 'string') return v;
   }
   return undefined;
+}
+
+// What a denied Bash call needs before it would run: a rule for the clause nothing matched,
+// a Write grant for the path it redirects to, or — `none` — nothing a rule can express, with
+// `reason` saying what to fix in the command instead.
+export type BashDenialCause =
+  | { kind: 'clause'; clause: string }
+  | { kind: 'redirect'; target: string }
+  | { kind: 'none'; reason: string };
+
+// The scopes that were in force when the call was denied. Every field is optional because
+// the denial recorder knows the action and the session but not always the project cwd or the
+// worktree; omitting one only ever makes the answer stricter, never looser.
+export interface DenialContext {
+  projectCwd?: string;
+  actionName?: string;
+  sessionId?: string;
+  sessionWorktreePath?: string;
 }
 
 export interface AllowlistOpts {
@@ -303,6 +321,36 @@ export class Allowlist {
       }
     }
     return true;
+  }
+
+  // Why a denied Bash command was denied, in the only terms a one-click grant can answer.
+  // Order matters and mirrors the gates in allows(): a target no rule could ever name is
+  // fatal whatever else is wrong, so it outranks the clause that also has no rule — grant
+  // that clause and the call still dies at the redirect gate.
+  bashDenialCause(cmd: string, ctx: DenialContext = {}): BashDenialCause {
+    const scopes = this.scopesFor(ctx.projectCwd, ctx.actionName, ctx.sessionId);
+    const clauses = splitShellClauses(cmd);
+    if (clauses === null || clauses.length === 0) return { kind: 'none', reason: 'the command does not parse' };
+    const targets: string[] = [];
+    for (const clause of clauses) {
+      for (const word of clause.writeTargets) {
+        const path = literalRedirectPath(word);
+        if (path === null) return { kind: 'none', reason: 'a redirect target that is not a literal absolute path' };
+        if (!isDeviceSink(path)) targets.push(path);
+      }
+    }
+    const unsafe = unsafeClauseReason(cmd);
+    if (unsafe) return { kind: 'none', reason: unsafe };
+
+    const unmatched = clauses.find((c) => !scopes.some((s) => bashPatternsMatch(s, c.text)));
+    if (unmatched) return { kind: 'clause', clause: unmatched.text };
+
+    for (const path of targets) {
+      if (scopes.some((s) => rulesAllow(s, 'Write', { file_path: path }))) continue;
+      if (ctx.sessionWorktreePath && isPathUnder(path, ctx.sessionWorktreePath)) continue;
+      return { kind: 'redirect', target: path };
+    }
+    return { kind: 'none', reason: 'no rule would change the outcome' };
   }
 
   allows(toolName: string, toolInput: unknown, projectCwd?: string, actionName?: string, sessionWorktreePath?: string, sessionId?: string): boolean {

@@ -245,22 +245,6 @@ export function literalRedirectPath(word: string): string | null {
   return resolve(out);
 }
 
-// Every path a Bash command would create or truncate by redirection, skipping the ones
-// that can't be resolved statically. Used to suggest a grant after a denial; the gate
-// itself treats an unresolvable target as fatal, which this can't express.
-export function resolvableWriteTargets(cmd: string): string[] {
-  const clauses = splitShellClauses(cmd);
-  if (!clauses) return [];
-  const out: string[] = [];
-  for (const c of clauses) {
-    for (const w of c.writeTargets) {
-      const p = literalRedirectPath(w);
-      if (p !== null) out.push(p);
-    }
-  }
-  return out;
-}
-
 // Names a leading `NAME=value` may not carry. The prefix is peeled off before the clause is
 // pattern-matched and every clause of one Bash call shares a shell, so a name the shell or an
 // allowlisted program consults for program resolution turns `^cat ` into "run my binary" and

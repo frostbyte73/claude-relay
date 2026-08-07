@@ -134,10 +134,17 @@ function gitArgvIsDangerous(rest: string[]): boolean {
 }
 
 export function clausesShellSafe(cmd: string): boolean {
+  return unsafeClauseReason(cmd) === null;
+}
+
+// The same verdict with the reason kept, for telling the user why no grant would help.
+// Short enough to render in a pill next to the denied call.
+export function unsafeClauseReason(cmd: string): string | null {
   const clauses = splitShellClauses(cmd);
-  if (clauses === null) return false;
-  return clauses.every((c) => {
-    const body = stripLeadingAssignments(c.text);
-    return !hasUnquotedExpansion(body) && !argvIsDangerous(clauseArgv(c.text));
-  });
+  if (clauses === null) return 'the command does not parse';
+  for (const c of clauses) {
+    if (hasUnquotedExpansion(stripLeadingAssignments(c.text))) return 'an unquoted expansion in the command';
+    if (argvIsDangerous(clauseArgv(c.text))) return 'an exec-or-write flag in the argv';
+  }
+  return null;
 }

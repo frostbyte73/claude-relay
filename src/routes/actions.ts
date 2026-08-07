@@ -13,13 +13,14 @@ import { buildScorecard } from '../actions/scorecard.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRunsStore } from '../storage/action-runs-store.js';
 import type { ActionDenial, DenialsStore } from '../storage/denials-store.js';
+import type { Allowlist } from '../permissions/allowlist.js';
+import { suggestRule } from '../permissions/denial-suggestion.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import {
   forgetEdit, loadPersistedEdits, persistEdit,
   type ActionEdit, type ActionProposal,
 } from '../storage/action-edits-store.js';
 import { intakeProposal, ledgerActionFor, onSessionGone } from '../actions/proposal-intake.js';
-import { resolvableWriteTargets } from '../permissions/shell-split.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
@@ -35,6 +36,8 @@ export interface ActionsRoutesDeps {
   config: DaemonConfig;
   actionRegistry: ActionRegistry;
   actionsStore: ActionsStore;
+  // Read-only here: what the suggestion for a blocked call is derived from.
+  allowlist: Allowlist;
   actionRunsStore: ActionRunsStore;
   denialsStore: DenialsStore;
   actionRunLedger: ActionRunLedger;
@@ -70,7 +73,7 @@ export interface ActionsRoutesHandlers {
 export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): ActionsRoutesHandlers {
   const {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
-    actionRegistry, actionsStore, actionRunsStore, denialsStore, actionRunLedger,
+    actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll,
   } = deps;
 
@@ -217,47 +220,6 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // Records every tool call that action sessions had blocked by allowlist-miss.
   // The PWA surfaces these as one-click "Add to allowlist" suggestions so the
   // user can see what the action tried that they overlooked.
-  function suggestRule(toolName: string, toolInput: unknown): ActionDenial['suggested'] {
-    if (toolName === 'Bash') {
-      const cmd = (toolInput as { command?: string })?.command ?? '';
-      // A shell redirection is gated as a Write, so no bash rule alone can unblock a
-      // command that writes to an ungranted path. Suggest the path grant its target
-      // needs — the leading command is usually already covered by the action's groups.
-      const target = resolvableWriteTargets(cmd)[0];
-      if (target) {
-        const dir = target.replace(/\/[^/]*$/, '') || '/';
-        return { kind: 'path', value: `Write:^${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/` };
-      }
-      // Anchor on the first whitespace-delimited token (the binary). Narrow enough
-      // to avoid blanket Bash grants while obvious enough to one-click approve.
-      const head = cmd.split(/\s+/)[0] ?? '';
-      const escaped = head.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return { kind: 'bash', value: escaped ? `^${escaped} ` : '^' };
-    }
-    if (toolName.startsWith('mcp__')) {
-      return { kind: 'mcp', value: `^${toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$` };
-    }
-    // Try a path rule for file-touching tools — confines the grant to the actual
-    // directory the action touched.
-    const PATH_FIELDS: Record<string, string[]> = {
-      Read: ['file_path'], Write: ['file_path'], Edit: ['file_path'],
-      MultiEdit: ['file_path'], NotebookEdit: ['notebook_path', 'file_path'],
-      Glob: ['path'], Grep: ['path'],
-    };
-    const fields = PATH_FIELDS[toolName];
-    if (fields) {
-      const input = toolInput as Record<string, unknown> | null;
-      for (const f of fields) {
-        const v = input && typeof input === 'object' ? input[f] : undefined;
-        if (typeof v === 'string' && v.length > 0) {
-          const dir = v.replace(/\/[^/]*$/, '') || '/';
-          const escaped = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          return { kind: 'path', value: `${toolName}:^${escaped}/` };
-        }
-      }
-    }
-    return { kind: 'tool', value: toolName };
-  }
 
   // Score the rejected draft and open the redraft replacing it. Feedback arriving
   // before any proposal was posted isn't a rejection — the same drafting round just
@@ -287,7 +249,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   }
 
   const recordActionDenial: ActionsRoutesHandlers['recordActionDenial'] = ({ actionName, sessionId, toolName, toolInput }) => {
-    const suggested = suggestRule(toolName, toolInput);
+    const suggested = suggestRule(toolName, toolInput, (cmd) => allowlist.bashDenialCause(cmd, { actionName, sessionId }));
     const denial = denialsStore.record({
       actionName, sessionId, toolName, toolInput, suggested,
       runId: actionRunLedger.noteDenial(sessionId),

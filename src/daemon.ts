@@ -832,7 +832,7 @@ async function main() {
 
   const actionRoutes = registerActionsRoutes(server, {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
-    actionRegistry, actionsStore, actionRunsStore, denialsStore, actionRunLedger,
+    actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll,
   });
   recordActionDenial = actionRoutes.recordActionDenial;
