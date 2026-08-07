@@ -14,10 +14,10 @@
     "ReadMcpResourceTool"
   ],
   "alwaysAllowBashPatterns": [
-    "^(ls|cat|head|tail|file|wc|stat|du|pwd|whoami|date|env|which|type)(\\s|$)",
+    "^(ls|cat|head|tail|file|wc|stat|du|pwd|whoami|date|printenv|which|type)(\\s|$)",
     "^kubectl (get|describe|logs|top|version|api-resources|api-versions)(\\s|$)",
     "^kubectl config view(\\s|$)",
-    "^gh (pr view|pr list|run view|run list|api|repo view|issue view|issue list|search)(\\s|$)",
+    "^gh (pr view|pr list|run view|run list|repo view|issue view|issue list|search)(\\s|$)",
     "^git (status|log|diff|show|blame|branch)(\\s|$)",
     "^git remote -v$",
     "^git config --get ",

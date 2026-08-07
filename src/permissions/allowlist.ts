@@ -64,13 +64,26 @@ function parsePathRule(value: string): PathRule {
 //      leaf segments (Write to a new file) are appended after the ancestor's
 //      realpath, so the check is stable whether or not the file exists yet.
 function isPathUnder(path: string, prefix: string): boolean {
-  const absPath = resolve(path);
-  const absPrefix = resolve(prefix);
-  const realPath = realpathAncestor(absPath);
-  const realPrefix = (() => { try { return realpathSync(absPrefix); } catch { return absPrefix; } })();
+  const realPath = canonicalPath(path);
+  const realPrefix = canonicalPath(prefix);
   if (realPath === realPrefix) return true;
   const withSlash = realPrefix.endsWith('/') ? realPrefix : `${realPrefix}/`;
   return realPath.startsWith(withSlash);
+}
+
+// macOS's top-level system symlinks — /tmp, /var and /etc all point into /private — are two
+// spellings of one directory, not an escape. Rules are written in the user-visible spelling
+// (`Write:^/tmp/`), so map a realpath back onto it; without this, resolving symlinks at all
+// would deny every /tmp write on the platform the daemon actually runs on.
+const PRIVATE_ALIAS = /^\/private(\/(?:tmp|var|etc)(?:\/|$))/;
+
+// The single normalisation both the regex path rules and the session-scope prefix check use.
+// They must agree: they used to disagree (lexical resolve vs realpath), and the regex path
+// was the weaker one — a symlink planted in world-writable /tmp turned an `Edit:^/tmp/`
+// grant into a write anywhere on the box.
+function canonicalPath(p: string): string {
+  const real = realpathAncestor(resolve(p));
+  return PRIVATE_ALIAS.test(real) ? real.slice('/private'.length) : real;
 }
 
 // Walk `p`'s ancestor chain until we find one that exists on disk, realpath it,
@@ -207,37 +220,37 @@ const FD_TARGET = /^(\d+-?|-)$/;
 // the redirection targets it writes to. Null on unbalanced quotes / parens. Does not
 // understand heredocs, `eval`, or `bash -c "…"` — the mitigation is to not allowlist
 // those interpreters.
+function findBalancedParen(s: string, openIdx: number): number {
+  let depth = 0;
+  let sq = false;
+  let dq = false;
+  for (let i = openIdx; i < s.length; i++) {
+    const c = s[i];
+    if (sq) { if (c === "'") sq = false; continue; }
+    if (dq) {
+      if (c === '\\' && i + 1 < s.length) { i++; continue; }
+      if (c === '"') dq = false;
+      continue;
+    }
+    if (c === '\\' && i + 1 < s.length) { i++; continue; }
+    if (c === "'") { sq = true; continue; }
+    if (c === '"') { dq = true; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+function findBacktickEnd(s: string, openIdx: number): number {
+  for (let i = openIdx + 1; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) { i++; continue; }
+    if (s[i] === '`') return i;
+  }
+  return -1;
+}
+
 export function splitShellClauses(cmd: string): ShellClause[] | null {
   const clauses: ShellClause[] = [];
-
-  function findBalancedParen(s: string, openIdx: number): number {
-    let depth = 0;
-    let sq = false;
-    let dq = false;
-    for (let i = openIdx; i < s.length; i++) {
-      const c = s[i];
-      if (sq) { if (c === "'") sq = false; continue; }
-      if (dq) {
-        if (c === '\\' && i + 1 < s.length) { i++; continue; }
-        if (c === '"') dq = false;
-        continue;
-      }
-      if (c === '\\' && i + 1 < s.length) { i++; continue; }
-      if (c === "'") { sq = true; continue; }
-      if (c === '"') { dq = true; continue; }
-      if (c === '(') depth++;
-      else if (c === ')') { depth--; if (depth === 0) return i; }
-    }
-    return -1;
-  }
-
-  function findBacktickEnd(s: string, openIdx: number): number {
-    for (let i = openIdx + 1; i < s.length; i++) {
-      if (s[i] === '\\' && i + 1 < s.length) { i++; continue; }
-      if (s[i] === '`') return i;
-    }
-    return -1;
-  }
 
   function walk(s: string): boolean {
     let buf = '';
@@ -374,6 +387,17 @@ export function literalRedirectPath(word: string): string | null {
   return resolve(out);
 }
 
+// Redirection targets that create nothing and truncate nothing, so no Write grant can be
+// the thing that authorises them. `2>/dev/null` is idiomatic in exactly the commands a
+// read-only action runs, and no permission group grants Write anywhere — without this the
+// redirect gate hard-denies `cat x 2>/dev/null` for every action in the catalog.
+// Deliberately a fixed set of character devices, not a `/dev/` prefix: `/dev/sda` is a disk.
+const DEVICE_SINKS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty']);
+
+function isDeviceSink(path: string): boolean {
+  return DEVICE_SINKS.has(path) || /^\/dev\/fd\/\d+$/.test(path);
+}
+
 // Every path a Bash command would create or truncate by redirection, skipping the ones
 // that can't be resolved statically. Used to suggest a grant after a denial; the gate
 // itself treats an unresolvable target as fatal, which this can't express.
@@ -390,8 +414,74 @@ export function resolvableWriteTargets(cmd: string): string[] {
   return out;
 }
 
+// Skip the double-quoted string starting at `s[i] === '"'`, returning the index just past its
+// closing quote (or s.length when unterminated). Substitutions inside carry quotes of their
+// own, so they have to be skipped whole or the quote state comes out inverted.
+function skipDoubleQuoted(s: string, i: number): number {
+  i++;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\\' && i + 1 < s.length) { i += 2; continue; }
+    if (c === '"') return i + 1;
+    if (c === '`') { const e = findBacktickEnd(s, i); if (e < 0) return s.length; i = e + 1; continue; }
+    if (c === '$' && s[i + 1] === '(') { const e = findBalancedParen(s, i + 1); if (e < 0) return s.length; i = e + 1; continue; }
+    i++;
+  }
+  return s.length;
+}
+
+// True when the clause expands something outside quotes. Bash word-splits the value of an
+// unquoted expansion, so `curl $X https://…` with `X='-o /etc/cron.d/pwn'` set by an earlier
+// clause of the SAME Bash call reaches curl as two extra argv words — arbitrary flag
+// injection into any allowlisted program, out of command text every anchored pattern reads
+// as one harmless operand. `"$VAR"` passes exactly one word and is left alone; it can still
+// carry a single `--flag=value`, which is why the anchored rules also refuse a leading `-`.
+function hasUnquotedExpansion(clause: string): boolean {
+  let i = 0;
+  while (i < clause.length) {
+    const c = clause[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === "'") { const e = clause.indexOf("'", i + 1); i = e < 0 ? clause.length : e + 1; continue; }
+    if (c === '"') { i = skipDoubleQuoted(clause, i); continue; }
+    if (c === '`') return true;
+    if (c === '$' && /[A-Za-z_{(@*]/.test(clause[i + 1] ?? '')) return true;
+    i++;
+  }
+  return false;
+}
+
+// Names a leading `NAME=value` may not carry. The prefix is peeled off before the clause is
+// pattern-matched and every clause of one Bash call shares a shell, so a name the shell or an
+// allowlisted program consults for program resolution turns `^cat ` into "run my binary" and
+// `^git diff` into "run my diff driver". The influence surface is unbounded in general —
+// every program reads its own environment — so this is the conservative shape: shell
+// specials, the dynamic loaders, the tool families the permission groups actually grant, and
+// the suffixes that name a path, a command, or an option list.
+const UNSAFE_ASSIGN_EXACT = new Set([
+  'PATH', 'IFS', 'ENV', 'CDPATH', 'GLOBIGNORE', 'HOME', 'PWD', 'OLDPWD', 'TMPDIR', 'TMP', 'TEMP',
+  'SHELL', 'SHELLOPTS', 'BASHOPTS', 'PROMPT_COMMAND', 'PS1', 'PS2', 'PS4', 'POSIXLY_CORRECT',
+  'EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'LESS', 'LESSOPEN', 'LESSCLOSE',
+  'GOFLAGS', 'GOROOT', 'GOBIN', 'GOCACHE', 'GOENV', 'GOPROXY', 'GOPRIVATE', 'GOMODCACHE', 'GOTMPDIR',
+]);
+const UNSAFE_ASSIGN_PREFIX = [
+  'LD_', 'DYLD_', 'BASH_', 'GIT_', 'GH_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'JAVA_',
+  'NPM_', 'YARN_', 'CURL_', 'SSL_', 'SSH_', 'GPG_', 'RIPGREP_', 'GREP_',
+];
+const UNSAFE_ASSIGN_SUFFIX = [
+  'PATH', 'OPTS', 'OPTIONS', 'PRELOAD', 'LIBRARIES', 'CONFIG', 'HOME', 'CMD', 'COMMAND',
+  'SHELL', 'EDITOR', 'PAGER',
+];
+
+function isSafeAssignName(name: string): boolean {
+  return !UNSAFE_ASSIGN_EXACT.has(name)
+    && !UNSAFE_ASSIGN_PREFIX.some((p) => name.startsWith(p))
+    && !UNSAFE_ASSIGN_SUFFIX.some((s) => name.endsWith(s));
+}
+
 // Peel leading bash NAME=value words off a clause so the allowlist gates on
 // the command, not on the assignment prefix. Pure-assignment clauses return ''.
+// Peeling stops at the first name that could redirect program resolution, so the clause is
+// then matched with that assignment still in it — which no anchored pattern accepts.
 export function stripLeadingAssignments(clause: string): string {
   let i = 0;
   while (i < clause.length) {
@@ -402,6 +492,7 @@ export function stripLeadingAssignments(clause: string): string {
     i++;
     while (i < clause.length && /[A-Za-z0-9_]/.test(clause.charAt(i))) i++;
     if (clause[i] !== '=') { i = nameStart; break; }
+    if (!isSafeAssignName(clause.slice(nameStart, i))) { i = nameStart; break; }
     i++; // consume '='
     // consume one shell word as value: until unquoted whitespace.
     let sq = false;
@@ -442,6 +533,126 @@ export function stripLeadingAssignments(clause: string): string {
   return clause.slice(i).trimStart();
 }
 
+// Dequoted argv words for a clause, with the leading assignments and the redirections taken
+// out. Approximate — an expansion survives as its literal text — but exact enough for flag
+// matching, which is the whole point: `find . -delete`, `find . '-delete'`, `find . "-delete"`
+// and `find . -de""lete` reach argv as one flag that a regex blocklist reads as four strings.
+function clauseArgv(clause: string): string[] {
+  const body = stripLeadingAssignments(clause);
+  const words: string[] = [];
+  let cur = '';
+  let started = false;
+  let i = 0;
+  const flush = () => { if (started) { words.push(cur); cur = ''; started = false; } };
+  while (i < body.length) {
+    const c = body.charAt(i);
+    if (c === '\\' && body[i + 1] === '\n') { i += 2; continue; }
+    if (/\s/.test(c)) { flush(); i++; continue; }
+    const redir = matchRedirect(body, i);
+    if (redir) {
+      // The fd digits of `2>` were accumulated as a word; they are not an operand.
+      if (started && /^\d+$/.test(cur)) { cur = ''; started = false; }
+      flush();
+      i += redir.len;
+      while (i < body.length && (body[i] === ' ' || body[i] === '\t')) i++;
+      i += readWordAt(body, i).length;
+      continue;
+    }
+    if (c === '\\' && i + 1 < body.length) { cur += body[i + 1]; started = true; i += 2; continue; }
+    if (c === "'") {
+      const e = body.indexOf("'", i + 1);
+      cur += e < 0 ? body.slice(i + 1) : body.slice(i + 1, e);
+      started = true; i = e < 0 ? body.length : e + 1; continue;
+    }
+    if (c === '"') {
+      const end = skipDoubleQuoted(body, i);
+      cur += body.slice(i + 1, Math.max(i + 1, end - 1)).replace(/\\(.)/g, '$1');
+      started = true; i = end; continue;
+    }
+    cur += c; started = true; i++;
+  }
+  flush();
+  return words;
+}
+
+// argv[0] → the words that turn an otherwise read-shaped command into an exec or a write to
+// a path nobody granted. `permissions: [read]` is eight actions' entire grant and is
+// documented as "local file reads + git-read-only"; without this it was arbitrary code
+// execution (`find -exec`, `git fetch --upload-pack`, `git -c core.pager`, `rg --pre`) and
+// arbitrary file write (`sort -o`, `find -fprintf`, `git diff --output`, `find -delete`).
+const DANGEROUS_FLAGS: Record<string, ReadonlyArray<string>> = {
+  find: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'],
+  sort: ['-o', '--output', '--compress-program'],
+  tree: ['-o', '--output'],
+  rg:   ['--pre', '--hostname-bin'],
+  git:  ['--output', '--upload-pack', '--receive-pack', '--exec-path', '--open-files-in-pager'],
+};
+// Programs whose output-file short option clusters (`sort -uo out`, `sort -oout`).
+const DANGEROUS_SHORT_O = new Set(['sort', 'tree']);
+// Programs whose SECOND file operand is an output file (`uniq in out`, `xxd in out`), mapped
+// to the options that consume the word after them so a flag value isn't counted as one.
+const SECOND_OPERAND_WRITES: Record<string, ReadonlyArray<string>> = {
+  uniq: ['-f', '-s', '-w', '--skip-fields', '--skip-chars', '--check-chars', '--group'],
+  xxd:  ['-c', '-g', '-l', '-o', '-s'],
+};
+// git options that consume the following word, so the scan for the subcommand skips their value.
+const GIT_LEVEL_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix']);
+// `git branch` is in the read group for `--list`; these are its delete/rename/copy half.
+const GIT_BRANCH_WRITES = new Set([
+  '--delete', '--move', '--copy', '--set-upstream-to', '--unset-upstream', '--edit-description',
+]);
+
+function argvIsDangerous(argv: string[]): boolean {
+  const prog = argv[0]?.split('/').pop() ?? '';
+  const rest = argv.slice(1);
+  const flags = DANGEROUS_FLAGS[prog];
+  if (flags && rest.some((w) => flags.some((f) => w === f || w.startsWith(`${f}=`)))) return true;
+  if (DANGEROUS_SHORT_O.has(prog) && rest.some((w) => /^-[A-Za-z]*o/.test(w))) return true;
+  const valueOpts = SECOND_OPERAND_WRITES[prog];
+  if (valueOpts) {
+    let operands = 0;
+    for (let i = 0; i < rest.length; i++) {
+      const w = rest[i]!;
+      if (w.startsWith('-') && w.length > 1) { if (valueOpts.includes(w)) i++; continue; }
+      operands++;
+    }
+    if (operands > 1) return true;
+  }
+  return prog === 'git' && gitArgvIsDangerous(rest);
+}
+
+// `-c` is only a git-level option before the subcommand, where it sets any config key for the
+// run — core.pager, diff.external and core.sshCommand are all "run this program". After the
+// subcommand it means something harmless (`git commit -c HEAD`), so the scan stops there.
+function gitArgvIsDangerous(rest: string[]): boolean {
+  let i = 0;
+  for (; i < rest.length; i++) {
+    const w = rest[i]!;
+    if (!w.startsWith('-')) break;
+    if (w === '-c' || w === '--config-env' || w.startsWith('--config-env=')) return true;
+    if (GIT_LEVEL_VALUE_OPTS.has(w)) i++;
+  }
+  const sub = rest[i];
+  const args = rest.slice(i + 1);
+  if (sub === 'grep' && args.some((w) => /^-[A-Za-z]*O/.test(w))) return true;
+  if (sub === 'branch' && args.some((w) => GIT_BRANCH_WRITES.has(w) || /^-[A-Za-z]*[dDmMcC]/.test(w))) return true;
+  return false;
+}
+
+// A second bar on top of matching a bash pattern, applied to every clause: what a pattern
+// reads as one operand must actually reach the program as one operand, and the argv it forms
+// must not carry an exec or a write the pattern never described. Independent of which scope
+// granted the clause, because the weakness is in the command text, not the rule — an action's
+// own anchored `allowlist.json` rule leaks flags through `$X` exactly like a group's.
+function clausesShellSafe(cmd: string): boolean {
+  const clauses = splitShellClauses(cmd);
+  if (clauses === null) return false;
+  return clauses.every((c) => {
+    const body = stripLeadingAssignments(c.text);
+    return !hasUnquotedExpansion(body) && !argvIsDangerous(clauseArgv(c.text));
+  });
+}
+
 function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
   if (rules.alwaysAllow.has(toolName)) return true;
   if (toolName === 'Bash') {
@@ -461,10 +672,11 @@ function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown):
   // Path-scoped rule: tool name must match AND the path-shaped input matches the regex.
   if (PATH_INPUT_FIELDS[toolName]) {
     const path = readPathInput(toolName, toolInput);
-    // `..` must not walk out from under an anchored prefix rule: `Write:^/tmp/` should not
-    // admit `/tmp/../etc/crontab`. A relative path is tested as written — the daemon can't
-    // know the cwd it resolves against, and every path rule is absolute-anchored, so it denies.
-    const probe = path !== undefined && path.startsWith('/') ? resolve(path) : path;
+    // Neither `..` nor a symlink may walk out from under an anchored prefix rule:
+    // `Write:^/tmp/` should not admit `/tmp/../etc/crontab`, nor `/tmp/link` when `link`
+    // points at /etc/hosts. A relative path is tested as written — the daemon can't know the
+    // cwd it resolves against, and every path rule is absolute-anchored, so it denies.
+    const probe = path !== undefined && path.startsWith('/') ? canonicalPath(path) : path;
     if (probe !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(probe))) {
       return true;
     }
@@ -562,6 +774,7 @@ export class Allowlist {
       for (const word of clause.writeTargets) {
         const path = literalRedirectPath(word);
         if (path === null) return false;
+        if (isDeviceSink(path)) continue;
         const asWrite = { file_path: path };
         if (scopes.some((s) => rulesAllow(s, 'Write', asWrite))) continue;
         if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) continue;
@@ -580,6 +793,7 @@ export class Allowlist {
       // be theatre. The gate exists to stop *pattern*-matched clauses from smuggling one.
       if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
         if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+        if (!clausesShellSafe(cmd)) return false;
       }
     }
     if (scopes.some((s) => rulesAllow(s, toolName, toolInput))) return true;

@@ -137,6 +137,46 @@ describe('redirection is allowed where a Write would be', () => {
   });
 });
 
+// The gate exists to stop a pattern-matched clause from creating or truncating a file it
+// was never granted. A character device creates nothing and truncates nothing, and
+// `2>/dev/null` is idiomatic in exactly the commands a read-only action runs — so the gate
+// shipped denying `cat x 2>/dev/null` for every action, with no approval path for an
+// action-bound session (an allowlist miss there is a hard fail plus a `blocked` journal
+// entry). These are the sinks that are always safe regardless of grant.
+describe('device sinks are never a file write', () => {
+  const a = forGroups('read');
+
+  it('allows the null sink and the process own streams', () => {
+    for (const c of [
+      'cat /etc/hosts 2>/dev/null',
+      'cat /etc/hosts 2> /dev/null',
+      'grep -r foo . 2>/dev/null',
+      'find . -name x 2>/dev/null',
+      'ls -la > /dev/null',
+      'ls -la > /dev/null 2>&1',
+      'ls -la &> /dev/null',
+      'git status >/dev/null 2>/dev/null',
+      'echo hi > /dev/stdout',
+      'echo hi > /dev/stderr',
+      'echo hi > /dev/fd/2',
+      'echo hi >> /dev/null',
+    ]) {
+      expect(bash(a, c), c).toBe(true);
+    }
+  });
+
+  it('does not extend the exemption to the rest of /dev', () => {
+    for (const c of [
+      'echo hi > /dev/sda',
+      'echo hi > /dev/nullx',
+      'echo hi > /dev/fd/../../etc/hosts',
+      'echo hi > /dev',
+    ]) {
+      expect(bash(a, c), c).toBe(false);
+    }
+  });
+});
+
 describe('an outright Bash tool grant is not narrowed by the gate', () => {
   it('keeps a blanket Bash grant meaning "anything"', () => {
     const a = new Allowlist({
