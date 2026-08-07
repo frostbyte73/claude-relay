@@ -19,7 +19,7 @@ import {
   type ActionEdit, type ActionProposal,
 } from '../storage/action-edits-store.js';
 import { intakeProposal, ledgerActionFor, onSessionGone } from '../actions/proposal-intake.js';
-import { resolvableWriteTargets } from '../permissions/allowlist.js';
+import { resolvableWriteTargets } from '../permissions/shell-split.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
