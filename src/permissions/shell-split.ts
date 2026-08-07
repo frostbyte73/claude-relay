@@ -108,17 +108,49 @@ export function skipDoubleQuoted(s: string, i: number): number {
 
 // Split a bash command into the per-clause list an allowlist must independently
 // allow: top-level statements + inner commands of $(…), `…`, <(…), >(…), each with
-// the redirection targets it writes to. Null on unbalanced quotes / parens. Does not
-// understand heredocs, `eval`, or `bash -c "…"` — the mitigation is to not allowlist
-// those interpreters.
+// the redirection targets it writes to. Comments are dropped, as bash drops them. Null on
+// unbalanced quotes / parens. Does not understand heredocs, `eval`, or `bash -c "…"` — the
+// mitigation is to not allowlist those interpreters.
 export function splitShellClauses(cmd: string): ShellClause[] | null {
   const clauses: ShellClause[] = [];
+
+  // A comment's text is never executed, so it is dropped from the clause — but the
+  // splitter can't tell a comment from a heredoc body line that merely starts with `#`,
+  // and an unquoted-delimiter heredoc DOES expand `$(…)` on such a line. So the skipped
+  // span is still walked for substitutions: they stay clauses even when the text around
+  // them turns out to be a real comment (a false denial), because the alternative is
+  // hiding a command bash actually runs.
+  function walkSubstitutions(s: string): boolean {
+    let i = 0;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === '`') {
+        const end = findBacktickEnd(s, i);
+        if (end < 0) return false;
+        if (!walk(s.slice(i + 1, end))) return false;
+        i = end + 1; continue;
+      }
+      if ((c === '$' || c === '<' || c === '>') && s[i + 1] === '(') {
+        const end = findBalancedParen(s, i + 1);
+        if (end < 0) return false;
+        if (!walk(s.slice(i + 2, end))) return false;
+        i = end + 1; continue;
+      }
+      i++;
+    }
+    return true;
+  }
 
   function walk(s: string): boolean {
     let buf = '';
     let sq = false;
     let dq = false;
     let i = 0;
+    // `#` opens a comment only at the start of a word — at the start of the input, after
+    // unquoted whitespace, or after a metacharacter. `a#b`, `--format=%h#%s` and a URL
+    // fragment are all plain text, and so is a `#` that follows a closing quote or a
+    // substitution, which continue the word they are part of.
+    let wordStart = true;
     // Offsets into `buf` where a redirection target word begins. Recorded rather than
     // consumed so the main loop still recurses into a `$(…)` sitting in the target.
     let marks: Array<{ start: number; kind: RedirKind }> = [];
@@ -135,6 +167,7 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
       }
       buf = '';
       marks = [];
+      wordStart = true;
     };
     while (i < s.length) {
       const c = s[i];
@@ -159,26 +192,42 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
         }
         buf += c; i++; continue;
       }
-      if (c === '\\' && i + 1 < s.length) { buf += c + s[i + 1]; i += 2; continue; }
-      if (c === "'") { sq = true; buf += c; i++; continue; }
-      if (c === '"') { dq = true; buf += c; i++; continue; }
+      // A comment runs to the end of its LINE, not the end of the command, and a `\` inside
+      // one does not continue it — bash ends the comment at the newline and runs what
+      // follows. The newline is left for the separator below so the next line still becomes
+      // its own clause.
+      if (c === '#' && wordStart) {
+        const nl = s.indexOf('\n', i);
+        const end = nl < 0 ? s.length : nl;
+        if (!walkSubstitutions(s.slice(i, end))) return false;
+        i = end; continue;
+      }
+      // A line continuation splices the two lines into one, so whether a `#` on the next
+      // line starts a word is decided by what preceded the backslash.
+      if (c === '\\' && i + 1 < s.length) {
+        buf += c + s[i + 1];
+        if (s[i + 1] !== '\n') wordStart = false;
+        i += 2; continue;
+      }
+      if (c === "'") { sq = true; buf += c; wordStart = false; i++; continue; }
+      if (c === '"') { dq = true; buf += c; wordStart = false; i++; continue; }
       if (c === '`') {
         const end = findBacktickEnd(s, i);
         if (end < 0) return false;
         if (!walk(s.slice(i + 1, end))) return false;
-        buf += s.slice(i, end + 1); i = end + 1; continue;
+        buf += s.slice(i, end + 1); wordStart = false; i = end + 1; continue;
       }
       if (c === '$' && s[i + 1] === '(') {
         const end = findBalancedParen(s, i + 1);
         if (end < 0) return false;
         if (!walk(s.slice(i + 2, end))) return false;
-        buf += s.slice(i, end + 1); i = end + 1; continue;
+        buf += s.slice(i, end + 1); wordStart = false; i = end + 1; continue;
       }
       if ((c === '<' || c === '>') && s[i + 1] === '(') {
         const end = findBalancedParen(s, i + 1);
         if (end < 0) return false;
         if (!walk(s.slice(i + 2, end))) return false;
-        buf += s.slice(i, end + 1); i = end + 1; continue;
+        buf += s.slice(i, end + 1); wordStart = false; i = end + 1; continue;
       }
       // Output redirection. Consuming the operator keeps `>|` from splitting on its `|`
       // and keeps `&>` from splitting on its `&`; the target word itself is left to the
@@ -188,6 +237,10 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
         buf += s.slice(i, i + redir.len); i += redir.len;
         while (i < s.length && (s[i] === ' ' || s[i] === '\t')) { buf += s[i]; i++; }
         marks.push({ start: buf.length, kind: redir.kind });
+        // The operator ends the word before it, so a `#` here is a comment — bash rejects
+        // `ls > #foo` for having no target. The mark then reads an empty target word, which
+        // is what a redirection nothing can name should look like: unwritable.
+        wordStart = true;
         continue;
       }
       if (c === ';' || c === '\n') { flush(); i++; continue; }
@@ -199,10 +252,12 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
       // splitting. matchRedirect above already swallows the output forms (`2>&1`,
       // `>&2`, `&>file`, `&>>file`); what still reaches here is `<&3`.
       if (c === '&' && (buf.endsWith('<') || buf.endsWith('>') || s[i + 1] === '>')) {
-        buf += c; i++; continue;
+        buf += c; wordStart = false; i++; continue;
       }
       if (c === '&') { flush(); i++; continue; }
-      buf += c; i++;
+      buf += c;
+      wordStart = c === ' ' || c === '\t';
+      i++;
     }
     if (sq || dq) return false;
     flush();
