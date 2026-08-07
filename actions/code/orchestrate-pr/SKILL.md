@@ -39,7 +39,7 @@ cat "$OUTPOST_ENVELOPE"
 | `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on five of them: `spec` (from `code.spec`), `implPlan` (`code.plan`), `implementation` (`code.implement`), `draftedReplies` (`code.triage-pr-comments`) and `postedReplies` (`code.reply-pr-comments`). Anything else you store is yours. |
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every child you have fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
-| `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `comments[]`. |
+| `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. |
 | `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
@@ -220,12 +220,22 @@ to push a fourth.
 An `external` inbox item names *which signal moved*, not what it means. Always re-read `pr`
 before deciding — never infer the state of the world from the event name.
 
+The five signals are `ci`, `review-state`, `pr-state`, `pr-comments` and `head-moved`.
+
+**`head-moved` is not for you — wait on the four.** It fires when the PR's head commit changes,
+and on this step the head moves because *you* moved it: `code.fix-ci` and
+`code.resolve-conflicts` both push. Naming it in a `wait` means every fix you dispatch wakes you
+to be told your own push landed, at one round each. It exists for `code.orchestrate-review`,
+which watches somebody else's branch and has no other way to see the author push. Row 14 waits
+on `["ci","review-state","pr-state","pr-comments"]` and that is the right set. (`pr.headRefOid`
+is still worth *reading* — it is how you tell whether a dispatched fix actually pushed.)
+
 This matters most for **`mergeable`, which has no event of its own and rides on `pr-state`**.
 A `pr-state` wake means the PR closed, *or* merged, *or* started conflicting. Never read
 `pr-state` as "the PR closed". Disambiguate yourself:
 
 ```bash
-jq -r '.pr | "prState=\(.prState) mergeable=\(.mergeable) ci=\(.ciState) review=\(.reviewState)"' "$OUTPOST_ENVELOPE"
+jq -r '.pr | "prState=\(.prState) mergeable=\(.mergeable) ci=\(.ciState) review=\(.reviewState) head=\(.headRefOid)"' "$OUTPOST_ENVELOPE"
 ```
 
 Expect spurious wakes in general — a `wait` on one signal can fire for a neighbouring one, and

@@ -47,7 +47,7 @@ cat "$OUTPOST_ENVELOPE"
 | `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on five: `lenses` (yours), `review` (yours), `postedReview` (from `code.post-pr-review`), `resolutions` (`code.verify-resolutions`), `verdict` (`code.submit-pr-verdict`). Anything else you store is yours. |
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every lens you fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
-| `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `comments[]`. **No head sha** — see §4. |
+| `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. `headRefOid` is the PR's head commit — the fact rung 8 turns on (§4). |
 | `gateApproved` | `true` once the user has approved a gate. The gates on this step are ones the daemon imposed, not ones you opened (§3). |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
@@ -196,26 +196,15 @@ of its condition.
 | 5 | Every lens dispatch settled, no `artifacts.review` | this turn's submit writes it | synthesize **on this turn**, write `artifacts.review`, and `self-round` as `code.post-pr-review` with the whole comment set in `note` | `synthesis` |
 | 6 | `artifacts.review` present, no `artifacts.postedReview`, and your memo does **not** record a post round that handed back unable to post | the post round writes `postedReview` | `self-round` as `code.post-pr-review`, whole comment set in `note` | keep |
 | 7 | `artifacts.review` present, no `artifacts.postedReview`, and your memo **does** record a post round that handed back | — (terminal) | `fail` with `gh`'s reason verbatim | `failed` |
-| 8 | `artifacts.postedReview` present, no `artifacts.verdict`, and the PR's current head differs from the commit your memo names as last verified | the verify round writes `resolutions` and you record the new head | `self-round` as `code.verify-resolutions` | keep |
+| 8 | `artifacts.postedReview` present, no `artifacts.verdict`, and `pr.headRefOid` differs from the **last verified head** (§4) | the verify round writes `resolutions` with the new head on its first line | `self-round` as `code.verify-resolutions` | keep |
 | 9 | `artifacts.resolutions` has a verdict line for every comment in `postedReview`; no `artifacts.verdict`; your memo records no verdict round that handed back; **and** either nothing is `not-addressed`/`unclear`, or the user waived what is left, or `roundsRemaining <= 10` | the verdict round writes `verdict` | `self-round` as `code.submit-pr-verdict`, the verdict and every unresolved item in `note` | keep |
 | 10 | No `artifacts.verdict` and your memo records a verdict round that handed back without submitting | — (terminal) | `resolve` if `artifacts.postedReview` exists (the comments reached the author; only the verdict didn't), else `fail` — with `gh`'s reason either way | `done` / `failed` |
 | 11 | `artifacts.verdict` present and `inputs.until !== "closed"` | — (terminal) | `resolve` with the verdict and the PR URL | `done` |
 | 12 | `artifacts.verdict` present and `inputs.until === "closed"` | `pr.prState` reaches `merged`/`closed` (row 2), or the user marks the step resolved | `wait` on `["pr-state"]` — unless `roundsRemaining <= 4`, then `resolve` with the verdict and a line saying the PR was still open | `watching` |
-| 13 | Nothing above matches | a delivery wakes you | `wait` on `["pr-comments","ci","pr-state"]` **and** a `resumeAt` six hours out — a push on its own fires none of those events | `awaiting_response` |
+| 13 | Nothing above matches | a delivery wakes you | `wait` on `["head-moved","pr-comments","ci","pr-state"]` | `awaiting_response` |
 
-Three of these rows read a fact only *you* can record, so record it (§5):
+Two of these rows read a fact only *you* can record, so record it (§5):
 
-- **Row 8's "last verified head."** `pr` carries no head sha, so nothing in the envelope can
-  tell you whether the author has pushed since your last verify. Your memo is the primary
-  record: initialise it to the commit on `postedReview`'s first line the moment the post round
-  lands, and re-state it every decision turn. **Memo is replaced wholesale, not merged** — the
-  daemon overwrites it with whatever the next submit sends, and the three bound rounds submit
-  too, so anything you don't rewrite is gone. Both artifact-writing rounds put the head they
-  worked against on their artifact's first line (`postedReview`: `review: <id> (commit <sha>)`;
-  `resolutions`: `verified against <sha>`), and artifacts *are* merged — so if a memo ever comes
-  back without the sha, recover it from the later of those two rather than guessing. Without it
-  row 8 either never fires (and you sit in row 13 forever while the author pushes fix after fix)
-  or fires on every wake (and you burn the budget re-verifying an unchanged head).
 - **Rows 7 and 10's "handed back."** `code.post-pr-review` and `code.submit-pr-verdict` write
   **no** artifact when they could not do their job — deliberately, so an empty artifact can't
   falsify a rung. That leaves your memo as the only record that the round ran and failed. Name
@@ -240,8 +229,8 @@ re-evaluated from scratch on every decision turn, not a script you walk once. An
 pushes after your verdict sends you back up it. Rows 8-12 all presuppose
 `artifacts.postedReview`; until it exists only rows 1-7 can match.
 
-The happy path walks it once: 3 → (lenses run) → 5 → (gate, post) → 13 → the author pushes →
-8 → 9 → (gate, verdict) → 11. If you find yourself on a row you were on two turns ago with
+The happy path walks it once: 3 → (lenses run) → 5 → (gate, post) → 13 → the author pushes
+(`head-moved`) → 8 → 9 → (gate, verdict) → 11. If you find yourself on a row you were on two turns ago with
 nothing new written, the row is missing its falsifier — say so in `memo` and take row 13
 rather than running it again.
 
@@ -324,28 +313,21 @@ out of `note` gets posted.
 
 ### Rungs 8, 9, 13 in detail — the response loop and its budget
 
-Row 13 parks you on `["pr-comments","ci","pr-state"]` **and a `resumeAt`**. When something
-fires, re-read the PR and compare its head against the one your memo names.
+Row 13 parks you on `["head-moved","pr-comments","ci","pr-state"]`. `head-moved` is the one
+that matters: the watcher fires it when the PR's head commit changes, which is exactly "the
+author pushed." A silent fixup on a repo with no CI checks, a force-push, an amend — all of
+them move the head and all of them wake you, with no timer and no polling of your own.
 
-**Arm the `resumeAt`, because a push is not a watched signal.** The watcher derives events by
-diffing `PrFacts` — CI state, review state, PR state/mergeability, and a hash of the comment
-thread. There is no head sha in `PrFacts` and no "the branch moved" event. So a push wakes you
-only *incidentally*: because it kicked CI, because it flipped mergeability, or because the
-author also commented. On a repo with no CI checks, a silent fixup or a force-push moves
-nothing the watcher can see, and a `wait` on events alone parks you until the PR is closed
-under you. `resumeAt` is the backstop — the daemon arms a real timer for it and delivers a
-`timer` item when it elapses, which is the only way that `wait` ever ends on its own.
+**Do not arm a `resumeAt` on this row.** A wait on `head-moved` ends on its own when the thing
+you are waiting for happens, so a timer adds nothing but cost: every timer wake that finds an
+unchanged head burns two rounds (the delivery, plus the `wait` you re-arm) out of eighty. An
+indefinite wait costs zero until something real happens. If the author never pushes, the step
+should sit there — that is the correct outcome, and the user's "Mark resolved" is the way out
+of it, the same as rung 12's vigil.
 
-Six hours (`resumeAt: <now + 21600000>` in epoch ms) is the interval to use. Anything a PR
-author does that moves a watched signal still reaches you within a minute — the watcher
-escalates to a 1m/5m/15m re-poll ladder the moment it sees a change — so the timer only has to
-catch the *silent* case, which is a human on a human's schedule. It is not free: a timer wake
-that finds an unchanged head costs two rounds (the delivery, plus the `wait` you re-arm), so
-six hours spends about eight rounds a day of silence and the budget still covers the better
-part of a week. An hour would burn it in two days for no signal you didn't already have.
-
-Rung 12 is the exception that proves this: its vigil waits for a merge or a close, and *those*
-genuinely move `pr-state`. Do not arm a `resumeAt` there.
+When a delivery arrives, compare `pr.headRefOid` against the **last verified head** (§4) rather
+than trusting the event name. A batch can carry several events, a `wait` on one signal can fire
+for a neighbour, and `head-moved` on its own does not tell you how far the head moved.
 
 **A reply is not a push.** An author writing "good catch, fixed" moves `pr.comments` but not
 the head, and row 8 correctly does not fire: `code.verify-resolutions` judges the diff, never
@@ -359,8 +341,8 @@ synthesis-and-post move, the post round's hand-back, the first wait, then the ve
 its hand-back, and the resolve. (The two force-gates are free — an approved gate runs its
 deferred move without charging a round.) So the loop has room for about eighteen rounds of
 push-and-recheck, which is more than any real review needs, and you should never be near the
-wall on an honest one. Fruitless timer wakes come out of the same seventy-two, two at a time —
-the other half of why rung 13's `resumeAt` is six hours and not one.
+wall on an honest one. Every one of those rounds is spent on a real push, because nothing but
+a real change wakes you — the other half of why rung 13 arms no timer.
 
 **If you are near it anyway, submit the verdict you have.** Row 9's `roundsRemaining <= 10`
 clause exists for exactly this: at ten rounds left you stop waiting for the author, take the
@@ -401,30 +383,33 @@ An `external` inbox item names *which signal moved*, not what it means. Always r
 before deciding — never infer the state of the world from the event name.
 
 ```bash
-jq -r '.pr | "prState=\(.prState) ci=\(.ciState) review=\(.reviewState) comments=\(.comments|length)"' "$OUTPOST_ENVELOPE"
+jq -r '.pr | "prState=\(.prState) ci=\(.ciState) review=\(.reviewState) head=\(.headRefOid) comments=\(.comments|length)"' "$OUTPOST_ENVELOPE"
 ```
 
-Expect spurious wakes — a `wait` on one signal can fire for a neighbouring one, a batch can
-carry several events at once, and on rung 13 a `timer` item just means six hours passed. Re-derive
-your position from `pr` + `artifacts` + your memo every time; if nothing you care about actually
-changed, `wait` again with the same *events* rather than inventing work — but compute a **fresh**
-`resumeAt` from the current time. `resumeAt` is an absolute epoch-ms deadline, so re-sending the
-one that just elapsed fires the timer again immediately and spins the step through its budget.
+Expect spurious wakes — a `wait` on one signal can fire for a neighbouring one, and a batch can
+carry several events at once. Re-derive your position from `pr` + `artifacts` every time; if
+nothing you care about actually changed, `wait` again on the same events rather than inventing
+work.
 
-**`pr` has no head sha, and that is the one fact rung 8 turns on.** The watcher reports state,
-CI, reviews and comments; it does not report what the branch points at. Two consequences, both
-load-bearing. First, **there is no push event** — the four signals you can wait on are
-`ci`, `review-state`, `pr-state` and `pr-comments`, and a push that doesn't kick CI, change
-mergeability or come with a comment moves none of them, which is why rung 13 arms a `resumeAt`
-as well. Second, the head comparison is a read you do yourself on the decision turn:
+The five signals you can wait on are `head-moved`, `ci`, `review-state`, `pr-state` and
+`pr-comments`.
 
-```bash
-gh pr view "$PR_URL" --json headRefOid,state,comments
-```
+**Rung 8 is a comparison between two shas, and both are in the envelope.**
 
-against the sha your memo records. `pr.ciState` flipping to `pending` with an empty `ciChecks`
-is a useful corroboration — the watcher clears a stale rollup when the head moves — but it is a
-hint, not the fact. Read the sha.
+- **The current head** is `pr.headRefOid` — the watcher reads it on every poll and pushes a
+  `head-moved` event when it changes. You do not need to run `gh pr view` to learn it, and you
+  should not: the fact and the event are derived from the same poll, so they always agree with
+  each other, while a read of your own can disagree with the sha the event was about.
+- **The last verified head** is the sha on `artifacts.resolutions`' first line
+  (`verified against <sha>`) if a verify round has run, otherwise the commit on
+  `artifacts.postedReview`'s first line (`review: <id> (commit <sha>)`). Artifacts are **merged
+  and never replaced**, so both survive a cold resume, a compaction, and a bound round's submit
+  — unlike `memo`, which is overwritten wholesale every turn. Read the sha out of the artifact;
+  do not carry it in `memo` and do not trust a copy there over the artifact.
+
+Rung 8 fires when those two differ. `pr.ciState` flipping to `pending` with an empty `ciChecks`
+is a useful corroboration — the watcher clears a stale rollup when the head moves — but
+`headRefOid` is the fact.
 
 CI on somebody else's PR is context, not your problem to fix: nothing in this step's ladder can
 push, and `code.fix-ci` belongs to `code.orchestrate-pr`, not here. A red check is something
@@ -432,15 +417,17 @@ the verdict mentions and the author fixes.
 
 ## 5. Write `memo` every turn
 
-The memo is replayed to you and is the only thing that survives a compaction or a cold resume.
-Rewrite it in full each turn — it is a narrative, not an append-only log, and the daemon
+The memo is replayed to you, and along with `artifacts` it is all that survives a compaction or
+a cold resume. Rewrite it in full each turn — it is a narrative, not an append-only log, and the daemon
 **replaces** it with each submit rather than merging. That includes the submits your three bound
 rounds make: they are told to carry your narrative forward, but the mechanism is them rewriting
-it, not the daemon preserving it. Write for a version of you that remembers nothing. This step's
-memo has five jobs no artifact does:
+it, not the daemon preserving it. Write for a version of you that remembers nothing.
 
-- **The head sha you last verified against.** Row 8 is unreadable without it. Initialise it to
-  the commit on `postedReview`'s first line, and restate it every turn.
+Because it is replaced rather than merged, the memo is the wrong home for anything a rung
+*keys on* — put that in an artifact, which is merged. The head shas live on `postedReview`'s
+and `resolutions`' first lines for exactly that reason (§4). This step's memo has four jobs no
+artifact does:
+
 - **What the review actually concluded** — the shape of the change, what you decided was wrong
   with it and why, and what you looked at and deliberately did not comment on. This is what
   makes `code.verify-resolutions` able to tell "they fixed it" from "they touched that line."
@@ -539,8 +526,7 @@ Other `next` shapes:
 { kind: "self-round", action: "code.submit-pr-verdict",
   note: "REQUEST_CHANGES — 2 of 5 unaddressed: src/pwa/app.js:88 (listener still never removed), src/git/git-ops.ts:210 (unclear, ask). User waived src/work/orchestrator.ts:412 — says the re-entrancy is pre-existing." }
 { kind: "wait", wait: { reason: "Review posted — watching for the author's push",
-                        events: ["pr-comments", "ci", "pr-state"],
-                        resumeAt: <epoch ms, six hours out> } }   // a silent push fires no event
+                        events: ["head-moved", "pr-comments", "ci", "pr-state"] } }   // no timer: head-moved is the push
 { kind: "wait", wait: { reason: "Verdict submitted — holding the step open until the PR merges or closes",
                         events: ["pr-state"] } }
 { kind: "resolve", output: "REQUEST_CHANGES on <prUrl>: 2 of 5 comments unaddressed." }
@@ -573,12 +559,13 @@ the only place `meta.improve-actions` looks. Name the exact command or field.
 - **A lens reports "no changes to review."** The `diffRange` was wrong or never passed. Do not
   accept it as a clean bill of health — that is the failure this whole step is shaped to avoid.
   Re-derive the range (§ rung 3) and re-brief the lens.
-- **Woken with nothing new.** Re-derive from `pr` + `artifacts` + the head sha in your memo. If
-  your position is unchanged, `wait` again on the same events with a **fresh** `resumeAt` — don't
-  manufacture a round, and don't resend the deadline that just elapsed.
+- **Woken with nothing new.** Re-derive from `pr.headRefOid` + `artifacts`. If your position is
+  unchanged, `wait` again on the same events — don't manufacture a round, and don't reach for a
+  `resumeAt` to feel like you did something.
 - **The author force-pushed.** The commit `postedReview` anchored to is gone, your line comments
   may be orphaned on GitHub, and `compare` against it fails. `code.verify-resolutions` handles
-  this by falling back to the whole PR diff; update the head sha in your memo and let it.
+  this by falling back to the whole PR diff, and records the new head on `resolutions`' first
+  line — which is all rung 8 needs. Let it.
 - **`policy-rejection` in `delivered`.** Read `reason`, fix the move it names, submit the
   corrected one this turn. A second rejection with no accepted move in between fails the step.
 - **A force-gate is declined.** The move is dropped and you are resumed with the user's

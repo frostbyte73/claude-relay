@@ -303,7 +303,7 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
                     reason: { type: 'string', description: 'Shown to the user while parked.' },
                     events: {
                       type: 'array',
-                      items: { enum: ['pr-comments', 'ci', 'review-state', 'pr-state', 'dispatches'] },
+                      items: { enum: ['pr-comments', 'ci', 'review-state', 'pr-state', 'head-moved', 'dispatches'] },
                     },
                     untilAllDispatchesDone: { type: 'boolean' },
                     resumeAt: { type: 'number', description: 'Epoch ms auto-resume.' },

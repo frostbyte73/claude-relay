@@ -150,7 +150,7 @@ export interface Dispatch {
   retryOf?: string;
 }
 
-export type WatchedEvent = 'pr-comments' | 'ci' | 'review-state' | 'pr-state';
+export type WatchedEvent = 'pr-comments' | 'ci' | 'review-state' | 'pr-state' | 'head-moved';
 
 export type InboxItem =
   | { id: string; at: number; kind: 'user-message'; body: string }
@@ -191,6 +191,9 @@ export interface PrFacts {
   ciChecks?: CiCheck[];
   reviewState?: 'approved' | 'changes_requested' | 'review_required';
   mergeable?: 'mergeable' | 'conflicting' | 'unknown';
+  // The PR's head commit. The only fact that tells a controller the author pushed:
+  // a fixup on a repo with no CI moves nothing else the watcher can see.
+  headRefOid?: string;
   comments?: PrComment[];
   threadHash?: string;
 }
