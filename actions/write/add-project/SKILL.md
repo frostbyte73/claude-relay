@@ -129,6 +129,15 @@ Add `--recurse-submodules` (after `--` for `gh repo clone`) only when
 worktrees off this checkout and code steps branch from `origin/<default>`; a shallow
 or single-branch clone breaks both, and a bare clone has no working tree to register.
 
+Those three are denied outright, and so is every other flag: the clone grant is a
+whitelist of exactly the shape above — `owner/name` (or an `https://github.com/…` URL) plus
+an absolute destination, with `--recurse-submodules` as the only option. That is not
+tidiness. `git clone --upload-pack='<any command>' <path>` runs that command on this
+machine, `-c protocol.ext.allow=always` with an `ext::` URL does the same, and `gh repo
+clone` hands everything after `--` straight to git — so an open `git clone` grant is an
+arbitrary-execution grant. If a denial lands here, the answer is the plain two-argument
+clone, never a flag that "works around" it.
+
 A clone of a large repo can take minutes. Let it run; don't wrap it in a timeout or
 poll it.
 
@@ -170,8 +179,12 @@ if that connection is refused find the real port with
 `grep -h 'listening on http://127.0.0.1:' ~/Library/Logs/outpost.log | tail -1`.
 
 Only `$OUTPOST_API_URL` and a `127.0.0.1`/`localhost` literal are allowlisted for this
-POST. Don't reach for `python`, `node -e`, or any other HTTP client to work around a
-denial — a denial here means the URL shape is wrong, not that the tool is.
+POST, and only with the flags above — `-H`/`--header` and `-d`/`--data` carrying a literal
+value. `-o`, `-T`, `-F`, `--next` and a `$(…)`/`$VAR` body all deny: `-o` overwrites any
+local file without going near a shell redirection, and `--next` starts a second request
+that the pinned URL says nothing about. Don't reach for `python`, `node -e`, or any other
+HTTP client to work around a denial — a denial here means the command shape is wrong, not
+that the tool is.
 
 The endpoint is loopback-only and needs no auth header. It replies
 `{"added":true|false,"cwd":"..."}`:

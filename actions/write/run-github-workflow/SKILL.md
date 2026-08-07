@@ -36,18 +36,22 @@ The envelope's `inputs` field:
 |---|---|---|
 | `workflow` | yes | The workflow to run — its file name (`deploy.yml`), its display name, or its numeric id. Passed straight to `gh workflow run`. |
 | `ref` | yes | Branch or tag to run the workflow on (e.g. `main`, `release/1.4`). The workflow's `.yml` must exist on this ref, and `workflow_dispatch` must be enabled. |
-| `repo` | no | `owner/name`. Omit to use the repo at `workspace.repoCwd` (or the current directory). |
+| `repo` | no | `owner/name`, informational only — **the dispatch always targets the checkout this step runs in.** If `repo` names a different repo than `workspace.repoCwd`, do not dispatch: fail the step (Step 5) saying the two disagree. |
 | `inputs` | no | Object of `workflow_dispatch` input name → value. Each becomes a `-f name=value` flag. |
 | `expect_conclusion` | no | Terminal conclusion that counts as success. Default `success`. |
-| `workspace` | no | `{repoCwd}` — cd here so `gh` picks up the repo when `repo` is unset. |
+| `workspace` | no | `{repoCwd}` — the checkout the dispatch runs against. This is what decides the repo. |
 
 **If `inputs` is missing** (older plans), fall back to the envelope's top-level
 `goal`/`title`/`description` to identify the workflow and ref, and note the
 assumption in your output. If you cannot determine a workflow name AND a ref,
 do not guess — submit a failed step (see Step 5) explaining what was missing.
 
-Build a `--repo <owner/name>` flag if `repo` is set; otherwise `cd` into
-`workspace.repoCwd` when present so `gh` infers the repo from the checkout.
+You run in the checkout at `workspace.repoCwd`, and `gh` infers the repo from it. Confirm
+that is the repo the gate approved before dispatching:
+
+```bash
+gh repo view --json nameWithOwner
+```
 
 ## Step 2 — dispatch the workflow
 
@@ -55,15 +59,23 @@ Record a UTC dispatch timestamp first (you'll use it to disambiguate the run):
 
 ```bash
 gh run list --workflow "<workflow>" --branch "<ref>" --event workflow_dispatch \
-  --limit 20 --json databaseId,createdAt,status [--repo <owner/name>]
+  --limit 20 --json databaseId,createdAt,status
 ```
 
 Note the ids that already exist. Then dispatch:
 
 ```bash
 gh workflow run "<workflow>" --ref "<ref>" \
-  -f key1=value1 -f key2=value2 [--repo <owner/name>]
+  -f key1=value1 -f key2=value2
 ```
+
+**No `--repo`.** The dispatch is granted only in the shape above — a literal workflow name,
+`--ref <literal>`, and literal `-f name=value` inputs. `human_gate: true` parks the *step*
+for a human, but the commands the session then runs auto-execute against that one approval;
+`--repo` would let one approved "run deploy.yml on main" fire a deploy, release, or infra
+pipeline in any repo the token can reach. Dropping it is what binds the dispatch to the
+checkout the user was shown. A `$VAR` workflow or ref is denied for the same reason — write
+the values in literally.
 
 `gh workflow run` prints a confirmation but **does not** return the run id.
 
@@ -83,7 +95,7 @@ The run can take seconds to hours. Prefer `gh run watch`, which polls
 server-side and blocks until the run reaches a terminal state:
 
 ```bash
-gh run watch <databaseId> --interval 60 --exit-status [--repo <owner/name>]
+gh run watch <databaseId> --interval 60 --exit-status
 ```
 
 `--exit-status` makes `gh` exit non-zero when the run's conclusion is not
@@ -91,7 +103,7 @@ gh run watch <databaseId> --interval 60 --exit-status [--repo <owner/name>]
 outlast one `gh run watch` invocation — that's fine: re-check with
 
 ```bash
-gh run view <databaseId> --json status,conclusion,htmlUrl,startedAt,updatedAt [--repo <owner/name>]
+gh run view <databaseId> --json status,conclusion,htmlUrl,startedAt,updatedAt
 ```
 
 and, while `status` is not `completed`, call `gh run watch` again (it resumes
@@ -105,7 +117,7 @@ Once `status == completed`, read `conclusion`. Success = `conclusion` equals
 (`failure`, `cancelled`, `timed_out`, …), pull the failed-step logs:
 
 ```bash
-gh run view <databaseId> --log-failed [--repo <owner/name>]
+gh run view <databaseId> --log-failed
 ```
 
 Load the outpost MCP tool — it's deferred behind ToolSearch:

@@ -1,7 +1,7 @@
 {
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
-    "^gh workflow run(\\s|$)"
+    "^gh workflow run(?:[ \\t]|\\\\\\n)+(?:\"[A-Za-z0-9][A-Za-z0-9._ -]*\"|'[A-Za-z0-9][A-Za-z0-9._ -]*'|[A-Za-z0-9][A-Za-z0-9._-]*)(?:[ \\t]|\\\\\\n)+--ref(?:(?:[ \\t]|\\\\\\n)+|=)(?:\"[A-Za-z0-9][A-Za-z0-9._/-]*\"|'[A-Za-z0-9][A-Za-z0-9._/-]*'|[A-Za-z0-9][A-Za-z0-9._/-]*)(?:(?:[ \\t]|\\\\\\n)+-f(?:(?:[ \\t]|\\\\\\n)+|=)[A-Za-z_][A-Za-z0-9_-]*=(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*(?:[ \\t]|\\\\\\n)*$"
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": []
