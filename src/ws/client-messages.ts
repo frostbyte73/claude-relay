@@ -76,13 +76,26 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
   const log = deps.log ?? (() => {});
   if (msg.type === 'user_message') {
     const { content } = msg as { content: string };
-    deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } });
+    // SessionManager.send throws when the session isn't in `active` — which a client
+    // can trigger any time by typing into a session whose subprocess has since exited
+    // (a daemon restart drops every active entry while the PWA keeps showing them).
+    // Unguarded, that throw unwinds through ws.on('message') and kills the daemon,
+    // which drops every other session too. Report it, don't die.
+    try {
+      deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } });
+    } catch (e) {
+      log(`[api] user_message to ${sessionId.slice(0, 8)} failed: ${(e as Error).message}`);
+    }
   } else if (msg.type === 'approval_decide') {
     const { approvalId, decision, reason } = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };
     deps.queue.decide(approvalId, { allow: decision === 'allow', reason });
   } else if (msg.type === 'interrupt') {
     log(`[api] interrupt requested for session ${sessionId.slice(0, 8)}`);
-    deps.manager.interrupt(sessionId);
+    try {
+      deps.manager.interrupt(sessionId);
+    } catch (e) {
+      log(`[api] interrupt for ${sessionId.slice(0, 8)} failed: ${(e as Error).message}`);
+    }
   } else if (msg.type === 'approval_mode_set') {
     const { mode } = msg as { mode?: string };
     if (typeof mode === 'string') {

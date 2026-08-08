@@ -1087,9 +1087,18 @@ async function main() {
     // Replay last statusline so the meter renders before claude's next fire; PWA handler is idempotent.
     const cachedSl = latestStatuslineBySession.get(sessionId);
     if (cachedSl) ws.send(JSON.stringify(cachedSl));
-    ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) =>
-      handleSessionMessage(raw, sessionId, { queue, manager, modes, log: (l) => console.log(l) }),
-    );
+    // Backstop: nothing thrown while dispatching a client frame may unwind through
+    // ws.on('message'), where an uncaught error takes the whole daemon down and with
+    // it every other session. handleSessionMessage guards its own known throwers;
+    // this catches whatever a future branch forgets.
+    ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      try {
+        handleSessionMessage(raw, sessionId, { queue, manager, modes, log: (l) => console.log(l) });
+      } catch (e) {
+        console.error(`[api] session ${sessionId.slice(0, 8)} message handler threw: ${(e as Error).message}`);
+        try { ws.send(JSON.stringify({ type: 'daemon_error', message: (e as Error).message })); } catch { /* socket already gone */ }
+      }
+    });
   });
 
   servePwa(server, PWA_DIR);

@@ -103,6 +103,23 @@ describe('handleSessionMessage', () => {
     expect(d.manager.send).toHaveBeenCalledWith('s1', { type: 'user', message: { role: 'user', content: 'hi' } });
   });
 
+  // SessionManager.send throws for a session that isn't active — reachable any time a
+  // client types into a session whose subprocess exited. The throw used to unwind
+  // through ws.on('message') and kill the daemon, taking every other session with it.
+  it('does not rethrow when manager.send rejects an inactive session', () => {
+    const d = deps();
+    d.manager.send.mockImplementation(() => { throw new Error('session s1 not active'); });
+    const raw = Buffer.from(JSON.stringify({ type: 'user_message', content: 'hi' }));
+    expect(() => handleSessionMessage(raw, 's1', d)).not.toThrow();
+  });
+
+  it('does not rethrow when manager.interrupt throws', () => {
+    const d = deps();
+    d.manager.interrupt.mockImplementation(() => { throw new Error('session s1 not active'); });
+    const raw = Buffer.from(JSON.stringify({ type: 'interrupt' }));
+    expect(() => handleSessionMessage(raw, 's1', d)).not.toThrow();
+  });
+
   it('dispatches approval_decide to the queue', () => {
     const d = deps();
     const raw = Buffer.from(JSON.stringify({ type: 'approval_decide', approvalId: 'a1', decision: 'deny', reason: 'no' }));
