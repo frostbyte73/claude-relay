@@ -590,3 +590,148 @@ describe('WorktreeManager — base ref freshness', () => {
     expect(headOf(path!)).toBe(localTip);
   });
 });
+
+// Advance origin's main by `n` commits from the seed clone, so `local` is behind until it fetches.
+function advanceOrigin(bare: string, n: number): string {
+  const seed = mkdtempSync(join(tmpdir(), 'wt-seed-'));
+  execFileSync('git', ['clone', '-q', bare, seed]);
+  execFileSync('git', ['-C', seed, 'config', 'user.email', 'test@example']);
+  execFileSync('git', ['-C', seed, 'config', 'user.name', 'Test']);
+  for (let i = 0; i < n; i++) {
+    execFileSync('git', ['-C', seed, 'commit', '--allow-empty', '-q', '-m', `upstream ${i}`]);
+  }
+  execFileSync('git', ['-C', seed, 'push', '-q', 'origin', 'main']);
+  return execFileSync('git', ['-C', seed, 'rev-parse', 'main']).toString().trim();
+}
+
+function originOf(local: string): string {
+  return execFileSync('git', ['-C', local, 'remote', 'get-url', 'origin']).toString().trim();
+}
+
+// The REL-17 shape: a step branches correctly from a fresh origin/main, then sits for days while
+// the controller re-spawns it once per round. provision() used to hand the day-one tree straight
+// back, so the work landed on a base that was hundreds of commits stale.
+describe('WorktreeManager — base freshness on re-provision', () => {
+  it('fast-forwards an untouched branch to the fresh base on the next dispatch', async () => {
+    const { local } = makeClonePair();
+    const bare = originOf(local);
+    const ws = { kind: 'writable' as const, repoCwd: local, branch: 'feat/idle' };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-idle', ws);
+    const dayOne = headOf(path!);
+
+    const moved = advanceOrigin(bare, 3);
+    expect(moved).not.toBe(dayOne);
+
+    // Round two: same stepId, same live record — the path that used to short-circuit.
+    const again = await m.provision('step-idle', ws);
+    expect(again.path).toBe(path);
+    expect(headOf(path!)).toBe(moved);
+    expect(m.get('step-idle')!.baseDrift).toBe(0);
+  });
+
+  it('never moves a branch that has commits of its own, and records the drift instead', async () => {
+    const { local } = makeClonePair();
+    const bare = originOf(local);
+    const ws = { kind: 'writable' as const, repoCwd: local, branch: 'feat/committed' };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-committed', ws);
+    execFileSync('git', ['-C', path!, 'commit', '--allow-empty', '-q', '-m', 'step work']);
+    const ownWork = headOf(path!);
+
+    advanceOrigin(bare, 4);
+    await m.provision('step-committed', ws);
+
+    // A pushed branch under an open PR: moving it would be a force-push.
+    expect(headOf(path!)).toBe(ownWork);
+    const rec = m.get('step-committed')!;
+    expect(rec.baseDrift).toBe(4);
+    // baseRef must name the real branch point, not the ref that has since moved past it —
+    // gitFinalizeSquashToBranch does `reset --soft` onto it.
+    expect(rec.baseRef).toMatch(/^[0-9a-f]{7,40}$/);
+    const branchPoint = execFileSync('git', ['-C', local, 'merge-base', 'origin/main', 'feat/committed']).toString().trim();
+    expect(rec.baseRef).toBe(branchPoint);
+    // The step's own commit is the whole diff — no upstream commits folded in.
+    expect(execFileSync('git', ['-C', local, 'rev-list', '--count', `${rec.baseRef}..feat/committed`]).toString().trim()).toBe('1');
+  });
+
+  it('leaves a dirty worktree alone even when the branch has no commits', async () => {
+    const { local } = makeClonePair();
+    const bare = originOf(local);
+    const ws = { kind: 'writable' as const, repoCwd: local, branch: 'feat/dirty' };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-dirty', ws);
+    const dayOne = headOf(path!);
+    writeFileSync(join(path!, 'wip.txt'), 'uncommitted work\n');
+
+    advanceOrigin(bare, 2);
+    await m.provision('step-dirty', ws);
+
+    expect(headOf(path!)).toBe(dayOne);
+    expect(m.get('step-dirty')!.baseDrift).toBe(2);
+    expect(existsSync(join(path!, 'wip.txt'))).toBe(true);
+  });
+
+  it('keeps a readonly worktree pinned across re-provision', async () => {
+    const { local } = makeClonePair();
+    const bare = originOf(local);
+    const ws = { kind: 'readonly' as const, repoCwd: local };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-ro-pin', ws);
+    const at = headOf(path!);
+
+    advanceOrigin(bare, 2);
+    await m.provision('step-ro-pin', ws);
+
+    expect(headOf(path!)).toBe(at);
+  });
+
+  it('aligns an adopted branch instead of claiming a base it was never cut from', async () => {
+    const { local } = makeClonePair();
+    const bare = originOf(local);
+    execFileSync('git', ['-C', local, 'fetch', '-q', 'origin']);
+    // A stale local branch left over from an earlier run, cut from the base as it was then.
+    execFileSync('git', ['-C', local, 'branch', 'feat/adopted', 'origin/main']);
+    const staleTip = execFileSync('git', ['-C', local, 'rev-parse', 'feat/adopted']).toString().trim();
+    const moved = advanceOrigin(bare, 5);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-adopt', projectCwd: local, baseBranch: 'main', branch: 'feat/adopted' });
+
+    // Adopted with nothing on it, so it fast-forwards rather than starting 5 commits behind.
+    expect(staleTip).not.toBe(moved);
+    expect(headOf(rec.worktreePath)).toBe(moved);
+    expect(rec.baseDrift).toBe(0);
+  });
+
+  it('records the real branch point when an adopted branch already carries commits', async () => {
+    const { local } = makeClonePair();
+    const bare = originOf(local);
+    execFileSync('git', ['-C', local, 'fetch', '-q', 'origin']);
+    execFileSync('git', ['-C', local, 'branch', 'feat/adopted-work', 'origin/main']);
+    const branchPoint = execFileSync('git', ['-C', local, 'rev-parse', 'feat/adopted-work']).toString().trim();
+    // Commit onto the stale branch without checking it out anywhere.
+    const tree = execFileSync('git', ['-C', local, 'rev-parse', 'feat/adopted-work^{tree}']).toString().trim();
+    const commit = execFileSync(
+      'git',
+      ['-C', local, 'commit-tree', tree, '-p', branchPoint, '-m', 'earlier round'],
+      { env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@e', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@e' } },
+    ).toString().trim();
+    execFileSync('git', ['-C', local, 'update-ref', 'refs/heads/feat/adopted-work', commit]);
+    advanceOrigin(bare, 6);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-adopt-work', projectCwd: local, baseBranch: 'main', branch: 'feat/adopted-work' });
+
+    expect(headOf(rec.worktreePath)).toBe(commit);
+    expect(rec.baseRef).toBe(branchPoint);
+    expect(rec.baseDrift).toBe(6);
+    // The pre-existing commit is the entire diff; without the fix baseRef named the moved
+    // origin/main, so a squash would have rewound past 6 upstream commits and swallowed them.
+    expect(runGitDiff(rec, 'branch')).toBe('');
+  });
+});

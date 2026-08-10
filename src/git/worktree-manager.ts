@@ -14,8 +14,14 @@ export interface WorktreeRecord {
   baseBranch: string;
   // Exact start point the branch was cut from — `baseBranch` when the local ref was current
   // (or ahead), else `origin/<baseBranch>`. Diff + squash bases read this, not baseBranch,
-  // so a stale local base can't fold upstream commits into the step's diff.
+  // so a stale local base can't fold upstream commits into the step's diff. An adopted or
+  // drifted branch records the merge-base sha instead: a ref spelling would name a commit the
+  // branch was never cut from, and `gitFinalizeSquashToBranch` rewinds to this.
   baseRef?: string;
+  // Commits `baseRef`'s branch has gained since this branch diverged, as of the last provision.
+  // Non-zero means the step is knowingly on a stale base we declined to move because it already
+  // has commits of its own — merging the base in is the controller's call, not ours.
+  baseDrift?: number;
   createdAt: number;
   // Tombstone when archived: path/branch fields cleared; SessionStore reads this to mark `archived: true`.
   archivedAt?: number;
@@ -162,6 +168,9 @@ export class WorktreeManager {
           baseRef: startRef,
           createdAt: Date.now(),
         };
+        // Adopted, not cut: the branch points wherever it already pointed, so `startRef` is what
+        // we wanted and not what we got. Align (or record the drift) before claiming a base.
+        await this.alignToBase(rec);
         this.records.set(opts.sessionId, rec);
         this.persist();
         return rec;
@@ -186,6 +195,9 @@ export class WorktreeManager {
       baseRef: startRef,
       createdAt: Date.now(),
     };
+    // The `-b` path cut from startRef exactly, so it already holds. The adopted path took whatever
+    // the pre-existing ref pointed at — days old in the case this exists for.
+    if (branchExistsLocally) await this.alignToBase(rec);
     this.records.set(opts.sessionId, rec);
     this.persist();
     return rec;
@@ -212,7 +224,16 @@ export class WorktreeManager {
     }
     if (this.records.has(stepId)) {
       const rec = this.records.get(stepId)!;
-      if (!rec.archivedAt) return { path: rec.worktreePath };
+      if (!rec.archivedAt) {
+        // The tree survives across rounds; its base must not. Readonly stays pinned on purpose —
+        // it is a detached snapshot, and moving it under a step that already reported findings
+        // against those line numbers is worse than reading a slightly older tree.
+        if (ref.kind === 'writable') {
+          await this.alignToBase(rec);
+          this.persist();
+        }
+        return { path: rec.worktreePath };
+      }
     }
     if (opts.expectRepo) await assertOriginRepo(ref.repoCwd, opts.expectRepo);
     if (ref.kind === 'writable') {
@@ -452,6 +473,46 @@ export class WorktreeManager {
     }
   }
 
+  // Freshness at creation is not freshness at dispatch. An orchestrated step re-spawns once per
+  // round, so one branched on Monday and dispatched on Friday used to be handed Monday's base
+  // straight back — provision() returned the existing record without touching git, and
+  // resolveStartRef was only ever reachable through create(). Same hole on an adopted branch,
+  // where create() computes a start ref and then checks out a ref that ignores it.
+  //
+  // Only ever fast-forwards a branch with no commits of its own into a clean worktree. Anything
+  // the step already committed stays exactly where it is: the branch may be pushed under an open
+  // PR, and moving it means a force-push. Those record their real branch point instead — as a sha,
+  // so no later ref movement can shift what a squash rewinds to — plus the drift, leaving the
+  // decision to merge the base in with the controller (code.resolve-conflicts).
+  private async alignToBase(rec: WorktreeRecord): Promise<void> {
+    if (!rec.branch || !rec.baseBranch || !rec.worktreePath) return;
+    if (!BRANCH_NAME_RE.test(rec.branch) || !BRANCH_NAME_RE.test(rec.baseBranch)) return;
+    if (!existsSync(rec.worktreePath)) return;
+
+    const startRef = await this.resolveStartRef(rec.projectCwd, rec.baseBranch);
+    if (!await refExists(rec.projectCwd, startRef)) return;
+
+    // Nothing beyond the base means the branch is either already there or purely behind it.
+    if (await countCommits(rec.projectCwd, `${startRef}..${rec.branch}`) === 0) {
+      if (await isAncestor(rec.projectCwd, startRef, rec.branch)) {
+        rec.baseRef = startRef;
+        rec.baseDrift = 0;
+        return;
+      }
+      if (isCleanCheckout(rec.worktreePath)) {
+        try {
+          await execFileP('git', ['-C', rec.worktreePath, 'merge', '--ff-only', '--quiet', startRef]);
+          rec.baseRef = startRef;
+          rec.baseDrift = 0;
+          return;
+        } catch { /* raced, or a hook refused it — fall through and just record the drift */ }
+      }
+    }
+    const branchPoint = await mergeBase(rec.projectCwd, startRef, rec.branch);
+    if (branchPoint) rec.baseRef = branchPoint;
+    rec.baseDrift = await countCommits(rec.projectCwd, `${rec.branch}..${startRef}`);
+  }
+
   // Best-effort: an offline machine or a repo with no `origin` must not block provisioning.
   private async fetchBase(cwd: string, baseBranch: string): Promise<void> {
     try {
@@ -591,6 +652,24 @@ async function isAncestor(cwd: string, maybeAncestor: string, descendant: string
     await execFileP('git', ['-C', cwd, 'merge-base', '--is-ancestor', maybeAncestor, descendant]);
     return true;
   } catch { return false; }
+}
+
+// 0 on any failure: a drift number we couldn't measure must not read as "wildly stale".
+async function countCommits(cwd: string, range: string): Promise<number> {
+  try {
+    const { stdout } = await execFileP('git', ['-C', cwd, 'rev-list', '--count', range, '--']);
+    const n = Number.parseInt(stdout.toString().trim(), 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch { return 0; }
+}
+
+async function mergeBase(cwd: string, a: string, b: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP('git', ['-C', cwd, 'merge-base', a, b]);
+    const sha = stdout.toString().trim();
+    // Must satisfy BRANCH_NAME_RE downstream (it lands in baseRef, which git-ops re-validates).
+    return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
+  } catch { return null; }
 }
 
 function resolveBaseBranch(cwd: string): string {
