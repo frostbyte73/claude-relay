@@ -18,6 +18,11 @@ export interface WorktreeRecord {
   // drifted branch records the merge-base sha instead: a ref spelling would name a commit the
   // branch was never cut from, and `gitFinalizeSquashToBranch` rewinds to this.
   baseRef?: string;
+  // The same start point pinned to a commit, and the one diffs + squashes actually use. `baseRef`
+  // is a spelling, and `origin/main` is a *moving* spelling: a branch cut from it and squashed 29
+  // minutes later re-parented onto commits it never contained, so its PR diff reverted them
+  // (cloud-config#16434). Only a sha survives the gap between cutting and finalizing.
+  baseSha?: string;
   // Commits `baseRef`'s branch has gained since this branch diverged, as of the last provision.
   // Non-zero means the step is knowingly on a stale base we declined to move because it already
   // has commits of its own — merging the base in is the controller's call, not ours.
@@ -195,9 +200,11 @@ export class WorktreeManager {
       baseRef: startRef,
       createdAt: Date.now(),
     };
-    // The `-b` path cut from startRef exactly, so it already holds. The adopted path took whatever
-    // the pre-existing ref pointed at — days old in the case this exists for.
+    // The `-b` path cut from startRef exactly, so the new branch tip *is* the base — pin it before
+    // the ref it was spelled with moves on. The adopted path took whatever the pre-existing ref
+    // pointed at, which is days old in the case this exists for.
     if (branchExistsLocally) await this.alignToBase(rec);
+    else rec.baseSha = await resolveSha(opts.projectCwd, branch) ?? undefined;
     this.records.set(opts.sessionId, rec);
     this.persist();
     return rec;
@@ -279,6 +286,9 @@ export class WorktreeManager {
       branch: '',
       baseBranch: '',
       baseRef: at,
+      // Detached at `at`, so HEAD is the pin. Matters for a readonly cut from `origin/<base>`,
+      // which names a different commit every time origin moves.
+      baseSha: await resolveSha(worktreePath, 'HEAD') ?? undefined,
       createdAt: Date.now(),
     };
     this.records.set(stepId, rec);
@@ -496,6 +506,7 @@ export class WorktreeManager {
     if (await countCommits(rec.projectCwd, `${startRef}..${rec.branch}`) === 0) {
       if (await isAncestor(rec.projectCwd, startRef, rec.branch)) {
         rec.baseRef = startRef;
+        rec.baseSha = await resolveSha(rec.projectCwd, rec.branch) ?? rec.baseSha;
         rec.baseDrift = 0;
         return;
       }
@@ -503,13 +514,17 @@ export class WorktreeManager {
         try {
           await execFileP('git', ['-C', rec.worktreePath, 'merge', '--ff-only', '--quiet', startRef]);
           rec.baseRef = startRef;
+          rec.baseSha = await resolveSha(rec.projectCwd, rec.branch) ?? rec.baseSha;
           rec.baseDrift = 0;
           return;
         } catch { /* raced, or a hook refused it — fall through and just record the drift */ }
       }
     }
     const branchPoint = await mergeBase(rec.projectCwd, startRef, rec.branch);
-    if (branchPoint) rec.baseRef = branchPoint;
+    if (branchPoint) {
+      rec.baseRef = branchPoint;
+      rec.baseSha = branchPoint;
+    }
     rec.baseDrift = await countCommits(rec.projectCwd, `${rec.branch}..${startRef}`);
   }
 
@@ -569,11 +584,22 @@ async function assertOriginRepo(cwd: string, expectRepo: string): Promise<void> 
 
 export type DiffMode = 'branch' | 'worktree';
 
-// The ref the branch was actually cut from. Records written before baseRef existed fall back to
-// baseBranch, which is what they were branched from anyway.
-export function diffBaseFor(rec: Pick<WorktreeRecord, 'baseRef' | 'baseBranch'>): string {
+// The commit the branch was actually cut from. `baseSha` first and deliberately: this feeds
+// gitFinalizeSquashToBranch's `reset --soft`, and a moving spelling there re-parents the squash
+// onto commits the branch never contained, so the PR diff reverts them. Older records fall back
+// to the spelling, then to baseBranch.
+export function diffBaseFor(rec: Pick<WorktreeRecord, 'baseSha' | 'baseRef' | 'baseBranch'>): string {
+  if (rec.baseSha && rec.baseSha.length > 0) return rec.baseSha;
   if (rec.baseRef && rec.baseRef.length > 0) return rec.baseRef;
   return rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
+}
+
+// What to *show* for that base. diffBaseFor pins a sha for correctness; a sha in the diff header
+// where "main" used to be is a downgrade for the reader, so the UI keeps the spelling.
+export function baseLabelFor(rec: Pick<WorktreeRecord, 'baseRef' | 'baseBranch' | 'baseSha'>): string {
+  if (rec.baseRef && rec.baseRef.length > 0) return rec.baseRef;
+  if (rec.baseBranch && rec.baseBranch.length > 0) return rec.baseBranch;
+  return rec.baseSha && rec.baseSha.length > 0 ? rec.baseSha : 'main';
 }
 
 // Argv-only, no shell — branch regex + trailing `--` block argv-flag smuggling on refs/paths.
@@ -661,6 +687,14 @@ async function countCommits(cwd: string, range: string): Promise<number> {
     const n = Number.parseInt(stdout.toString().trim(), 10);
     return Number.isFinite(n) ? n : 0;
   } catch { return 0; }
+}
+
+async function resolveSha(cwd: string, ref: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP('git', ['-C', cwd, 'rev-parse', '--verify', `${ref}^{commit}`]);
+    const sha = stdout.toString().trim();
+    return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
+  } catch { return null; }
 }
 
 async function mergeBase(cwd: string, a: string, b: string): Promise<string | null> {

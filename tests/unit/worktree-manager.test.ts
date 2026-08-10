@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, existsSyn
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorktreeManager, runGitDiff } from '../../src/git/worktree-manager.js';
+import { WorktreeManager, runGitDiff, diffBaseFor, baseLabelFor } from '../../src/git/worktree-manager.js';
 
 function makeGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'wt-repo-'));
@@ -588,6 +588,54 @@ describe('WorktreeManager — base ref freshness', () => {
     const { path } = await m.provision('step-pinned', { kind: 'readonly', repoCwd: local, ref: 'pinned' });
 
     expect(headOf(path!)).toBe(localTip);
+  });
+});
+
+// cloud-config#16434: the branch was cut from origin/main, the step committed 29 minutes later,
+// and the squash rewound to `origin/main` — which had moved. The re-parented commit kept the old
+// tree, so the PR diff reverted the two upstream PRs that had landed in the gap.
+describe('WorktreeManager — base is pinned to a commit, not a moving ref', () => {
+  it('keeps the squash base on the cut commit after origin/main moves', async () => {
+    const { local, originTip } = makeClonePair(); // clone leaves main checked out -> baseRef is origin/main
+    const bare = originOf(local);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-pin', projectCwd: local, baseBranch: 'main' });
+    expect(rec.baseRef).toBe('origin/main');
+    expect(headOf(rec.worktreePath)).toBe(originTip);
+
+    // Upstream lands two PRs while the step is still working.
+    const moved = advanceOrigin(bare, 2);
+    execFileSync('git', ['-C', local, 'fetch', '-q', 'origin']);
+    expect(execFileSync('git', ['-C', local, 'rev-parse', 'origin/main']).toString().trim()).toBe(moved);
+
+    // What gitFinalizeSquashToBranch rewinds to must still be the commit we branched from.
+    expect(diffBaseFor(rec)).toBe(originTip);
+    expect(diffBaseFor(rec)).not.toBe(moved);
+    // ...while the reader still sees a branch name, not a sha.
+    expect(baseLabelFor(rec)).toBe('origin/main');
+  });
+
+  it('pins the base even when the local base ref is what got fast-forwarded', async () => {
+    const { local, originTip } = makeClonePair();
+    execFileSync('git', ['-C', local, 'checkout', '-q', '-b', 'parked']); // frees main to be moved
+    const bare = originOf(local);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-pin-local', projectCwd: local, baseBranch: 'main' });
+    expect(rec.baseRef).toBe('main');
+
+    advanceOrigin(bare, 3);
+    execFileSync('git', ['-C', local, 'fetch', '-q', 'origin', 'main:main']);
+
+    expect(diffBaseFor(rec)).toBe(originTip);
+    expect(baseLabelFor(rec)).toBe('main');
+  });
+
+  it('falls back to the spelling for records written before baseSha existed', () => {
+    expect(diffBaseFor({ baseRef: 'origin/main', baseBranch: 'main' })).toBe('origin/main');
+    expect(diffBaseFor({ baseBranch: 'master' })).toBe('master');
+    expect(diffBaseFor({ baseBranch: '' })).toBe('main');
   });
 });
 
