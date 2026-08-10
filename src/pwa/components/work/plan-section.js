@@ -53,7 +53,7 @@ export function renderReconciliation(j) {
       ? 'no change'
       : kind === 'patch'
         ? `${prior ? 'patched from existing step' : 'patched'} — title / goal / approach updated`
-        : 'new step, will be appended';
+        : 'new step, inserted at this position';
     const key = p.keepId
       ? String(current.findIndex((s) => s.id === p.keepId) + 1).padStart(2, '0')
       : 'new';

@@ -933,15 +933,17 @@ export class WorkEngine {
     const byId = new Map(j.steps.map((s) => [s.id, s]));
     const cancelledSet = new Set(recon.cancelled);
 
-    let addedCursor = 0;
-    const proposedOrdered: Step[] = j.pendingReconciliation.proposed.map((_, i) => {
-      const kept = recon.kept[i];
+    // Join on keepId, never on index: recon.kept is compacted to the proposals that
+    // matched, so kept[i] slides off the proposal at i as soon as one added step sits
+    // ahead of it — which sank every insertion to the end of the plan.
+    const keptById = new Map(recon.kept.map((k) => [k.stepId, k]));
+    const proposedOrdered: Step[] = j.pendingReconciliation.proposed.map((p) => {
+      const kept = p.keepId ? keptById.get(p.keepId) : undefined;
       if (kept) {
         const cur = byId.get(kept.stepId)!;
         return { ...cur, ...kept.patch, updatedAt: this.ctx.now() } as Step;
       }
-      const add = recon.added[addedCursor++];
-      return this.materialize(add!);
+      return this.materialize(p);
     });
 
     const cancelledTail: Step[] = j.steps
