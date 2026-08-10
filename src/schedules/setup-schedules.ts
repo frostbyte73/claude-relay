@@ -22,6 +22,8 @@ echo "$resp" | jq -c '.data.viewer.assignedIssues.nodes[]' | while read -r issue
 done
 `.trim();
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
 // Seeds the daemon's built-in schedules at startup. `ensureBuiltin` is idempotent on id, so
 // this can (and must) run on every boot without clobbering a user's edits to an existing row.
 export function seedBuiltinSchedules(store: SchedulesStore, homeDir: string): void {
@@ -55,11 +57,20 @@ export function seedBuiltinSchedules(store: SchedulesStore, homeDir: string): vo
   });
   // No `repos` — the envelope enricher resolves cwd to the action being reviewed. Gated on
   // accumulated run evidence rather than a clock, so a fire with nothing due records a skip;
-  // on a fresh install that's every fire, which is correct and costs nothing.
-  store.ensureBuiltin({
+  // on a fresh install that's every fire. The daily debounce is what keeps that skip from
+  // repeating on every usage snapshot with headroom — a day is also roughly the shortest window
+  // in which enough new run evidence can pile up to change the improver's mind.
+  const improver = store.ensureBuiltin({
     id: 'action-improver',
     name: 'Improve actions',
-    trigger: { kind: 'token-opportunistic' },
+    trigger: { kind: 'token-opportunistic', debounceMs: ONE_DAY_MS },
     what: { kind: 'skill', skill: 'meta.improve-actions' },
   });
+  // Backfill for a row seeded before `debounceMs` existed — ensureBuiltin leaves an existing row
+  // alone, so without this the schedule whose noise the field was added to fix never gets it.
+  // Only when the key is absent: the editor writes an explicit `0` for "no limit", so a user who
+  // turns the debounce off doesn't get it re-imposed on the next boot.
+  if (improver.trigger.kind === 'token-opportunistic' && improver.trigger.debounceMs === undefined) {
+    store.update(improver.id, { trigger: { ...improver.trigger, debounceMs: ONE_DAY_MS } });
+  }
 }

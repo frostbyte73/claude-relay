@@ -68,9 +68,21 @@ function fmtDateTime(atMs) {
   return `${datePart} · ${timePart}`;
 }
 
+// "day" / "6 hours" / "45 min" — the tail of "at most once per …" for a token trigger's
+// debounce (src/schedules/types.ts: Trigger.debounceMs).
+function humanizeGap(ms) {
+  const hours = ms / 3_600_000;
+  if (hours < 1) return `${Math.round(ms / 60_000)} min`;
+  if (hours % 24 === 0) return hours === 24 ? 'day' : `${hours / 24} days`;
+  return hours === 1 ? 'hour' : `${Math.round(hours)} hours`;
+}
+
 export function triggerWhen(trigger) {
   if (!trigger) return '';
-  if (trigger.kind === 'token-opportunistic') return 'When tokens are free';
+  if (trigger.kind === 'token-opportunistic') {
+    const gap = trigger.debounceMs > 0 ? ` · at most once per ${humanizeGap(trigger.debounceMs)}` : '';
+    return `When tokens are free${gap}`;
+  }
   if (trigger.kind === 'event') return trigger.descriptor ?? 'on event';
   if (trigger.kind === 'once') return `Once on ${fmtAbsolute(trigger.at) ?? 'a set time'}`;
   return humanizeCron(trigger.expr);

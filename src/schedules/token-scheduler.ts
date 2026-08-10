@@ -1,6 +1,6 @@
 import type { SchedulesStore } from './schedules-store.js';
 import type { ScheduleRecord } from './types.js';
-import { evaluateHeadroom, type TokenUsageSnapshot } from './headroom.js';
+import { evaluateHeadroom, humanizeMs, type TokenUsageSnapshot } from './headroom.js';
 
 export type { TokenWindowUsage, TokenUsageSnapshot, HeadroomDecision, HeadroomCode } from './headroom.js';
 export { evaluateHeadroom } from './headroom.js';
@@ -50,8 +50,22 @@ export class TokenScheduler {
     finally { this.evaluating = false; }
   }
 
+  // Remaining cooldown in ms for a schedule whose trigger sets `debounceMs`, or null if it's free
+  // to run. Measured from the last run's `startedAt` regardless of outcome — a skipped run is an
+  // attempt, and suppressing the *retry* of a schedule that keeps finding nothing to do is the
+  // whole reason the field exists. Candidates on cooldown are filtered out rather than fired-and-
+  // skipped, so a debounce leaves no run rows behind either.
+  private cooldownRemaining(schedule: ScheduleRecord): number | null {
+    const debounceMs = schedule.trigger.kind === 'token-opportunistic' ? schedule.trigger.debounceMs ?? 0 : 0;
+    if (debounceMs <= 0) return null;
+    const lastStart = this.deps.store.lastRun(schedule.id)?.startedAt;
+    if (lastStart === undefined) return null;
+    const remaining = lastStart + debounceMs - this.now();
+    return remaining > 0 ? remaining : null;
+  }
+
   private async evaluate(): Promise<void> {
-    const schedules = this.tokenSchedules();
+    const schedules = this.tokenSchedules().filter((s) => this.cooldownRemaining(s) === null);
     if (schedules.length === 0) return;
     if (this.anyInFlight()) return;
     if (!evaluateHeadroom(this.deps.getSnapshot(), this.now()).launch) return;
@@ -70,9 +84,20 @@ export class TokenScheduler {
   }
 
   // UI status for GET /api/schedules. `eligible` means headroom exists and nothing's in flight —
-  // the next snapshot would launch it; `waiting` covers both the serialization gate and no-headroom.
+  // the next snapshot would launch it; `waiting` covers the debounce cooldown, the serialization
+  // gate and no-headroom.
   describe(scheduleId: string): TokenStatus {
     if (this.deps.store.lastRun(scheduleId)?.outcome === 'running') return { state: 'running', reason: 'Running now' };
+    const schedule = this.deps.store.get(scheduleId);
+    const remaining = schedule ? this.cooldownRemaining(schedule) : null;
+    // Reported ahead of the shared gates: this schedule's own cooldown is the binding reason
+    // even on a snapshot where headroom exists and nothing else is running.
+    if (remaining !== null && schedule?.trigger.kind === 'token-opportunistic') {
+      return {
+        state: 'waiting',
+        reason: `Waiting — at most once per ${humanizeMs(schedule.trigger.debounceMs ?? 0)} (next in ${humanizeMs(remaining)})`,
+      };
+    }
     if (this.anyInFlight()) return { state: 'waiting', reason: 'Waiting — another token job is running' };
     const decision = evaluateHeadroom(this.deps.getSnapshot(), this.now());
     return { state: decision.launch ? 'eligible' : 'waiting', reason: decision.reason };

@@ -23,7 +23,13 @@ function validateTrigger(trigger: Trigger): string | null {
     if (typeof trigger.descriptor !== 'string' || !trigger.descriptor.trim()) return 'trigger.descriptor is required for event triggers';
     return null;
   }
-  if (trigger.kind === 'token-opportunistic') return null;
+  if (trigger.kind === 'token-opportunistic') {
+    const { debounceMs } = trigger;
+    if (debounceMs !== undefined && (typeof debounceMs !== 'number' || !Number.isFinite(debounceMs) || debounceMs < 0)) {
+      return 'trigger.debounceMs must be a non-negative number of milliseconds';
+    }
+    return null;
+  }
   return 'trigger.kind must be "cron", "once", "event", or "token-opportunistic"';
 }
 

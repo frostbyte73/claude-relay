@@ -127,6 +127,46 @@ describe('TokenScheduler', () => {
     expect(fired).toEqual([b.id]);
   });
 
+  it('holds off inside the debounce window — a skipped run starts the cooldown too', async () => {
+    const store = tmpStore();
+    const a = store.create({ ...tokenInput('improver'), trigger: { kind: 'token-opportunistic', debounceMs: DAY } });
+    store.startRun(a.id, { outcome: 'skipped', skipReason: 'nothing due', startedAt: NOW - 2 * 60 * 60 * 1000 });
+    const { controller, fired } = make(store, snap(30, 3.5 * DAY));
+    await controller.onUsageSnapshot();
+    expect(fired).toEqual([]);
+    // No extra run row for the debounced snapshot — the cooldown is silent, not a skip log.
+    expect(store.listRuns(a.id).length).toBe(1);
+  });
+
+  it('fires again once the debounce window has passed', async () => {
+    const store = tmpStore();
+    const a = store.create({ ...tokenInput('improver'), trigger: { kind: 'token-opportunistic', debounceMs: DAY } });
+    store.startRun(a.id, { outcome: 'skipped', skipReason: 'nothing due', startedAt: NOW - DAY - 1 });
+    const { controller, fired } = make(store, snap(30, 3.5 * DAY));
+    await controller.onUsageSnapshot();
+    expect(fired).toEqual([a.id]);
+  });
+
+  it('a debounced schedule does not block a sibling token schedule', async () => {
+    const store = tmpStore();
+    const a = store.create({ ...tokenInput('improver'), trigger: { kind: 'token-opportunistic', debounceMs: DAY } });
+    const b = store.create(tokenInput('backlog'));
+    store.startRun(a.id, { outcome: 'ok', startedAt: NOW - 1000 });
+    const { controller, fired } = make(store, snap(30, 3.5 * DAY));
+    await controller.onUsageSnapshot();
+    expect(fired).toEqual([b.id]);
+  });
+
+  it('describe reports the cooldown ahead of headroom', () => {
+    const store = tmpStore();
+    const a = store.create({ ...tokenInput('improver'), trigger: { kind: 'token-opportunistic', debounceMs: DAY } });
+    store.startRun(a.id, { outcome: 'skipped', startedAt: NOW - 2 * 60 * 60 * 1000 });
+    const { controller } = make(store, snap(30, 3.5 * DAY));
+    const status = controller.describe(a.id);
+    expect(status.state).toBe('waiting');
+    expect(status.reason).toBe('Waiting — at most once per 1d (next in 22h)');
+  });
+
   it('describe reports running / gated / eligible / waiting', async () => {
     const store = tmpStore();
     const a = store.create(tokenInput('a'));

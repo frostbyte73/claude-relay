@@ -127,6 +127,13 @@ describe('scheduleCards', () => {
     expect(card.descriptor).toBe('token · opportunistic');
     expect(card.nextRunSummary).toBe('Waiting — 7d usage ahead of pace (60% used, 5d to reset)');
   });
+
+  it('names the debounce on a token card that has one', () => {
+    const [daily] = scheduleCards([schedule({ trigger: { kind: 'token-opportunistic', debounceMs: 86_400_000 } } as any)], NOW);
+    expect(daily.when).toBe('When tokens are free · at most once per day');
+    const [sixHourly] = scheduleCards([schedule({ trigger: { kind: 'token-opportunistic', debounceMs: 6 * 3_600_000 } } as any)], NOW);
+    expect(sixHourly.when).toBe('When tokens are free · at most once per 6 hours');
+  });
 });
 
 describe('filterScheduleCards', () => {

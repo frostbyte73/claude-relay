@@ -9,7 +9,13 @@ export type Trigger =
   // opportunistically when 5h/7d usage leaves genuine spare capacity. Carries no schedule of its
   // own — the daemon's usage poller drives evaluation. A usage-threshold guard can still ride
   // alongside as a hard ceiling.
-  | { kind: 'token-opportunistic' };
+  //
+  // `debounceMs` is the minimum gap between attempts, measured from the last run of *any* outcome
+  // — a skip counts, which is the point: an evidence-gated schedule that finds nothing to do
+  // shouldn't be re-asked on every usage snapshot for the rest of the day. Absent on rows written
+  // before the field existed; `0` is the explicit "no limit" the editor writes, so a backfill can
+  // tell an opt-out apart from a row that never had the choice.
+  | { kind: 'token-opportunistic'; debounceMs?: number };
 
 export type Guard =
   | { kind: 'usage-threshold'; window: '5h' | '7d'; op: '>' | '>='; value: number }

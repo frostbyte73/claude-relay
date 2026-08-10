@@ -258,6 +258,9 @@
 .sched-form-row textarea:focus { outline: none; border-color: var(--accent); }
 .sched-form-row textarea { font-family: var(--font-mono); font-size: 12px; resize: vertical; width: 100%; }
 .sched-form-unit { color: var(--text-dim); font-size: 12px; }
+/* Value + unit sharing one grid cell, so the label column stays aligned with the other rows. */
+.sched-form-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sched-form-inline input[type="number"] { width: 72px; }
 .sched-form-hint { color: var(--text-dim); font-size: 12px; line-height: 1.5; margin: 0; }
 .sched-form-error { color: var(--danger); font-size: 12px; }
 .sched-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }

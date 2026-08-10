@@ -29,7 +29,9 @@ export interface HeadroomDecision {
   code: HeadroomCode;
 }
 
-function humanizeMs(ms: number): string {
+// Coarse duration label for the status strings the schedules UI shows ("3d to reset",
+// "next in 22h"). Shared with token-scheduler.ts's debounce reason.
+export function humanizeMs(ms: number): string {
   const mins = Math.round(ms / 60_000);
   if (mins < 60) return `${mins}m`;
   const hours = mins / 60;

@@ -8,6 +8,14 @@ function toDatetimeLocal(ms) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// The debounce is persisted in ms; the editor works in whole hours (0 = no limit). A sub-hour
+// value written by hand rounds up rather than down to 0 — dropping the cap silently would be
+// the one wrong answer.
+function debounceHours(trigger) {
+  const ms = trigger.kind === 'token-opportunistic' ? trigger.debounceMs ?? 0 : 0;
+  return ms > 0 ? Math.max(1, Math.round(ms / 3_600_000)) : 0;
+}
+
 const GUARD_KINDS = [
   { id: 'usage-threshold', label: 'Usage threshold' },
   { id: 'no-repo-changes', label: 'No repo changes' },
@@ -124,6 +132,13 @@ export function renderTriggerCard(schedule, detail, editState, repaint, onSave) 
       </div>
       <div class="t-token-fields" ${trigger.kind === 'token-opportunistic' ? '' : 'hidden'}>
         <p class="sched-form-hint">Runs when 5h + 7d usage leave spare capacity — aggressive near a reset, conservative early in a window. Add a usage-threshold guard below to cap it further.</p>
+        <label class="sched-form-row">
+          <span class="k">At most every</span>
+          <span class="sched-form-inline">
+            <input class="t-debounce" type="number" min="0" step="1" value="${escapeHtml(String(debounceHours(trigger)))}" />
+            <span class="sched-form-unit">hours — counted from the last run, skips included (0 = no limit)</span>
+          </span>
+        </label>
       </div>
       <div class="sched-form-row">
         <span class="k">Skip if</span>
@@ -157,7 +172,11 @@ export function renderTriggerCard(schedule, detail, editState, repaint, onSave) 
     const showErr = (msg) => { err.textContent = msg; err.hidden = false; };
     let nextTrigger;
     if (kind === 'token') {
-      nextTrigger = { kind: 'token-opportunistic' };
+      const hours = Number(card.querySelector('.t-debounce').value);
+      if (!Number.isFinite(hours) || hours < 0) return showErr('The minimum gap must be 0 or more hours.');
+      // Always explicit, never omitted — the daemon backfills a missing debounce on the builtin
+      // improver, so `0` is how "no limit" survives a restart.
+      nextTrigger = { kind: 'token-opportunistic', debounceMs: Math.round(hours * 3_600_000) };
     } else if (kind === 'event') {
       nextTrigger = { kind: 'event', descriptor: card.querySelector('.t-descriptor').value.trim() };
       if (!nextTrigger.descriptor) return showErr('Event descriptor is required.');
