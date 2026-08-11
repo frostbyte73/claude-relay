@@ -303,12 +303,14 @@ function renderSessionDraft(mount, id, sessionId) {
         startBlank.textContent = 'Start blank';
         startBlank.addEventListener('click', () => startScheduleDraft());
         mount.appendChild(startBlank);
+        mount.__schedDraftFailure = failure;
         return;
       }
       const drafting = document.createElement('div');
       drafting.className = 'sched-drafting';
       drafting.innerHTML = '<span class="sched-drafting-dot"></span>Drafting your schedule…';
       mount.appendChild(drafting);
+      mount.__schedDraftFailure = failure;
       return;
     }
 
@@ -378,6 +380,11 @@ function renderSessionDraft(mount, id, sessionId) {
     const proposal = schedulesStore.get().draftBySession.get(sessionId) ?? null;
     // Test-result writes leave the proposal identity unchanged — skip those once cards are up.
     if (proposal && proposal === mount.__seededProposal) return;
+    // Still waiting on the builder: repainting would rebuild the "Drafting…" row
+    // and restart its pulsing dot, and there is nothing new to show until either
+    // a proposal or a failure lands.
+    const failure = schedulesStore.get().draftFailedBySession.get(sessionId) ?? null;
+    if (!proposal && failure === mount.__schedDraftFailure && mount.querySelector('.sched-drafting')) return;
     const active = document.activeElement;
     if (active && active.classList?.contains('sched-detail-title-input') && mount.contains(active)) return;
     paint();
@@ -424,6 +431,11 @@ export function renderDetail(mount, deps) {
     schedulesStore.runNow(id);
   }
 
+  // A card's own edit/cancel calls paint() imperatively — those must never be
+  // skipped by the store-identity guard below, so they route through here.
+  let forcedPaint = false;
+  const repaint = () => { forcedPaint = true; paint(); };
+
   function paint() {
     // Don't blow away an in-progress rename: the header's name field is always
     // editable, and this repaint fires on any schedule's WS run/list event, not
@@ -432,6 +444,18 @@ export function renderDetail(mount, deps) {
     if (active && active.classList?.contains('sched-detail-title-input') && mount.contains(active)) return;
     const { schedules, runsBySchedule } = schedulesStore.get();
     const schedule = schedules.find((s) => s.id === id);
+    const runs = runsBySchedule.get(id) ?? null;
+    // Skip a repaint that another schedule's run/list event triggered: the store
+    // replaces objects on change, so reference identity is enough. A running
+    // schedule's `.sched-run-icon.busy` pulses forever and a rebuild restarts it
+    // (the same reason renderTrackedDetail keeps a paintKey). Trade-off: this
+    // schedule's relative "next run in…" label now refreshes on its own events
+    // rather than on any schedule's.
+    const wasForced = forcedPaint;
+    forcedPaint = false;
+    if (!wasForced && schedule === mount.__schedPainted && runs === mount.__schedPaintedRuns && mount.firstChild) return;
+    mount.__schedPainted = schedule;
+    mount.__schedPaintedRuns = runs;
     mount.textContent = '';
     if (!schedule) {
       emptyState(mount, 'This schedule was deleted.');
@@ -455,9 +479,9 @@ export function renderDetail(mount, deps) {
 
     const body = document.createElement('div');
     body.className = 'sched-detail-body';
-    body.appendChild(renderTriggerCard(schedule, detail, editState, paint, onSave));
-    body.appendChild(renderWhatCard(schedule, detail, editState, paint, onSave));
-    body.appendChild(renderRoutingCard(schedule, detail, editState, paint, onSave));
+    body.appendChild(renderTriggerCard(schedule, detail, editState, repaint, onSave));
+    body.appendChild(renderWhatCard(schedule, detail, editState, repaint, onSave));
+    body.appendChild(renderRoutingCard(schedule, detail, editState, repaint, onSave));
     body.appendChild(renderRunsCard(schedule, detail));
     mount.appendChild(body);
   }

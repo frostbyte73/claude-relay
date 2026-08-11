@@ -129,7 +129,14 @@ export function renderSessionShape(header, { onBack, onDiff, onMenuAction }) {
     <button type="button" class="m-back" aria-label="Back">‹</button>
     <div class="title-block">
       <div class="m-greet m-greet-compact mh-session-title"></div>
-      <div class="m-sub mh-session-sub"></div>
+      <div class="m-sub mh-session-sub">
+        <span class="mh-branch" hidden></span>
+        <span class="mh-sub-sep" aria-hidden="true" hidden>·</span>
+        <span class="mh-state">
+          <span class="mh-live-dot" aria-hidden="true" hidden></span>
+          <span class="mh-state-text"></span>
+        </span>
+      </div>
     </div>
     <div class="h-actions">
       <span class="mh-mode-slot"></span>
@@ -140,9 +147,16 @@ export function renderSessionShape(header, { onBack, onDiff, onMenuAction }) {
       </div>
     </div>
   `;
+  // The sub-row's parts are addressed individually: its run-state carries a
+  // forever-pulsing dot next to a duration that ticks every second, so
+  // rebuilding the row's markup would restart the pulse once a second.
   const els = {
     title:   header.querySelector('.mh-session-title'),
     sub:     header.querySelector('.mh-session-sub'),
+    branch:  header.querySelector('.mh-branch'),
+    subSep:  header.querySelector('.mh-sub-sep'),
+    liveDot: header.querySelector('.mh-live-dot'),
+    stateText: header.querySelector('.mh-state-text'),
     modeSlot:header.querySelector('.mh-mode-slot'),
     diffBtn: header.querySelector('.mh-diff-btn'),
     menuBtn: header.querySelector('[data-action="menu"]'),

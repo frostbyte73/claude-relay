@@ -123,6 +123,17 @@ function trimTranscript(list, cap) {
   return list.slice(list.length - cap);
 }
 
+// Stable per-entry identity for the transcript renderer's keyed row reconcile
+// (pwa/utils/keyed-rows.js). Stamped once, when the entry enters the store, so a
+// row keeps its key — and therefore its DOM node — across repaints, trims (which
+// shift every index) and mapTranscript rewrites (which spread the entry).
+// Nothing outside the renderer reads it.
+let nextTranscriptKey = 1;
+function withKey(msg) {
+  if (!msg || typeof msg !== 'object' || msg.__key) return msg;
+  return { ...msg, __key: `t${nextTranscriptKey++}` };
+}
+
 function recomputeRunState(slice) {
   // Foreground iff at least one view mounted. Otherwise, keep whatever the
   // last subprocess-alive signal said (background vs inactive).
@@ -331,7 +342,7 @@ function makeSliceApi(id) {
       store.set((s) => {
         const withEnsured = ensureSliceInState(s, id);
         return withSlice(withEnsured, id, (sl) => {
-          const transcript = trimTranscript([...sl.transcript, msg], s.maxTranscriptLines);
+          const transcript = trimTranscript([...sl.transcript, withKey(msg)], s.maxTranscriptLines);
           // Edit/Write tiles render expanded by default (see editWriteTileHtml). Seed the
           // id here, once, as the call lands — a later manual collapse removes it and
           // sticks, since subsequent appends only seed their own new message's id.
@@ -347,7 +358,7 @@ function makeSliceApi(id) {
         const withEnsured = ensureSliceInState(s, id);
         return withSlice(withEnsured, id, (sl) => ({
           ...sl,
-          transcript: trimTranscript(msgs, s.maxTranscriptLines),
+          transcript: trimTranscript(msgs.map(withKey), s.maxTranscriptLines),
         }));
       });
     },
@@ -385,6 +396,11 @@ function makeSliceApi(id) {
     },
     markToolExpanded(key, expanded) {
       store.set((s) => withSlice(s, id, (sl) => {
+        // Bail on a no-op: addSubagentEntry re-marks the same high-detail entry
+        // on every delivery, and a fresh slice for an unchanged set repaints the
+        // whole transcript for nothing — once per subagent tool call, times ~60
+        // concurrent subagents.
+        if (sl.expandedTools.has(key) === expanded) return sl;
         const next = new Set(sl.expandedTools);
         if (expanded) next.add(key); else next.delete(key);
         return { ...sl, expandedTools: next };

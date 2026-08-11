@@ -4,6 +4,7 @@
 
 import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
+import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { trackedGroups, jobLaunchBadge } from '../../vm/tracked.js';
 import { jobTone, ago, stepDots, launchPillClass } from '../work/ticket-row.js';
 
@@ -62,7 +63,14 @@ export function renderTrackedList(body) {
       groupHtml('Backlog', backlog),
       collapsedGroupHtml('Done', done, doneOpen),
     ].join('');
-    body.innerHTML = html || '<div class="lr-empty">No jobs in the queue yet.</div>';
+    // Guarded: a work-store event for ANY job notifies every subscriber, and a
+    // row's step dots (.step-dot[data-state="running"]) pulse forever — a rebuild
+    // restarts them. renderTrackedDetail guards the same way with its paintKey.
+    // Skipping also avoids re-binding a click handler per row.
+    if (!setHtmlIfChanged(body, html || '<div class="lr-empty">No jobs in the queue yet.</div>')) {
+      highlightSelected();
+      return;
+    }
     highlightSelected();
     body.querySelectorAll('.lr-row').forEach((el) => {
       el.addEventListener('click', () => nav.select('tracked', el.dataset.jobId));

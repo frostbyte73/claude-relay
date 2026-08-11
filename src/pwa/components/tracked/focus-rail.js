@@ -7,6 +7,7 @@
 
 import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
+import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { focusAction, sessionsOnJob } from '../../vm/tracked.js';
 import { renderActivityStream } from '../work/activity-stream.js';
 import { workApi } from '../../net/work.js';
@@ -116,9 +117,10 @@ function focusCardHtml(fa) {
 export function renderFocusCard(mount, jobId) {
   const paint = () => {
     const job = jobId ? work.get().byId.get(jobId) : null;
-    if (!job) { mount.innerHTML = ''; return; }
+    if (!job) { setHtmlIfChanged(mount, ''); return; }
     const fa = focusAction(job);
-    mount.innerHTML = focusCardHtml(fa);
+    // Guarded: work-store events for other jobs notify this subscriber too.
+    if (!setHtmlIfChanged(mount, focusCardHtml(fa))) return;
     mount.querySelector('[data-focus-cta]')?.addEventListener('click', () => runFocusCta(job, fa.cta));
   };
   paint();
@@ -128,67 +130,93 @@ export function renderFocusCard(mount, jobId) {
 export function renderContext(mount) {
   let unsubWork;
   let unsubNav;
+  let dom = null;
+  let currentJobId = null;
 
-  const paint = () => {
-    const jobId = nav.get().selectionBySurface.tracked ?? null;
-    const job = jobId ? work.get().byId.get(jobId) : null;
-    if (!job) { emptyState(mount, 'Select a tracked job to see its focus.'); return; }
-
-    const fa = focusAction(job);
-    const events = Array.isArray(job.events) ? [...job.events].reverse() : [];
-    const tail = events.slice(0, 6);
-
+  // Regions are guarded independently, not as one blob: the sessions list holds
+  // forever-pulsing .fli-dot elements while "At a glance" and the activity tail
+  // hold `ago()` strings that change with the clock. One shared guard would
+  // rebuild the dots every time a duration ticked over. Keeping the audit-log
+  // container persistent also means an expanded log is no longer collapsed by
+  // the next unrelated work event.
+  function buildSkeleton() {
     mount.innerHTML = `
-      ${focusCardHtml(fa)}
-
+      <div class="focus-card-slot"></div>
       <div class="focus-section">
         <div class="focus-section-hdr o-microhead">Sessions on this job</div>
-        ${sessionsListHtml(job)}
+        <div class="focus-sessions-slot"></div>
       </div>
-
       <div class="focus-section">
         <div class="focus-section-hdr o-microhead">At a glance</div>
-        <div class="focus-kv">
-          ${kv(job).map(([k, v]) => `<span class="k">${escapeHtml(k)}</span><span class="v">${v}</span>`).join('')}
-        </div>
+        <div class="focus-kv"></div>
       </div>
-
       <div class="focus-section">
         <div class="focus-section-hdr o-microhead">Recent activity</div>
-        ${tail.length === 0 ? '<p class="focus-empty">No activity yet.</p>' : `
-          <div class="focus-list focus-activity-tail">
-            ${tail.map((e) => `<div class="focus-activity-item"><span class="at">${ago(e.at)}</span><span class="body">${escapeHtml(e.body || e.kind)}</span></div>`).join('')}
-          </div>
-        `}
+        <div class="focus-activity-slot"></div>
         <div class="focus-activity-full" hidden></div>
         <button type="button" class="focus-audit-link" data-action="full-audit">Full audit log →</button>
       </div>
     `;
+    dom = {
+      card:     mount.querySelector('.focus-card-slot'),
+      sessions: mount.querySelector('.focus-sessions-slot'),
+      kv:       mount.querySelector('.focus-kv'),
+      activity: mount.querySelector('.focus-activity-slot'),
+      full:     mount.querySelector('.focus-activity-full'),
+      auditBtn: mount.querySelector('[data-action="full-audit"]'),
+    };
+    dom.sessions.addEventListener('click', (e) => {
+      const el = e.target instanceof Element ? e.target.closest('.focus-list-item[data-session-id]') : null;
+      if (el) nav.select('sessions', el.getAttribute('data-session-id'));
+    });
+    dom.auditBtn.addEventListener('click', () => toggleAudit());
+  }
 
-    mount.querySelector('[data-focus-cta]')?.addEventListener('click', () => runFocusCta(job, fa.cta));
-    mount.querySelectorAll('.focus-list-item[data-session-id]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const sessionId = el.getAttribute('data-session-id');
-        nav.select('sessions', sessionId);
-      });
-    });
-    mount.querySelector('[data-action="full-audit"]')?.addEventListener('click', async (e) => {
-      const full = mount.querySelector('.focus-activity-full');
-      const btn = e.currentTarget;
-      const opening = full.hasAttribute('hidden');
-      if (opening) {
-        // job.events is the last 50; the spill log has the rest.
-        const events = await workApi.getJobEvents(job.id).then((r) => r?.events).catch(() => null);
-        full.innerHTML = renderActivityStream(events?.length ? { ...job, events } : job);
-        full.hidden = false;
-        mount.querySelector('.focus-activity-tail').hidden = true;
-        btn.textContent = 'Hide audit log';
-      } else {
-        full.hidden = true;
-        mount.querySelector('.focus-activity-tail').hidden = false;
-        btn.textContent = 'Full audit log →';
-      }
-    });
+  async function toggleAudit() {
+    const job = currentJobId ? work.get().byId.get(currentJobId) : null;
+    if (!job) return;
+    const tail = mount.querySelector('.focus-activity-tail');
+    if (dom.full.hasAttribute('hidden')) {
+      // job.events is the last 50; the spill log has the rest.
+      const events = await workApi.getJobEvents(job.id).then((r) => r?.events).catch(() => null);
+      dom.full.innerHTML = renderActivityStream(events?.length ? { ...job, events } : job);
+      dom.full.hidden = false;
+      if (tail) tail.hidden = true;
+      dom.auditBtn.textContent = 'Hide audit log';
+    } else {
+      dom.full.hidden = true;
+      if (tail) tail.hidden = false;
+      dom.auditBtn.textContent = 'Full audit log →';
+    }
+  }
+
+  const paint = () => {
+    const jobId = nav.get().selectionBySurface.tracked ?? null;
+    const job = jobId ? work.get().byId.get(jobId) : null;
+    if (!job) {
+      dom = null;
+      currentJobId = null;
+      emptyState(mount, 'Select a tracked job to see its focus.');
+      return;
+    }
+    if (!dom) buildSkeleton();
+    currentJobId = job.id;
+
+    const fa = focusAction(job);
+    if (setHtmlIfChanged(dom.card, focusCardHtml(fa))) {
+      dom.card.querySelector('[data-focus-cta]')?.addEventListener('click', () => runFocusCta(job, fa.cta));
+    }
+    setHtmlIfChanged(dom.sessions, sessionsListHtml(job));
+    setHtmlIfChanged(dom.kv, kv(job).map(([k, v]) => `<span class="k">${escapeHtml(k)}</span><span class="v">${v}</span>`).join(''));
+
+    const events = Array.isArray(job.events) ? [...job.events].reverse() : [];
+    const tailEvents = events.slice(0, 6);
+    const auditOpen = !dom.full.hasAttribute('hidden');
+    setHtmlIfChanged(dom.activity, tailEvents.length === 0
+      ? '<p class="focus-empty">No activity yet.</p>'
+      : `<div class="focus-list focus-activity-tail"${auditOpen ? ' hidden' : ''}>` +
+          tailEvents.map((e) => `<div class="focus-activity-item"><span class="at">${ago(e.at)}</span><span class="body">${escapeHtml(e.body || e.kind)}</span></div>`).join('') +
+        `</div>`);
   };
 
   paint();

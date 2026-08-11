@@ -22,6 +22,7 @@ import { escapeHtml } from '../../util.js';
 import { relPast } from '../../utils/formatting.js';
 import { openPalette } from '../palette/index.js';
 import { startSession } from '../../session-launch.js';
+import { placeKeyedNodes } from '../../utils/keyed-rows.js';
 
 const TABS = [
   { key: 'all', label: 'All' },
@@ -83,47 +84,92 @@ function previewBySession() {
   return map;
 }
 
-function cardHtml(item, { isActive, runningMs }) {
-  const isAction = item.sessionClass === 'action';
-  const badgeText = isAction ? (item.actionLabel || 'action') : 'session';
-  const skillBadge = `<span class="o-pill code sess-skill${isAction ? '' : ' free'}">${escapeHtml(badgeText)}</span>`;
-  const running = item.runState === 'foreground' || item.runState === 'background';
-  const iconState = running ? 'busy' : 'idle';
-  let timeLabel;
-  if (running) {
-    timeLabel = escapeHtml(fmtElapsedDuration(runningMs) || 'running');
-  } else if (item.archived) {
-    timeLabel = escapeHtml(relativeDay(item.lastModified));
-  } else {
-    timeLabel = escapeHtml(idleFor(item.lastModified));
-  }
-  const preview = item.preview ? `<div class="o-row-sub sess-last">${escapeHtml(truncate(item.preview, 180))}</div>` : '';
+// ── Cards ────────────────────────────────────────────────────────────────
+// A card is built once per session and then patched field by field, never
+// re-rendered from a string. The live dot (`.o-row-icon.busy`) carries an
+// infinite CSS pulse, and a re-created element restarts its keyframes from
+// zero — so rebuilding the list on every store tick (a message in ANY session,
+// any subagent entry, plus the 1s duration ticker) made every dot in the list
+// reset and re-sync. Patching leaves the animating node alone.
+
+function timeLabelFor(item, runningMs, running) {
+  if (running) return fmtElapsedDuration(runningMs) || 'running';
+  if (item.archived) return relativeDay(item.lastModified);
+  return idleFor(item.lastModified);
+}
+
+function badgesHtml(item) {
   const badges = [];
   if (item.subagentCount > 0) badges.push(`<span class="o-pill">${item.subagentCount} subagent${item.subagentCount === 1 ? '' : 's'}</span>`);
   if (item.hasApproval) badges.push(`<span class="o-pill review">Approval pending</span>`);
-  return `
-    <button type="button" class="o-row sess-card${isActive ? ' active' : ''}" data-session-id="${escapeHtml(item.id)}">
-      <span class="o-row-icon ${iconState}" aria-hidden="true">●</span>
-      <div class="sess-card-body">
-        <div class="sess-hdr">${skillBadge}</div>
-        <div class="o-row-title">${escapeHtml(item.title ?? '(untitled)')}</div>
-        ${preview}
-        <div class="o-row-sub sess-foot">
-          <span class="cwd">${escapeHtml(shortCwd(item.cwd))}</span>
-          ${badges.join('')}
-        </div>
-      </div>
-      <span class="o-row-time">${timeLabel}</span>
-    </button>
-  `;
+  return badges.join('');
 }
 
-function sectionHtml(label, items, selected, runningSince) {
-  const rows = items.map((it) => cardHtml(it, {
-    isActive: it.id === selected,
-    runningMs: runningSince.has(it.id) ? Date.now() - runningSince.get(it.id) : null,
-  })).join('');
-  return `<div class="sess-group-label o-microhead">${escapeHtml(label)} · ${items.length}</div><div class="o-row-group">${rows}</div>`;
+// Structure matches what the old string renderer emitted, so the primitives'
+// grid/`:first-child` radius rules and `.sess-foot`'s flex gap are unchanged.
+// `.sess-last` is always present and toggled with `hidden` (display:none keeps
+// it out of the body's flex gap) so its ref stays stable.
+function buildCard(item) {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = 'o-row sess-card';
+  el.dataset.sessionId = item.id;
+  el.innerHTML = `
+    <span class="o-row-icon" aria-hidden="true">●</span>
+    <div class="sess-card-body">
+      <div class="sess-hdr"><span class="o-pill code sess-skill"></span></div>
+      <div class="o-row-title"></div>
+      <div class="o-row-sub sess-last" hidden></div>
+      <div class="o-row-sub sess-foot"><span class="cwd"></span></div>
+    </div>
+    <span class="o-row-time"></span>
+  `;
+  return {
+    el,
+    icon:  el.querySelector('.o-row-icon'),
+    skill: el.querySelector('.sess-skill'),
+    title: el.querySelector('.o-row-title'),
+    last:  el.querySelector('.sess-last'),
+    foot:  el.querySelector('.sess-foot'),
+    cwd:   el.querySelector('.cwd'),
+    time:  el.querySelector('.o-row-time'),
+    badges: '',
+  };
+}
+
+function patchCard(card, item, { isActive, runningMs }) {
+  const running = item.runState === 'foreground' || item.runState === 'background';
+  const isAction = item.sessionClass === 'action';
+
+  setClass(card.icon, `o-row-icon ${running ? 'busy' : 'idle'}`);
+  card.el.classList.toggle('active', isActive);
+  setClass(card.skill, `o-pill code sess-skill${isAction ? '' : ' free'}`);
+  setText(card.skill, isAction ? (item.actionLabel || 'action') : 'session');
+  setText(card.title, item.title ?? '(untitled)');
+  setText(card.cwd, shortCwd(item.cwd));
+  setText(card.time, timeLabelFor(item, runningMs, running));
+
+  const preview = item.preview ? truncate(item.preview, 180) : '';
+  card.last.hidden = preview === '';
+  setText(card.last, preview);
+
+  // Pills are direct children of .sess-foot (its flex gap spaces them), so they
+  // are swapped in place rather than wrapped in a container.
+  const pills = badgesHtml(item);
+  if (pills !== card.badges) {
+    card.badges = pills;
+    for (const pill of [...card.foot.querySelectorAll('.o-pill')]) pill.remove();
+    if (pills) card.foot.insertAdjacentHTML('beforeend', pills);
+  }
+}
+
+// Skip no-op writes: assigning an identical className or textContent still
+// dirties style/layout for the node.
+function setClass(el, cls) {
+  if (el.className !== cls) el.className = cls;
+}
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
 }
 
 export function renderList(mount) {
@@ -173,27 +219,71 @@ export function renderList(mount) {
   }
   renderTabs();
 
-  function wireCardClicks() {
-    for (const card of bodyEl.querySelectorAll('.sess-card')) {
-      card.addEventListener('click', () => {
-        const id = card.dataset.sessionId;
-        const item = itemsById.get(id);
-        if (!item) return;
-        startSession({
-          id,
-          cwd: item.cwd,
-          spawnCwd: item.worktreePath ?? item.cwd,
-          title: item.title,
-          worktreePath: item.worktreePath,
-          worktreeBranch: item.worktreeBranch,
-        });
-        nav.select('sessions', id);
-      });
+  // Delegated once — cards persist across repaints now, but a click handler per
+  // card is still needless work on a long list.
+  bodyEl.addEventListener('click', (e) => {
+    const cardEl = e.target instanceof Element ? e.target.closest('.sess-card') : null;
+    if (!cardEl) return;
+    const id = cardEl.dataset.sessionId;
+    const item = itemsById.get(id);
+    if (!item) return;
+    startSession({
+      id,
+      cwd: item.cwd,
+      spawnCwd: item.worktreePath ?? item.cwd,
+      title: item.title,
+      worktreePath: item.worktreePath,
+      worktreeBranch: item.worktreeBranch,
+    });
+    nav.select('sessions', id);
+  });
+
+  // Section skeletons (label + row group) exist for the life of the mount and
+  // are hidden when empty, so a card never has to be re-created just because a
+  // neighbouring section appeared or vanished.
+  const SECTIONS = ['Running', 'Idle', 'Recent'];
+  const sectionDom = new Map();
+  for (const label of SECTIONS) {
+    const labelEl = document.createElement('div');
+    labelEl.className = 'sess-group-label o-microhead';
+    const groupEl = document.createElement('div');
+    groupEl.className = 'o-row-group';
+    labelEl.hidden = true;
+    groupEl.hidden = true;
+    bodyEl.append(labelEl, groupEl);
+    sectionDom.set(label, { labelEl, groupEl });
+  }
+  const emptyEl = document.createElement('div');
+  emptyEl.className = 'o-frame-empty';
+  emptyEl.textContent = 'No sessions match.';
+  emptyEl.hidden = true;
+  bodyEl.append(emptyEl);
+
+  // sessionId → card refs, reused for as long as the session is in the list.
+  const cards = new Map();
+
+  function paintSection(label, items, selected) {
+    const { labelEl, groupEl } = sectionDom.get(label);
+    labelEl.hidden = items.length === 0;
+    groupEl.hidden = items.length === 0;
+    if (items.length === 0) {
+      placeKeyedNodes(groupEl, []);
+      return;
     }
+    setText(labelEl, `${label} · ${items.length}`);
+    const placed = items.map((item) => {
+      let card = cards.get(item.id);
+      if (!card) { card = buildCard(item); cards.set(item.id, card); }
+      patchCard(card, item, {
+        isActive: item.id === selected,
+        runningMs: runningSince.has(item.id) ? Date.now() - runningSince.get(item.id) : null,
+      });
+      return { key: item.id, node: card.el };
+    });
+    placeKeyedNodes(groupEl, placed);
   }
 
   function paint() {
-    const prevScroll = bodyEl.scrollTop;
     const projects = sessions.get().projects ?? [];
     const sessionsById = sessions.get().sessionsById;
     const subCounts = subagentCountBySession();
@@ -217,13 +307,14 @@ export function renderList(mount) {
 
     const groups = sessionGroups({ ...common, tab, filter, showArchived: false });
     const selected = nav.get().selectionBySurface.sessions ?? null;
-    const sections = [];
-    if (groups.running.length) sections.push(sectionHtml('Running', groups.running, selected, runningSince));
-    if (groups.idle.length) sections.push(sectionHtml('Idle', groups.idle, selected, runningSince));
-    if (groups.recent.length) sections.push(sectionHtml('Recent', groups.recent, selected, runningSince));
-    bodyEl.innerHTML = sections.join('') || `<div class="o-frame-empty">No sessions match.</div>`;
-    bodyEl.scrollTop = prevScroll;
-    wireCardClicks();
+    paintSection('Running', groups.running, selected);
+    paintSection('Idle', groups.idle, selected);
+    paintSection('Recent', groups.recent, selected);
+    emptyEl.hidden = groups.running.length + groups.idle.length + groups.recent.length > 0;
+    // Drop cards for sessions that left the list entirely, so the map can't grow
+    // for the life of the tab.
+    const live = new Set([...groups.running, ...groups.idle, ...groups.recent].map((i) => i.id));
+    for (const id of cards.keys()) if (!live.has(id)) cards.delete(id);
   }
 
   paint();
@@ -237,10 +328,10 @@ export function renderList(mount) {
       card.classList.toggle('active', card.dataset.sessionId === selected);
     }
   };
-  // Coalesce to one repaint per frame — paint() re-derives every group twice and
-  // rebuilds the list via innerHTML, while the stores fan out synchronously with
-  // no batching (state/create-store.js). Without this, hydrating one long session
-  // drives a full rebuild per transcript append and per subagent entry.
+  // Coalesce to one repaint per frame — paint() re-derives every group twice,
+  // while the stores fan out synchronously with no batching
+  // (state/create-store.js). Without this, hydrating one long session drives a
+  // full re-derive per transcript append and per subagent entry.
   let paintRaf = 0;
   const schedulePaint = () => {
     if (paintRaf) return;

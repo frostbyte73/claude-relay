@@ -1,5 +1,6 @@
 import { sessions } from '../../state/sessions.js';
 import { approvals } from '../../state/approvals.js';
+import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { openSessionWs, closeSessionWs } from '../session-view/session-ws.js';
 import { renderThinkingStrip } from '../session-view/regions.js';
 import { oneLineMsgHtml } from '../session-view/message-html.js';
@@ -120,23 +121,27 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null }) {
   const paint = () => {
     if (isTerminal(currentStep)) {
       stopMetaTicker();
-      dom.thinking.innerHTML = '';
-      dom.body.innerHTML = renderTerminalChipHtml(currentStep);
+      setHtmlIfChanged(dom.thinking, '');
+      setHtmlIfChanged(dom.body, renderTerminalChipHtml(currentStep));
       return;
     }
     const slice = sessions.getSlice(sessionId);
     const hasActivity = !!slice?.thinking || (slice?.transcript?.length ?? 0) > 0;
     if (!hasActivity) {
-      dom.thinking.innerHTML =
+      // Guarded for the same reason renderThinkingStrip patches in place: these
+      // dots animate on a staggered infinite delay, and this paint runs on every
+      // slice/approvals tick (uncoalesced), so rebuilding meant dots 2 and 3
+      // never reached their bright frame.
+      setHtmlIfChanged(dom.thinking,
         '<div class="thinking-strip" role="status" aria-live="polite">' +
           '<span class="thinking-strip-label">starting</span>' +
           '<span class="thinking-strip-dots" aria-hidden="true"><span></span><span></span><span></span></span>' +
-        '</div>';
-      dom.body.innerHTML = '';
+        '</div>');
+      setHtmlIfChanged(dom.body, '');
       return;
     }
     renderThinkingStrip(dom.thinking, slice);
-    dom.body.innerHTML = renderTail(slice, sessionId);
+    setHtmlIfChanged(dom.body, renderTail(slice, sessionId));
 
     if (slice?.thinking && !metaTicker) {
       metaTicker = setInterval(() => {

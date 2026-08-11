@@ -1,4 +1,5 @@
 import { escapeHtml } from '../util.js';
+import { setHtmlIfChanged } from '../utils/keyed-rows.js';
 import { sessions } from '../state/sessions.js';
 import { partitionTodos, todoProvenanceText } from './todos-core.js';
 import {
@@ -119,7 +120,11 @@ export function refreshTodosSheet() {
   const wasAtBottom = oldBody
     ? (oldBody.scrollHeight - oldBody.scrollTop - oldBody.clientHeight) < 80
     : false;
-  sheet.innerHTML = todosSheetBodyHtml();
+  // Guarded: this runs on every session-view paint, and the in_progress row's
+  // .todos-sheet-node carries an infinite CSS pulse that restarts whenever its
+  // element is re-created. Skipping an identical rewrite also leaves the sheet's
+  // scroll position and dismiss gesture untouched.
+  if (!setHtmlIfChanged(sheet, todosSheetBodyHtml())) return;
   const close = sheet.querySelector('#todos-sheet-close');
   if (close) close.onclick = closeTodosSheet;
   makeSheetDismissible(sheet, closeTodosSheet);

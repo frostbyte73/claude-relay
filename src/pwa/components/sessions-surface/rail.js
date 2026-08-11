@@ -9,6 +9,7 @@ import { usage } from '../../state/usage.js';
 import { nav } from '../../state/nav.js';
 import { escapeHtml } from '../../util.js';
 import { contextUsage } from '../../utils/context-usage.js';
+import { reconcileKeyedRows, resetKeyedRows } from '../../utils/keyed-rows.js';
 import { sortedTodoEntries, todoProvenanceText } from '../todos-core.js';
 import { subagentCardHtml } from '../agents-sheet/cards.js';
 import { openAgentsForSession } from '../../app-bridge.js';
@@ -89,45 +90,31 @@ function todoRowHtml(id, t) {
   `;
 }
 
-function tasksSectionHtml(sessionId, hideDone) {
+// Task rows + the counts the section header shows. The `.rail-section` wrapper
+// and header live in the persistent skeleton (see buildSkeleton), because
+// `.sess-rail`'s flex `gap` applies to its direct children and a wrapper
+// appearing/disappearing would shift the rail's spacing.
+function tasksFor(sessionId, hideDone) {
   const slice = sessions.getSlice(sessionId);
   const entries = sortedTodoEntries(slice?.todos ?? new Map()).filter(([, t]) => t.status !== 'deleted');
-  if (entries.length === 0) return '';
   const doneCount = entries.filter(([, t]) => t.status === 'completed').length;
   const visible = hideDone ? entries.filter(([, t]) => t.status !== 'completed') : entries;
-  const rows = visible.map(([id, t]) => todoRowHtml(id, t)).join('');
-  return `
-    <div class="rail-section">
-      <div class="o-group-hdr rail-section-hdr">
-        <h3>Tasks</h3>
-        <span class="o-group-count rail-section-count">${doneCount} of ${entries.length}</span>
-        <span class="o-group-rule rail-rule"></span>
-        <button type="button" class="o-btn o-btn--ghost sm rail-hide-done" data-action="toggle-hide-done">${hideDone ? 'Show done' : 'Hide done'}</button>
-      </div>
-      <div class="rail-todos">${rows}</div>
-    </div>
-  `;
+  return {
+    total: entries.length,
+    doneCount,
+    rows: visible.map(([id, t]) => ({ key: id, html: todoRowHtml(id, t) })),
+  };
 }
 
-function subagentsSectionHtml(sessionId) {
+// Running first, then completed newest-first — the order the cards are keyed
+// into the DOM by.
+function orderedSubagents(sessionId) {
   const slice = subagents.forSession(sessionId);
-  if (slice.byId.size === 0) return '';
   const items = slice.tabOrder.map((id) => [id, slice.byId.get(id)]).filter(([, b]) => b);
   const running = items.filter(([, b]) => !b.completion);
   const done = items.filter(([, b]) => b.completion)
     .sort((a, b) => (b[1].completion.completedAt || 0) - (a[1].completion.completedAt || 0));
-  const summary = `${running.length} running${done.length ? ` · ${done.length} done` : ''}`;
-  const cards = [...running, ...done].map(([id, b]) => subagentCardHtml(id, b)).join('');
-  return `
-    <div class="rail-section">
-      <div class="o-group-hdr rail-section-hdr">
-        <h3>Subagents</h3>
-        <span class="o-group-count rail-section-count">${escapeHtml(summary)}</span>
-        <span class="o-group-rule rail-rule"></span>
-      </div>
-      <div class="rail-subagents">${cards}</div>
-    </div>
-  `;
+  return { running, done, ordered: [...running, ...done] };
 }
 
 export function renderContext(mount) {
@@ -135,58 +122,121 @@ export function renderContext(mount) {
   let currentId = null;
   let hideDone = false;
   let mcpServers = [];
+  let dom = null;
 
   function loadHideDoneFor(id) {
     try { hideDone = id ? localStorage.getItem(`op:hideDone:${id}`) === '1' : false; } catch { hideDone = false; }
   }
 
-  function wireHandlers(id) {
-    const toggleBtn = mount.querySelector('[data-action="toggle-hide-done"]');
-    if (toggleBtn) {
-      toggleBtn.addEventListener('click', () => {
+  // Built once; per paint only the regions inside it are updated, and both lists
+  // are reconciled by key. Two reasons: a session with dozens of subagents used
+  // to rebuild ~100 KB of cards and rebind a handler per card on every store
+  // tick (the rail listens to sessions + subagents + usage), and the in-progress
+  // task dot carries an infinite CSS pulse that restarts whenever its element is
+  // re-created — same defect renderThinkingStrip already guards against.
+  function buildSkeleton() {
+    mount.innerHTML = `
+      <div class="rail-section">
+        <div class="o-group-hdr rail-section-hdr"><h3>Session</h3><span class="o-group-rule rail-rule"></span></div>
+        <div class="rail-info-slot"></div>
+      </div>
+      <div class="rail-section rail-tasks-section" hidden>
+        <div class="o-group-hdr rail-section-hdr">
+          <h3>Tasks</h3>
+          <span class="o-group-count rail-section-count"></span>
+          <span class="o-group-rule rail-rule"></span>
+          <button type="button" class="o-btn o-btn--ghost sm rail-hide-done" data-action="toggle-hide-done"></button>
+        </div>
+        <div class="rail-todos"></div>
+      </div>
+      <div class="rail-section rail-subagents-section" hidden>
+        <div class="o-group-hdr rail-section-hdr">
+          <h3>Subagents</h3>
+          <span class="o-group-count rail-section-count"></span>
+          <span class="o-group-rule rail-rule"></span>
+        </div>
+        <div class="rail-subagents"></div>
+      </div>
+    `;
+    dom = {
+      info:      mount.querySelector('.rail-info-slot'),
+      tasks:     mount.querySelector('.rail-tasks-section'),
+      tasksCount: mount.querySelector('.rail-tasks-section .rail-section-count'),
+      hideDoneBtn: mount.querySelector('.rail-hide-done'),
+      todos:     mount.querySelector('.rail-todos'),
+      subs:      mount.querySelector('.rail-subagents-section'),
+      subsCount: mount.querySelector('.rail-subagents-section .rail-section-count'),
+      cards:     mount.querySelector('.rail-subagents'),
+    };
+  }
+
+  // Delegated once onto the mount, so a repaint never rebinds anything. Returns
+  // an unwire so a remount of the same mount node can't stack duplicates.
+  function wireHandlers() {
+    const onClick = (e) => {
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      if (target.closest('[data-action="toggle-hide-done"]')) {
         hideDone = !hideDone;
-        try { localStorage.setItem(`op:hideDone:${id}`, hideDone ? '1' : '0'); } catch { /* ignore */ }
+        try { localStorage.setItem(`op:hideDone:${currentId}`, hideDone ? '1' : '0'); } catch { /* ignore */ }
         paint();
-      });
-    }
-    for (const card of mount.querySelectorAll('.rail-subagent')) {
-      const open = () => {
-        const agentId = card.dataset.agentId;
-        if (agentId) subagents.setActive(agentId, id);
-        openAgentsForSession(id);
-      };
-      card.addEventListener('click', open);
-      card.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-      });
-    }
+        return;
+      }
+      const card = target.closest('.rail-subagent');
+      if (card) openAgent(card);
+    };
+    const onKeydown = (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const card = e.target instanceof Element ? e.target.closest('.rail-subagent') : null;
+      if (!card) return;
+      e.preventDefault();
+      openAgent(card);
+    };
+    mount.addEventListener('click', onClick);
+    mount.addEventListener('keydown', onKeydown);
+    return () => {
+      mount.removeEventListener('click', onClick);
+      mount.removeEventListener('keydown', onKeydown);
+    };
+  }
+
+  function openAgent(card) {
+    if (!currentId) return;
+    const agentId = card.dataset.agentId;
+    if (agentId) subagents.setActive(agentId, currentId);
+    openAgentsForSession(currentId);
   }
 
   function paint() {
     const id = nav.get().selectionBySurface.sessions ?? null;
     if (id !== currentId) { currentId = id; loadHideDoneFor(id); }
-    if (!id) { mount.innerHTML = ''; return; }
-    const scrollTop = mount.scrollTop;
-    const info = infoCardHtml(id, mcpServers);
-    const tasks = tasksSectionHtml(id, hideDone);
-    const subs = subagentsSectionHtml(id);
-    mount.innerHTML = `
-      <div class="rail-section">
-        <div class="o-group-hdr rail-section-hdr"><h3>Session</h3><span class="o-group-rule rail-rule"></span></div>
-        ${info}
-      </div>
-      ${tasks}
-      ${subs}
-    `;
-    mount.scrollTop = scrollTop;
-    wireHandlers(id);
+    if (!id) {
+      if (dom) { resetKeyedRows(dom.cards); resetKeyedRows(dom.todos); dom = null; }
+      mount.innerHTML = '';
+      return;
+    }
+    if (!dom) buildSkeleton();
+    dom.info.innerHTML = infoCardHtml(id, mcpServers);
+
+    const tasks = tasksFor(id, hideDone);
+    dom.tasks.hidden = tasks.total === 0;
+    dom.tasksCount.textContent = `${tasks.doneCount} of ${tasks.total}`;
+    dom.hideDoneBtn.textContent = hideDone ? 'Show done' : 'Hide done';
+    reconcileKeyedRows(dom.todos, tasks.rows);
+
+    const { running, done, ordered } = orderedSubagents(id);
+    dom.subs.hidden = ordered.length === 0;
+    dom.subsCount.textContent = `${running.length} running${done.length ? ` · ${done.length} done` : ''}`;
+    reconcileKeyedRows(dom.cards, ordered.map(([agentId, b]) => ({
+      key: agentId,
+      html: subagentCardHtml(agentId, b),
+    })));
   }
 
   // Coalesce to one repaint per frame. The stores fan out synchronously with no
-  // batching (state/create-store.js), and paint() rebuilds the whole rail via
-  // innerHTML + rewires handlers — so hydrating a session with a long transcript
-  // and many subagents would otherwise run one full rebuild per store mutation,
-  // thousands of them, each O(subagents). Same guard session-view/index.js uses.
+  // batching (state/create-store.js), so hydrating a session with a long
+  // transcript and many subagents would otherwise run one paint per store
+  // mutation, thousands of them. Same guard session-view/index.js uses.
   let paintRaf = 0;
   const schedulePaint = () => {
     if (paintRaf) return;
@@ -195,6 +245,7 @@ export function renderContext(mount) {
 
   fetchMcpStatus().then((servers) => { mcpServers = servers; paint(); });
 
+  const unwireHandlers = wireHandlers();
   paint();
   const unsubNav = nav.subscribe(schedulePaint);
   const unsubSessions = sessions.subscribe(schedulePaint);
@@ -202,6 +253,7 @@ export function renderContext(mount) {
   const unsubUsage = usage.subscribe(schedulePaint);
   return () => {
     if (paintRaf) cancelAnimationFrame(paintRaf);
+    unwireHandlers();
     unsubNav(); unsubSessions(); unsubSubagents(); unsubUsage();
   };
 }

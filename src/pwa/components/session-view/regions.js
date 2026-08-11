@@ -7,6 +7,7 @@
 // Each renderer takes a target element + the slice (or global state) it reads.
 // Session-view calls them on every slice tick.
 import { escapeHtml } from '../../util.js';
+import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { openTodosSheet } from '../todos-sheet.js';
 
 export const TOOL_VERBS = {
@@ -104,19 +105,25 @@ export function renderThinkingStrip(region, slice) {
 // Two-row task trail: most recently completed task on top (dim + strikethrough),
 // in_progress/next task below (alive). Connected by a vertical hairline so the
 // panel reads as a tiny timeline. Tapping opens the full todos sheet.
+// Like renderThinkingStrip, this runs on every paint — so it must not rewrite
+// unconditionally: the in_progress `.todos-node` carries an infinite CSS pulse
+// that restarts from t=0 whenever its element is re-created. The panel's content
+// only changes when the todos do, so an equality guard skips virtually every
+// rewrite (setHtmlIfChanged also keeps the existing click handler valid).
 export function renderTodoPill(region, slice, sessionId = null) {
   const todos = slice?.todos;
-  if (!todos || todos.size === 0) { region.innerHTML = ''; return; }
+  if (!todos || todos.size === 0) { setHtmlIfChanged(region, ''); return; }
   const all = sortedTodoEntries(todos);
   const active = all.filter(([, t]) => t.status !== 'completed' && t.status !== 'deleted');
   const done = all.filter(([, t]) => t.status === 'completed');
   const lastDone = done.length ? done[done.length - 1] : null;
   const upNow = active.find(([, t]) => t.status === 'in_progress') ?? active[0] ?? null;
   const counter = `${done.length}/${all.length}`;
-  if (!upNow && !lastDone) { region.innerHTML = ''; return; }
+  if (!upNow && !lastDone) { setHtmlIfChanged(region, ''); return; }
 
+  let html;
   if (!upNow) {
-    region.innerHTML =
+    html =
       `<button class="todos-panel todos-panel-done" type="button" aria-label="Open task list">` +
         `<span class="todos-trail-line">` +
           `<span class="todos-node todos-node-done" aria-hidden="true"></span>` +
@@ -127,7 +134,7 @@ export function renderTodoPill(region, slice, sessionId = null) {
   } else {
     const topRow = lastDone ? trailRowHtml(lastDone[0], lastDone[1], 'done') : '';
     const bottomRow = trailRowHtml(upNow[0], upNow[1], 'now');
-    region.innerHTML =
+    html =
       `<button class="todos-panel" type="button" aria-label="Open task list (${escapeHtml(counter)} complete)">` +
         topRow +
         bottomRow +
@@ -137,6 +144,7 @@ export function renderTodoPill(region, slice, sessionId = null) {
         `</span>` +
       `</button>`;
   }
+  if (!setHtmlIfChanged(region, html)) return;
   const btn = region.querySelector('.todos-panel');
   if (btn) btn.onclick = () => openTodosSheet(sessionId);
 }

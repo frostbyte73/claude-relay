@@ -31,6 +31,7 @@ import {
   promoteSessionToJob,
 } from '../../app-bridge.js';
 import { escapeHtml } from './html.js';
+import { reconcileKeyedRows, resetKeyedRows, setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { minimalMsgHtml } from './message-html.js';
 import { openSessionWs, closeSessionWs, sendUserMessage, reconnectAndSend, sendApprovalModeSet, sendInterrupt, sessionWsReadyState } from './session-ws.js';
 import { renderThinkingStrip, renderTodoPill, renderConnBanner } from './regions.js';
@@ -57,7 +58,10 @@ function buildSkeleton(mount) {
     <div class="sv-header">
       <span class="sv-header-skill"></span>
       <span class="sv-header-name"></span>
-      <span class="sv-header-meta"></span>
+      <span class="sv-header-meta">
+        <span class="sv-header-live" aria-hidden="true" hidden></span>
+        <span class="sv-header-meta-text"></span>
+      </span>
       <div class="sv-header-actions">
         <button class="sv-header-promote" type="button">Promote to tracked <span class="o-kbd"></span></button>
         <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd"></span></button>
@@ -117,7 +121,8 @@ function buildSkeleton(mount) {
     header:      mount.querySelector('.sv-header'),
     headerSkill: mount.querySelector('.sv-header-skill'),
     headerName:  mount.querySelector('.sv-header-name'),
-    headerMeta:  mount.querySelector('.sv-header-meta'),
+    headerLive:  mount.querySelector('.sv-header-live'),
+    headerMetaText: mount.querySelector('.sv-header-meta-text'),
     headerPromote: mount.querySelector('.sv-header-promote'),
     headerArchive: mount.querySelector('.sv-header-archive'),
     headerPromoteKbd: mount.querySelector('.sv-header-promote .o-kbd'),
@@ -136,7 +141,10 @@ function buildSkeleton(mount) {
 // for the mobile singleton flow this region is built for.
 function renderAgentsStrip(dom, sessionId) {
   if (!dom.agentsStrip) return;
-  dom.agentsStrip.innerHTML = agentsStripHtml();
+  // Guarded: this runs on every subagent tick, and the strip's "N pending" dot
+  // carries an infinite CSS pulse that restarts whenever the element is
+  // re-created (see renderTodoPill / renderThinkingStrip for the same rule).
+  if (!setHtmlIfChanged(dom.agentsStrip, agentsStripHtml())) return;
   const btn = dom.agentsStrip.querySelector('.agents-strip');
   if (btn) btn.onclick = () => openAgentsForSession(sessionId);
 }
@@ -259,7 +267,12 @@ function renderHeader(dom, slice, sessionId, meta) {
   dom.headerSkill.classList.toggle('free', !skill);
   dom.headerName.textContent = resolveSessionTitle(sessionId, meta);
   const { live, text } = sessionRunMeta(slice, sessionId);
-  dom.headerMeta.innerHTML = `${live ? '<span class="sv-header-live" aria-hidden="true"></span>' : ''}<span>${escapeHtml(text)}</span>`;
+  // The live dot pulses forever, and `text` is a running duration that changes
+  // every second — so the dot is a persistent element whose visibility toggles,
+  // never markup rebuilt alongside the ticking text. Rebuilding it restarted the
+  // pulse on every header tick (1s while running, plus every store repaint).
+  dom.headerLive.hidden = !live;
+  if (dom.headerMetaText.textContent !== text) dom.headerMetaText.textContent = text;
   dom.headerMenu.innerHTML = headerMenuItemsHtml(sessionId);
   if (dom.headerArchive) dom.headerArchive.hidden = computeGitInfo(sessionId).archived;
   if (dom.headerPromoteKbd) dom.headerPromoteKbd.textContent = formatCombo(keymap.bindingFor('session.promoteToJob'));
@@ -386,6 +399,7 @@ function sessionConnState(sessionId) {
 // to bottom, otherwise restore the saved offset.
 function renderTranscript(dom, slice, sessionId) {
   if (!slice) {
+    resetKeyedRows(dom.inner);
     dom.inner.innerHTML = '<div class="sv-empty">Loading session…</div>';
     return;
   }
@@ -425,19 +439,27 @@ function renderTranscript(dom, slice, sessionId) {
   });
 
   if (visible.length === 0 && cards.length === 0) {
+    resetKeyedRows(dom.inner);
     dom.inner.innerHTML = '<div class="sv-empty">No messages yet — say something.</div>';
     dom.__lastTotal = 0;
     dom.__unread = 0;
     updateJumpPill(dom, sessionId);
     return;
   }
-  const parts = [];
-  for (const m of visible) parts.push(minimalMsgHtml(m, slice.expandedTools, ctx));
+  // Keyed rows, not one innerHTML assignment: a repaint re-parses only the rows
+  // whose markup actually changed, so its cost tracks the delta rather than the
+  // whole transcript. See utils/keyed-rows.js for why that matters.
+  const rows = [];
+  visible.forEach((m, i) => {
+    // __key is stamped by the store on entry; the positional fallback only
+    // covers an entry that reached the slice some other way.
+    rows.push({ key: `m:${m.__key ?? `i${i}`}`, html: minimalMsgHtml(m, slice.expandedTools, ctx) });
+  });
   for (const a of cards) {
     const agentType = a.agentId ? subSlice.byId.get(a.agentId)?.agentType ?? null : null;
-    parts.push(inlineApprovalCardHtml(a, { agentType }));
+    rows.push({ key: `a:${a.approvalId}`, html: inlineApprovalCardHtml(a, { agentType }) });
   }
-  dom.inner.innerHTML = parts.join('');
+  reconcileKeyedRows(dom.inner, rows);
 
   if (refocus) {
     const card = dom.inner.querySelector(`[data-approval-id="${CSS.escape(refocus.id)}"]`);

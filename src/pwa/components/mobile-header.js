@@ -107,7 +107,6 @@ function buildSessionHeader() {
   });
   shape.els.modeSlot.appendChild(buildHeaderModeChip());
 
-  let lastSub = null;
   let lastMenuKey = null;
   const paint = () => {
     const slice = sessions.getSlice(sid);
@@ -118,11 +117,15 @@ function buildSessionHeader() {
     const info = computeGitInfo(sid);
     const branch = getGitHeader(sid)?.branch ?? info.branch;
     const { live, text } = sessionRunMeta(slice, sid);
-    const subHtml = [
-      branch ? `<span class="mh-branch">⎇ ${escapeHtml(branch)}</span>` : '',
-      `<span class="mh-state">${live ? '<span class="mh-live-dot" aria-hidden="true"></span>' : ''}${escapeHtml(text)}</span>`,
-    ].filter(Boolean).join('<span class="mh-sub-sep" aria-hidden="true">·</span>');
-    if (subHtml !== lastSub) { shape.els.sub.innerHTML = subHtml; lastSub = subHtml; }
+    // Patch the sub-row's parts, never its markup: `text` is a running duration
+    // that ticks every second, so rebuilding the row re-created the pulsing
+    // .mh-live-dot beside it and restarted its animation each tick.
+    const branchLabel = branch ? `⎇ ${branch}` : '';
+    shape.els.branch.hidden = !branch;
+    if (shape.els.branch.textContent !== branchLabel) shape.els.branch.textContent = branchLabel;
+    shape.els.subSep.hidden = !branch;
+    shape.els.liveDot.hidden = !live;
+    if (shape.els.stateText.textContent !== text) shape.els.stateText.textContent = text;
 
     shape.els.diffBtn.hidden = !info.diffable;
     const items = [{ action: 'promote', label: 'Promote to tracked' }];
