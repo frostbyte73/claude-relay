@@ -262,12 +262,16 @@ export const sessions = {
         fromTicketId: fromTicketId ?? sl.fromTicketId,
         approvalMode: approvalMode ?? sl.approvalMode,
       }));
+      // Mirrors track the slice, not the argument: a re-entry that knows only the
+      // id (mobile's nav→openSession hand-off) must not null out a cwd the slice
+      // has already resolved.
+      const slice = patched.sessionsById.get(id);
       return {
         ...patched,
         view: 'session',
         currentSessionId: id,
-        currentSessionCwd: cwd,
-        currentSessionSpawnCwd: spawnCwd ?? cwd,
+        currentSessionCwd: cwd ?? slice?.cwd ?? null,
+        currentSessionSpawnCwd: spawnCwd ?? slice?.spawnCwd ?? cwd ?? null,
         currentSessionFromTicketId: fromTicketId ?? null,
         approvalMode: approvalMode ?? patched.approvalMode,
       };

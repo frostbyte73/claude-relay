@@ -197,8 +197,27 @@ export const nav = {
 // surface's renderDetail, not durable state.
 const sessionHints = new Map();
 
+// Fill only null/undefined holes, same rule the slice's identity funnel uses
+// (upsertSliceInState). One launch re-enters startSession twice on mobile —
+// nav.select('sessions', id) comes back through openSession(id) with no context —
+// and a plain overwrite let that second, contextless pass erase the launcher's
+// cwd/spawnMode/baseBranch, so the WS connected without a cwd and the daemon
+// answered "cwd required for new session" on every reconnect.
 export function setSessionHint(id, hint) {
-  if (id) sessionHints.set(id, hint);
+  if (!id) return;
+  const existing = sessionHints.get(id);
+  if (!existing) { sessionHints.set(id, hint); return; }
+  const merged = { ...existing };
+  for (const [k, v] of Object.entries(hint)) {
+    if (merged[k] === undefined || merged[k] === null) merged[k] = v;
+  }
+  sessionHints.set(id, merged);
+}
+// Non-consuming read, for callers that need to know a launcher already seeded
+// this session (i.e. it's brand new) without stealing the hint from the mount
+// that still has to spend it on the WS's first connect.
+export function readSessionHint(id) {
+  return (id && sessionHints.get(id)) || null;
 }
 // Single-consume: the hint only needs to survive the one lookup that resolves
 // a brand-new session's context (see sessions-surface/index.js's

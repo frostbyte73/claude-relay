@@ -19,7 +19,7 @@ import {
 } from './state/notify-ws.js';
 import { dispatchSession, dispatchBroadcast, installDispatchDeps } from './ws/dispatch.js';
 import { isDesktop, onLayoutChange } from './layout/index.js';
-import { nav, setSessionHint, peekSessionHint } from './state/nav.js';
+import { nav, setSessionHint, peekSessionHint, readSessionHint } from './state/nav.js';
 import { startSession } from './session-launch.js';
 import { installAppBridge } from './app-bridge.js';
 import {
@@ -314,10 +314,18 @@ function render() {
 }
 
 async function openSession(id, opts) {
-  const isNew = id === null || !!opts?.cwd;
+  const mintedHere = id === null;
   if (id === null) id = crypto.randomUUID();
+  // A launcher (⌘K palette, cwd picker) seeds the session's context into the nav
+  // hint before routing. Mobile's route arrives here with the id ALONE —
+  // mobile-shell turns nav.select('sessions', id) back into openSession({ id }) —
+  // so the hint, not opts, is what identifies a brand-new session. Read it
+  // without consuming: the session-view mount still has to spend it on the WS's
+  // first connect.
+  const hint = readSessionHint(id);
   let cwd = null;
   let spawnCwd = null;
+  let known = false;
   const projects = sessions.get().projects;
   if (opts?.cwd) {
     cwd = opts.cwd;
@@ -328,13 +336,24 @@ async function openSession(id, opts) {
     for (const p of projects) {
       const match = p.sessions.find((s) => s.id === id);
       if (match) {
+        known = true;
         cwd = p.cwd;
         usage.setProjectContextWindow(p.contextWindowSize ?? null);
         if (match.worktreePath) spawnCwd = match.worktreePath;
         break;
       }
     }
+    if (!known) {
+      // The daemon doesn't know this session yet — its context is whatever the
+      // launcher left in the hint, or what the slice already resolved.
+      const slice = sessions.getSlice(id);
+      cwd = hint?.cwd ?? slice?.cwd ?? null;
+      spawnCwd = hint?.spawnCwd ?? slice?.spawnCwd ?? null;
+      const proj = cwd ? projects.find((p) => p.cwd === cwd) : null;
+      if (proj) usage.setProjectContextWindow(proj.contextWindowSize ?? null);
+    }
   }
+  const isNew = mintedHere || !!opts?.cwd || (!known && !!hint?.cwd);
   startSession({ id, cwd, spawnCwd, fromTicketId: opts?.fromTicketId });
   // No approvalMode override: enterSession preserves the slice's existing mode
   // (a fresh slice defaults to 'ask'). Passing a literal 'ask' here reset the
