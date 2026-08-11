@@ -210,7 +210,12 @@ function draftFieldKey(el) {
   const card = el.closest('.wd-card');
   const draftId = card ? card.getAttribute('data-draft-id') : '';
   const callIdx = el.getAttribute('data-call-idx') ?? '';
-  const argKey = el.dataset.argKey ?? ' bash';
+  // Distinguish "has an arg key" from "is the bash textarea" by prefix rather than
+  // by a sentinel value a real arg key could equal. The prefix must stay plain
+  // text: this was a NUL byte, which made the whole file read as binary to grep
+  // and silently excluded it from every repo-wide search.
+  const raw = el.dataset.argKey;
+  const argKey = raw == null ? 'bash!' : `arg!${raw}`;
   return `${draftId}|${callIdx}|${argKey}`;
 }
 
