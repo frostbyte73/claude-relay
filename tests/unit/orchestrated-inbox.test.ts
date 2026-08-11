@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  deliverImmediate, drainForDelivery, hasUserMessage, shouldDeliver, waitSatisfied,
+  coalesceExternal, deliverImmediate, drainForDelivery, hasUserMessage, shouldDeliver, waitSatisfied,
 } from '../../src/steps/orchestrated-inbox.js';
-import type { Dispatch, InboxItem, OrchestratedStep } from '../../src/work/work-types.js';
+import type { Dispatch, InboxItem, OrchestratedStep, WatchedEvent } from '../../src/work/work-types.js';
 
 let n = 0;
 const item = (over: Partial<InboxItem> & Pick<InboxItem, 'kind'>): InboxItem =>
@@ -19,6 +19,37 @@ function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
 
 const done = (over: Partial<Dispatch> = {}): Dispatch =>
   ({ id: 'd1', action: 'a', brief: 'b', status: 'done', attempts: 1, ...over });
+
+const ext = (events: WatchedEvent[], summary = 's'): InboxItem =>
+  ({ id: `i${++n}`, at: 100, kind: 'external', source: 'pr-watcher', summary, events });
+
+describe('coalesceExternal', () => {
+  // The flood this exists for: a step parked at a gate for 22 hours accumulated 76 undelivered
+  // "PR open" pr-state items, all reporting the same thing.
+  it('keeps one item when the same signal is reported over and over', () => {
+    let inbox: InboxItem[] = [];
+    for (let i = 0; i < 20; i++) inbox = coalesceExternal(inbox, ext(['pr-state'], 'PR open'));
+    expect(inbox).toHaveLength(1);
+  });
+
+  it('collapses a queued item into a later one that also covers it', () => {
+    const first = ext(['pr-state'], 'PR open');
+    const second = ext(['pr-state', 'ci'], 'PR open; CI success');
+    expect(coalesceExternal([first], second)).toEqual([second]);
+  });
+
+  it('keeps a queued item the newer one does not cover', () => {
+    const comments = ext(['pr-comments'], '1 new comment');
+    const state = ext(['pr-state'], 'PR open');
+    expect(coalesceExternal([comments], state)).toEqual([comments, state]);
+  });
+
+  it('never drops a non-external item', () => {
+    const msg = item({ kind: 'user-message', body: 'hi' });
+    const gate = item({ kind: 'gate-resolved', approved: true });
+    expect(coalesceExternal([msg, gate], ext(['pr-state']))).toHaveLength(3);
+  });
+});
 
 describe('waitSatisfied', () => {
   it('is satisfied when nothing is being waited on', () => {

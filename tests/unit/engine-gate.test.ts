@@ -1549,3 +1549,46 @@ describe('WriteDraft — inline editable payload (files)', () => {
     expect(stepOf(queue, jobId, 'g1').drafts![0]!.approvedAt).toBeUndefined();
   });
 });
+
+// A step parked before this daemon booted can be holding a backlog of repeats that pushInbox's
+// coalescing never saw — the flood this exists for was 76 identical "PR open" items on a step
+// gated for 22 hours, all of which would have landed in one delivery.
+describe('reconcileInterruptedSteps — inherited inbox backlog', () => {
+  const watcherItem = (id: string) => ({
+    id, at: 1000, kind: 'external' as const, source: 'pr-watcher' as const,
+    summary: 'PR open', events: ['pr-state' as const],
+  });
+
+  it('collapses a queued pile of repeats down to the newest', () => {
+    const { engine, queue } = makeEngine();
+    const inbox = Array.from({ length: 30 }, (_, i) => watcherItem(`w${i}`));
+    const jobId = seedOrchestratedJob(queue, engine, [
+      orchestratedStep('o1', 'code.orchestrate-pr', [], { state: 'waiting', inbox }),
+    ]);
+
+    engine.reconcileInterruptedSteps();
+
+    const after = orchestratedStepOf(queue, jobId, 'o1');
+    expect(after.inbox).toHaveLength(1);
+    expect(after.inbox[0]!.id).toBe('w29');
+  });
+
+  it('leaves distinct signals and non-watcher items alone', () => {
+    const { engine, queue } = makeEngine();
+    const inbox = [
+      { id: 'm1', at: 1000, kind: 'user-message' as const, body: 'hi' },
+      watcherItem('w1'),
+      {
+        id: 'w2', at: 1001, kind: 'external' as const, source: 'pr-watcher' as const,
+        summary: '1 new comment', events: ['pr-comments' as const],
+      },
+    ];
+    const jobId = seedOrchestratedJob(queue, engine, [
+      orchestratedStep('o1', 'code.orchestrate-pr', [], { state: 'waiting', inbox }),
+    ]);
+
+    engine.reconcileInterruptedSteps();
+
+    expect(orchestratedStepOf(queue, jobId, 'o1').inbox.map((i) => i.id)).toEqual(['m1', 'w1', 'w2']);
+  });
+});

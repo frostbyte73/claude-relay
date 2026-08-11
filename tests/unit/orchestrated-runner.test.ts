@@ -249,6 +249,52 @@ describe('applyMove', () => {
     expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', undefined, undefined);
   });
 
+  // Gates parked before the write-draft cutover carry the move the removed force-gate was
+  // holding (GateRequest.deferredMove). Approving one used to drop it and resume the controller
+  // unbound — the user's Approve ran nothing, and the queued round had to be re-derived by hand.
+  it('replays a legacy gate\'s deferred move on approval instead of resuming unbound', () => {
+    const { h, get } = host(step({
+      state: 'gate_pending_approval',
+      gate: {
+        draft: 'the reply body', question: 'Approve running code.fix-ci? It writes externally.',
+        requestedAt: 1, deferredMove: { kind: 'self-round', action: 'code.fix-ci', note: 'fix the red check' },
+      },
+    }));
+    resolveGate(h, 'j1', 's1', true);
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.fix-ci', 'fix the red check');
+    expect(get().state).toBe('running');
+    expect(get().gate).toBeUndefined();
+    expect(get().gateApproved).toBe(true);
+    // The replayed round still sees why it woke.
+    expect(get().lastDelivered?.some((i) => i.kind === 'gate-resolved' && i.approved)).toBe(true);
+  });
+
+  it('drops a legacy deferred move when the gate is declined', () => {
+    const { h, get } = host(step({
+      state: 'gate_pending_approval',
+      gate: {
+        draft: 'd', question: 'q', requestedAt: 1,
+        deferredMove: { kind: 'self-round', action: 'code.fix-ci' },
+      },
+    }));
+    resolveGate(h, 'j1', 's1', false, 'not yet');
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', undefined, undefined);
+    expect(get().gate).toBeUndefined();
+    expect(get().gateApproved).toBeUndefined();
+  });
+
+  // The PWA can now approve WITH a note (previously the only way to send words was a decline,
+  // so "go ahead and run it" was recorded as a veto). Both halves have to land.
+  it('records an approval that carries feedback as approved, keeping the note', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
+    resolveGate(h, 'j1', 's1', true, 'go ahead and run it');
+    expect(get().gateApproved).toBe(true);
+    expect(get().gateFeedback).toEqual(['go ahead and run it']);
+    expect(get().lastDelivered?.some((i) =>
+      i.kind === 'gate-resolved' && i.approved && i.feedback === 'go ahead and run it')).toBe(true);
+  });
+
   // A gated step still accepts inbox pushes (shouldDeliver only refuses to DELIVER), and the
   // pr-watcher pushes on any changed signal. Approving the gate must not eat the wake.
   it('keeps watcher events queued through a gate approval, dropping only the gate marker', () => {

@@ -1,5 +1,5 @@
 import { validateNext, type ActionInfo } from '../steps/orchestrated-policy.js';
-import { deliverImmediate, drainForDelivery, shouldDeliver } from '../steps/orchestrated-inbox.js';
+import { coalesceExternal, deliverImmediate, drainForDelivery, shouldDeliver } from '../steps/orchestrated-inbox.js';
 import type { Dispatch, InboxItem, NextMove, OrchestratedStep, WatchedEvent } from './work-types.js';
 
 export interface OrchestratedHost {
@@ -187,6 +187,9 @@ export function resolveGate(
 ): void {
   const step = host.getStep(jobId, stepId);
   if (!step || step.state !== 'gate_pending_approval') return;
+  // Read before the mutation below clears `gate`. Legacy only (see GateRequest.deferredMove) —
+  // undefined for every gate opened by the current openGate.
+  const deferred = approved ? step.gate?.deferredMove : undefined;
   const item = stamp(host, { kind: 'gate-resolved', approved, ...(feedback ? { feedback } : {}) });
 
   host.mutateStep(jobId, stepId, (s) => ({
@@ -205,13 +208,17 @@ export function resolveGate(
   // actually shows why, without spending the consecutive-self-round budget the way a real new
   // event would.
   host.mutateStep(jobId, stepId, (s) => deliverImmediate(s, [item]));
+  // An approved legacy gate runs the move it was holding, exactly as the force-gate did —
+  // verbatim, without re-validating, or a gated write would be gated forever. deliverImmediate
+  // above already put the resolution in `lastDelivered`, so the replayed round still sees it.
+  if (deferred) { runMove(host, jobId, stepId, deferred); return; }
   host.resumeController(jobId, stepId, undefined, undefined);
 }
 
 export function pushInbox(host: OrchestratedHost, jobId: string, stepId: string, item: NewItem): void {
   const step = host.getStep(jobId, stepId);
   if (!step) return;
-  host.mutateStep(jobId, stepId, (s) => ({ ...s, inbox: [...s.inbox, stamp(host, item)] }));
+  host.mutateStep(jobId, stepId, (s) => ({ ...s, inbox: coalesceExternal(s.inbox, stamp(host, item)) }));
   deliverInbox(host, jobId, stepId);
 }
 

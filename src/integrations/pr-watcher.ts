@@ -416,7 +416,15 @@ export class PrWatcher {
     const rv = reviewStateFrom(view);
     if (rv) facts.reviewState = rv;
     const mergeable = mergeableFrom(view);
-    if (mergeable) facts.mergeable = mergeable;
+    // UNKNOWN is "GitHub hasn't computed it yet", not a verdict — so it never overwrites one we
+    // already have. Storing it did, and since GitHub returns UNKNOWN intermittently on an idle
+    // PR, every sweep flipped mergeable→unknown→mergeable and `changedSignals` reported each
+    // flip as a `pr-state` event. One step accumulated 76 identical "PR open" wakes that way.
+    // Holding the last known verdict also keeps a real one legible: unknown→conflicting used to
+    // fire from a prev of 'unknown', now it fires from 'mergeable', which is the actual news.
+    if (mergeable && !(mergeable === 'unknown' && prev.mergeable !== undefined)) {
+      facts.mergeable = mergeable;
+    }
 
     // Only touch comments when the inline fetch actually succeeded. A null here
     // means the GitHub call failed; skip the comment merge so we don't clobber

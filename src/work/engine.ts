@@ -32,7 +32,7 @@ import {
   applyMove, deliverInbox, pushInbox, resolveGate,
   type NewItem, type OrchestratedHost, type ProgressPayload,
 } from './orchestrated-runner.js';
-import { deliverImmediate } from '../steps/orchestrated-inbox.js';
+import { coalesceExternal, deliverImmediate } from '../steps/orchestrated-inbox.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
@@ -385,6 +385,17 @@ export class WorkEngine {
     for (const j of this.opts.queue.list()) {
       for (const s of j.steps) {
         if (s.cancelled || s.failure) continue;
+        // pushInbox coalesces external items as they arrive, but only from the version that
+        // does — a step parked before this daemon booted can be holding a pile of repeats it
+        // would hand the controller all at once on the next delivery (one step had 76). Fold
+        // the queue through the same rule so an inherited backlog collapses the way a live one
+        // now can't form. Idempotent, and a no-op for an inbox that never had a repeat.
+        if (s.type === 'orchestrated' && s.inbox.length > 1) {
+          const compacted = s.inbox.reduce<InboxItem[]>((acc, i) => coalesceExternal(acc, i), []);
+          if (compacted.length !== s.inbox.length) {
+            this.mutateStep(j.id, s.id, (st) => st.type === 'orchestrated' ? { ...st, inbox: compacted } : st);
+          }
+        }
         // Clear the dead session BEFORE settling any dispatch below: a settle that delivers to
         // a still-`running` parent would resume the session we are about to drop, leaving two
         // controller sessions on one step.

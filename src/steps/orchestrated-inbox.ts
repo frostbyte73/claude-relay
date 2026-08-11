@@ -29,6 +29,24 @@ export function waitSatisfied(step: OrchestratedStep, now: number): boolean {
   return false;
 }
 
+// An external item is a notification that a signal MOVED, not a log entry — the controller
+// reads the current value off `pr` in its envelope, and however many are queued it still gets
+// exactly one round to react. So a queued item whose events the incoming one also covers is
+// re-reporting the same signals with staler facts: drop it rather than hand the controller N
+// copies of one wake. Subset, not equality, so `[pr-state]` collapses into a later
+// `[pr-state, ci]` too. Untouched items keep their position; the incoming one appends.
+//
+// Scoped to undelivered items by construction (this runs against `inbox`, and drainForDelivery
+// empties it), and to the same `source` — two watchers reporting the same event kind are two
+// independent facts, not a repeat.
+export function coalesceExternal(inbox: InboxItem[], incoming: InboxItem): InboxItem[] {
+  if (incoming.kind !== 'external') return [...inbox, incoming];
+  const covered = new Set(incoming.events);
+  const kept = inbox.filter((i) =>
+    i.kind !== 'external' || i.source !== incoming.source || !i.events.every((e) => covered.has(e)));
+  return [...kept, incoming];
+}
+
 export function shouldDeliver(step: OrchestratedStep, sessionWorking: boolean, now: number): boolean {
   if (sessionWorking) return false;
   if (step.inbox.length === 0) return false;

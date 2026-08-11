@@ -125,13 +125,20 @@ function gateHtml(vm) {
 function actionsHtml(s, vm) {
   const bits = [];
   if (vm.gate) {
+    // The verdict is picked at SUBMIT, never inferred from which box you typed in. The composer
+    // used to have one Submit that always sent `approved: false`, so it was the only way to
+    // answer a gate in words at all — a user typing "go ahead and run it" into it recorded a
+    // decline, and the controller had to guess which half to believe (it guessed right, then
+    // journalled the contradiction). Two submits, one textarea: an approval with a note is now
+    // sayable, and a decline can't be typed by accident.
     bits.push(`
       <button class="o-btn o-btn--primary" data-orc-action="approve-gate">Approve</button>
-      <button class="o-btn o-btn--default" data-orc-action="toggle-gate-feedback">Propose changes</button>
+      <button class="o-btn o-btn--default" data-orc-action="toggle-gate-feedback">Respond…</button>
       <div class="thread-composer" data-composer="orc-gate-feedback" hidden>
-        <textarea class="thread-compose-input" data-autogrow placeholder="What should change about this move?"></textarea>
+        <textarea class="thread-compose-input" data-autogrow placeholder="A note for the controller — then pick a verdict below."></textarea>
         <div class="thread-composer-row">
-          <button class="o-btn o-btn--primary" data-orc-action="submit-gate-feedback">Submit</button>
+          <button class="o-btn o-btn--primary" data-orc-action="approve-gate-note" disabled>Approve with this note</button>
+          <button class="o-btn o-btn--default" data-orc-action="submit-gate-feedback" disabled>Request changes</button>
         </div>
       </div>`);
   }
@@ -208,11 +215,11 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
         void work.resolveStepGate(job.id, step.id, true);
       } else if (kind === 'toggle-gate-feedback') {
         card.querySelector('[data-composer="orc-gate-feedback"]')?.toggleAttribute('hidden');
-      } else if (kind === 'submit-gate-feedback') {
+      } else if (kind === 'approve-gate-note' || kind === 'submit-gate-feedback') {
         const ta = card.querySelector('[data-composer="orc-gate-feedback"] textarea');
         const feedback = (ta?.value ?? '').trim();
         if (!feedback) { ta?.focus(); return; }
-        void work.resolveStepGate(job.id, step.id, false, feedback);
+        void work.resolveStepGate(job.id, step.id, kind === 'approve-gate-note', feedback);
       } else if (kind === 'send-message') {
         const ta = card.querySelector('[data-composer="orc-message"] textarea');
         const body = (ta?.value ?? '').trim();
@@ -224,4 +231,15 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
       }
     });
   });
+
+  // Both gate verdicts need a note, so neither is clickable until there is one — same rule the
+  // write-draft card's revise/deny composers use.
+  const gateNote = card.querySelector('[data-composer="orc-gate-feedback"] textarea');
+  if (gateNote) {
+    const verdicts = card.querySelectorAll(
+      '[data-orc-action="approve-gate-note"], [data-orc-action="submit-gate-feedback"]');
+    const sync = () => verdicts.forEach((b) => { b.disabled = !gateNote.value.trim(); });
+    gateNote.addEventListener('input', sync);
+    sync();
+  }
 }

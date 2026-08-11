@@ -110,6 +110,37 @@ describe('PrWatcher over an orchestrated step', () => {
     expect(engine.applyPrFacts.mock.calls[0]![2]).toMatchObject({ mergeable: 'conflicting' });
   });
 
+  // GitHub answers UNKNOWN intermittently on an idle PR. Storing it flipped
+  // mergeable→unknown→mergeable on alternating sweeps and reported each flip as pr-state — one
+  // step collected 76 identical "PR open" wakes that way.
+  it('holds the last known mergeability instead of recording an UNKNOWN over it', async () => {
+    const { watcher, engine } = harness(
+      orchestratedStepWithPr({ mergeable: 'mergeable' }), { mergeable: 'unknown' },
+    );
+    await watcher.syncJob('j1');
+    expect(engine.pushStepInbox).not.toHaveBeenCalled();
+    expect(engine.applyPrFacts.mock.calls[0]![2]).not.toHaveProperty('mergeable');
+  });
+
+  // The flip side: holding the known value must not swallow a real verdict arriving after it.
+  it('still reports a conflict that lands while mergeability was unknown', async () => {
+    const { watcher, engine } = harness(
+      orchestratedStepWithPr({ mergeable: 'mergeable' }), { mergeable: 'conflicting' },
+    );
+    await watcher.syncJob('j1');
+    const [, , item] = engine.pushStepInbox.mock.calls[0]!;
+    expect(item.events).toEqual(['pr-state']);
+  });
+
+  // Nothing known yet — an UNKNOWN is the only thing there is to record.
+  it('records UNKNOWN when there is no prior verdict to hold', async () => {
+    const step = orchestratedStepWithPr({});
+    delete (step.pr as Record<string, unknown>).mergeable;
+    const { watcher, engine } = harness(step, { mergeable: 'unknown' });
+    await watcher.syncJob('j1');
+    expect(engine.applyPrFacts.mock.calls[0]![2]).toMatchObject({ mergeable: 'unknown' });
+  });
+
   it('drops an in-flight iteration when new comments arrive', async () => {
     const step = orchestratedStepWithPr({});
     step.iterations = [{ id: 'it1', kind: 'replies', status: 'in_progress', startedAt: 1 }];

@@ -142,7 +142,7 @@ seededTest('Approve clears the gate, records the verdict, and resumes the contro
   await expect(outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] [data-orc-action="approve-gate"]`)).toHaveCount(0);
 });
 
-seededTest('Propose changes reveals a composer and declines the gate with feedback', async ({ outpostPage, daemon }) => {
+seededTest('Respond → Request changes declines the gate with feedback', async ({ outpostPage, daemon }) => {
   await openJob(outpostPage);
   const card = outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] .orc-card`);
 
@@ -150,6 +150,9 @@ seededTest('Propose changes reveals a composer and declines the gate with feedba
   await expect(composer).toBeHidden();
   await card.locator('[data-orc-action="toggle-gate-feedback"]').click();
   await expect(composer).toBeVisible();
+  // Neither verdict is reachable until there's something to say.
+  await expect(composer.locator('[data-orc-action="submit-gate-feedback"]')).toBeDisabled();
+  await expect(composer.locator('[data-orc-action="approve-gate-note"]')).toBeDisabled();
 
   await composer.locator('textarea').fill('Wait for the release branch to cut.');
   await composer.locator('[data-orc-action="submit-gate-feedback"]').click();
@@ -160,6 +163,25 @@ seededTest('Propose changes reveals a composer and declines the gate with feedba
   expect(step.gate).toBeUndefined();
   expect(step.gateApproved).toBeUndefined();
   await expect(outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] [data-orc-action="approve-gate"]`)).toHaveCount(0);
+});
+
+// The composer's only submit used to send `approved: false`, so approving words typed into it
+// ("go ahead and run it") were recorded as a veto and the controller had to guess which half of
+// the contradiction to believe. The verdict now comes from which button you press.
+seededTest('Respond → Approve with this note approves AND keeps the note', async ({ outpostPage, daemon }) => {
+  await openJob(outpostPage);
+  const card = outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] .orc-card`);
+
+  await card.locator('[data-orc-action="toggle-gate-feedback"]').click();
+  const composer = card.locator('[data-composer="orc-gate-feedback"]');
+  await composer.locator('textarea').fill('go ahead and run it');
+  await composer.locator('[data-orc-action="approve-gate-note"]').click();
+
+  await expect.poll(async () => (await fetchStep(outpostPage, daemon)).gateApproved, { timeout: 5_000 }).toBe(true);
+  const step = await fetchStep(outpostPage, daemon);
+  expect(step.gateFeedback).toEqual(['go ahead and run it']);
+  expect(step.gate).toBeUndefined();
+  expect(step.lastDelivered?.some((i: any) => i.kind === 'gate-resolved' && i.approved === true)).toBe(true);
 });
 
 // The picker decides orchestrated-vs-action from the action's `kind`, which only the
