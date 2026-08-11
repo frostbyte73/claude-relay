@@ -80,7 +80,8 @@ async function handleDraftDecision(
     // session's own submit_write_draft payload — reuse the one validator rather than trusting
     // shape here and letting acceptDraft's own field-pick rebuild silently produce an
     // unconsumable pin (neither `bash` nor `tool`, or both).
-    const calls = parseDraftCalls(payload.calls);
+    // `allowSkip`: this boundary — and only this one — carries the user's per-call verdict.
+    const calls = parseDraftCalls(payload.calls, { allowSkip: true });
     if (!calls) {
       res.statusCode = 400;
       res.end('calls must be a non-empty array, each element with exactly one of '

@@ -45,9 +45,14 @@ function harness(provision: () => Promise<{ path: string | null }> = async () =>
   const dir = mkdtempSync(join(tmpdir(), 'draft-routes-'));
   const queue = new JobQueue(dir);
   const resumed: string[] = [];
+  const journalled: Array<{ action: string; outcome: string; lesson: string }> = [];
   let provisionCalls = 0;
   const engine = new WorkEngine({
     queue,
+    journalStore: {
+      append: (e: { action: string; outcome: string; lesson: string }) => { journalled.push(e); },
+      recent: () => [],
+    } as never,
     sessionManager: {
       spawnDetached() {}, send() {}, isWorking() { return false; },
       sendOrResume(sessionId: string) { resumed.push(sessionId); },
@@ -71,7 +76,7 @@ function harness(provision: () => Promise<{ path: string | null }> = async () =>
     steps: [step], createdAt: 1000, updatedAt: 1000,
   };
   queue.upsert(job);
-  return { queue, engine, resumed, jobsDir: join(dir, 'jobs'), provisionCalls: () => provisionCalls };
+  return { queue, engine, resumed, journalled, jobsDir: join(dir, 'jobs'), provisionCalls: () => provisionCalls };
 }
 
 async function startServer(h: ReturnType<typeof harness>): Promise<number> {
@@ -170,6 +175,88 @@ describe('POST .../drafts/:draftId/accept', () => {
     const second = await post(port, `/api/work/jobs/job-1/steps/g1/drafts/${draftId}/accept`, { calls: [ORIGINAL_CALL] });
     expect(second.status).toBe(409);
     expect(second.body).toContain('already decided');
+  });
+});
+
+// The user's verdict is per call: a draft that got two replies right and one wrong is answered
+// in one submission, not sent back for a redraft just to drop the third.
+describe('POST .../drafts/:draftId/accept — per-call skip', () => {
+  const twoCalls = [
+    { id: 'c1', label: 'review:ABC', tool: { name: 'mcp__gh__reply', args: { id: 1 } } },
+    { id: 'c2', label: 'review:DEF', tool: { name: 'mcp__gh__reply', args: { id: 2 } } },
+  ];
+  const park = (h: ReturnType<typeof harness>) => {
+    // The step's own action: pinFor resolves an approved draft scoped to the session's current
+    // action, so a draft labelled with anything else would never produce a live pin here.
+    h.engine.onWriteDraftReady('job-1', 'g1', {
+      action: 'write.linear-issue', raisedBy: { kind: 'step' }, summary: 's', calls: twoCalls,
+    });
+    return h.queue.get('job-1')!.steps[0]!.drafts![0]!.id;
+  };
+
+  it('pins only the kept calls and records the skipped one', async () => {
+    const h = harness();
+    const draftId = park(h);
+    const port = await startServer(h);
+
+    const res = await post(port, `/api/work/jobs/job-1/steps/g1/drafts/${draftId}/accept`, {
+      calls: [{ ...twoCalls[0], skip: true }, twoCalls[1]],
+    });
+
+    expect(res.status).toBe(200);
+    const draft = h.queue.get('job-1')!.steps[0]!.drafts![0]!;
+    expect(draft.calls.map((c) => c.label)).toEqual(['review:DEF']);
+    expect(draft.skippedCalls?.map((c) => c.label)).toEqual(['review:ABC']);
+    // The skipped one is not pinned — attempting it is an unapproved write, same as if it had
+    // never been drafted.
+    expect(h.engine.pinFor('sess-1', 'mcp__gh__reply', { id: 2 })).toBeDefined();
+    expect(h.engine.pinFor('sess-1', 'mcp__gh__reply', { id: 1 })).toBeUndefined();
+    expect(h.resumed).toContain('sess-1');
+  });
+
+  // Pinning an empty payload would be worse than useless: writeGateFor reports a draft with no
+  // unconsumed pins as spent, so the resumed session would see no gate and draft it all again.
+  it('settles the draft outright when every call is skipped, without resuming to post nothing', async () => {
+    const h = harness();
+    const draftId = park(h);
+    const port = await startServer(h);
+
+    const res = await post(port, `/api/work/jobs/job-1/steps/g1/drafts/${draftId}/accept`, {
+      calls: twoCalls.map((c) => ({ ...c, skip: true })),
+    });
+
+    expect(res.status).toBe(200);
+    const step = h.queue.get('job-1')!.steps[0]!;
+    expect(step.drafts ?? []).toEqual([]);
+    expect(h.engine.pinFor('sess-1', 'mcp__gh__reply', { id: 1 })).toBeUndefined();
+  });
+
+  // Skipping is not denying: running the action was right, the user just wanted none of what it
+  // proposed — so the lesson is about the DRAFTING action, not about whoever chose to run it.
+  it('journals skip-everything against the drafting action, under its own outcome', async () => {
+    const h = harness();
+    const draftId = park(h);
+    const port = await startServer(h);
+
+    await post(port, `/api/work/jobs/job-1/steps/g1/drafts/${draftId}/accept`, {
+      calls: twoCalls.map((c) => ({ ...c, skip: true })),
+    });
+
+    expect(h.journalled).toHaveLength(1);
+    expect(h.journalled[0]!.outcome).toBe('skipped');
+    expect(h.journalled[0]!.action).toBe('write.linear-issue');
+    expect(h.journalled[0]!.lesson).toContain('review:ABC');
+  });
+
+  it('still journals a deny against the chooser, as feedback on running it at all', async () => {
+    const h = harness();
+    const draftId = park(h);
+    const port = await startServer(h);
+
+    await post(port, `/api/work/jobs/job-1/steps/g1/drafts/${draftId}/deny`, { reason: 'wrong PR' });
+
+    expect(h.journalled[0]!.outcome).toBe('denied');
+    expect(h.journalled[0]!.action).toBe('meta.orchestrate');
   });
 });
 

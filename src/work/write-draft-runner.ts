@@ -155,6 +155,21 @@ export async function acceptDraft(
   const draft = lookup.draft;
   if (!calls.length) return { ok: false, reason: 'calls must be a non-empty array' };
 
+  // Per-call verdicts: the user answers each call in the same submission they edit it in, so a
+  // draft that got two things right and one wrong doesn't need a redraft round-trip to fix. A
+  // skipped call is stripped of everything but its identity — it is never pinned, so it can
+  // never be consumed, and nothing about it needs verifying.
+  const keep = calls.filter((c) => !c.skip);
+  const skippedCalls: PinnedCall[] = calls
+    .filter((c) => c.skip)
+    .map((c) => ({ id: c.id, label: c.label, bash: c.bash, tool: c.tool }));
+  // Every call skipped is a real, final decision — "post none of these" — not a complaint about
+  // the action having been run, so it settles the draft rather than pinning an empty payload.
+  // Pinning nothing would be worse than useless: writeGateFor reports a draft with no
+  // unconsumed pins as spent, so the resumed session would see no gate at all and draft the
+  // same calls again.
+  if (!keep.length) return settleUnrun(host, jobId, stepId, draft, skippedCalls);
+
   // Rebuild from the identity/payload fields only (allowlist, not a denylist of consumption
   // fields) — a freshly approved draft has no pin history yet, whatever the caller's `calls`
   // payload happens to carry over from an earlier round (e.g. a revise-then-reaccept echoing
@@ -165,7 +180,7 @@ export async function acceptDraft(
   // deliberately NOT carried into `rebuilt`: it's read straight off `calls[i]` below, used to
   // write the approved body, then dropped — the persisted pin is the digest, never a second
   // copy of the content.
-  const rebuilt = calls.map((c) => ({ id: c.id, label: c.label, bash: c.bash, tool: c.tool }));
+  const rebuilt = keep.map((c) => ({ id: c.id, label: c.label, bash: c.bash, tool: c.tool }));
 
   // A call whose payload references a file (--input/--body-file/--notes-file) is pinned by
   // command TEXT only, which says nothing about the file's CONTENT at execution time. If the
@@ -188,7 +203,9 @@ export async function acceptDraft(
       };
     }
     if (paths.length === 0) { pinned.push(c); continue; }
-    const inlineFiles = calls[i]!.files;
+    // `keep[i]`, not `calls[i]` — `rebuilt` is built from the kept calls, so a skipped call
+    // earlier in the submission would otherwise shift this lookup onto the wrong body.
+    const inlineFiles = keep[i]!.files;
     const fileDigests: Record<string, string> = {};
     for (const path of paths) {
       const inline = inlineFiles?.[path];
@@ -216,6 +233,7 @@ export async function acceptDraft(
     const withDraft = { ...replaceDraft(s, draftId, (d) => ({
       ...d,
       calls: pinned,
+      ...(skippedCalls.length ? { skippedCalls } : {}),
       approvedAt: at,
     })), updatedAt: at };
     if (draft.raisedBy.kind === 'dispatch') {
@@ -230,7 +248,9 @@ export async function acceptDraft(
     return { ...withDraft, state: 'running' as const };
   });
 
-  host.appendStepEvent(jobId, stepId, 'user', 'approved the write payload');
+  host.appendStepEvent(jobId, stepId, 'user', skippedCalls.length
+    ? `approved ${pinned.length} of ${calls.length} calls; skipped ${describeCalls(skippedCalls)}`
+    : 'approved the write payload');
   host.resumeRaiser(jobId, stepId, draft.raisedBy, draft.action);
   return { ok: true };
 }
@@ -271,6 +291,62 @@ export function reviseDraft(
   return { ok: true };
 }
 
+function describeCalls(calls: PinnedCall[]): string {
+  return calls.map((c, i) => c.label ?? c.tool?.name ?? `call ${i + 1}`).join(', ');
+}
+
+// Settle a draft nothing will run from: drop it, tell whoever raised it, and journal one
+// lesson. Deny and skip-everything share every bit of the plumbing and differ only in the
+// record they leave — who the lesson is about, and what it says — so the routing lives here
+// once rather than in two copies that can drift on which raiser wakes how.
+function settleDraftUnrun(
+  host: DraftHost, jobId: string, stepId: string, draft: WriteDraft,
+  record: { event: string; note: string; journalAction: string; outcome: string; lesson: string },
+): DraftDecisionResult {
+  host.mutateStep(jobId, stepId, (s) => ({
+    ...s, drafts: (s.drafts ?? []).filter((d) => d.id !== draft.id), updatedAt: host.now(),
+  }));
+  host.appendStepEvent(jobId, stepId, 'user', record.event);
+
+  if (draft.raisedBy.kind === 'dispatch') {
+    // settleDispatch's own dispatch-done push is what wakes the controller — a live dispatch
+    // never parks the PARENT step in gate_pending_approval, so the normal delivery path isn't
+    // blocked here the way it is for a controller-raised draft. A second, redundant push would
+    // just be a no-op inbox item nobody reads.
+    host.settleDispatch(jobId, stepId, draft.raisedBy.dispatchId, record.note);
+    host.journal(record.journalAction, jobId, stepId, record.outcome, record.lesson);
+    return { ok: true };
+  }
+  if (draft.raisedBy.kind === 'controller') {
+    host.notifyControllerDenied(jobId, stepId, record.note);
+    host.journal(record.journalAction, jobId, stepId, record.outcome, record.lesson);
+    return { ok: true };
+  }
+  host.declineStep(jobId, stepId, record.note);
+  host.journal(record.journalAction, jobId, stepId, record.outcome, record.lesson);
+  return { ok: true };
+}
+
+// Every call in the submission carried the user's skip verdict. Unlike a deny, this is not a
+// complaint about the action having been run at all — running it was right, the user simply
+// wants none of what it proposed — so the lesson goes to the action that DRAFTED the calls,
+// under its own outcome, rather than to whoever chose to run it.
+function settleUnrun(
+  host: DraftHost, jobId: string, stepId: string, draft: WriteDraft,
+  skipped: PinnedCall[],
+): DraftDecisionResult {
+  const which = describeCalls(skipped);
+  return settleDraftUnrun(host, jobId, stepId, draft, {
+    event: `skipped every drafted call from ${draft.action}: ${which}`,
+    note: `The user reviewed the drafted calls and chose to run none of them (${which}). `
+      + 'Treat them as deliberately skipped, record them as such, and do not draft them again.',
+    journalAction: draft.action,
+    outcome: 'skipped',
+    lesson: `the user skipped every call ${draft.action} drafted here (${which}) — it proposed `
+      + 'writes they did not want made, though running the action itself was right',
+  });
+}
+
 // The reason is feedback on the DECISION to run this action now, not on the action's
 // execution — so it routes to whoever chose it and journals against that chooser.
 export function denyDraft(
@@ -288,33 +364,17 @@ export function denyDraft(
   if (!lookup.found) return lookup.result;
   const draft = lookup.draft;
 
-  host.mutateStep(jobId, stepId, (s) => ({
-    ...s, drafts: (s.drafts ?? []).filter((d) => d.id !== draftId), updatedAt: host.now(),
-  }));
-  host.appendStepEvent(jobId, stepId, 'user', `denied ${draft.action}: ${note}`);
+  // Whoever CHOSE to run this action: the controller for a draft raised under it, the job's
+  // own orchestrator for a plain ActionStep.
+  const chooser = draft.raisedBy.kind === 'step'
+    ? host.getJob(jobId)?.orchestratorAction ?? 'meta.orchestrate'
+    : step.type === 'orchestrated' ? step.controller : draft.action;
 
-  const lesson = `${draft.action} was run here and the user denied its write: ${note}`;
-
-  if (draft.raisedBy.kind === 'dispatch') {
-    const controller = step.type === 'orchestrated' ? step.controller : draft.action;
-    // settleDispatch's own dispatch-done push is what wakes the controller — a live dispatch
-    // never parks the PARENT step in gate_pending_approval, so the normal delivery path isn't
-    // blocked here the way it is for a controller-raised draft. A second, redundant push would
-    // just be a no-op inbox item nobody reads.
-    host.settleDispatch(jobId, stepId, draft.raisedBy.dispatchId, `denied: ${note}`);
-    host.journal(controller, jobId, stepId, 'denied', lesson);
-    return { ok: true };
-  }
-
-  if (draft.raisedBy.kind === 'controller') {
-    const controller = step.type === 'orchestrated' ? step.controller : draft.action;
-    host.notifyControllerDenied(jobId, stepId, note);
-    host.journal(controller, jobId, stepId, 'denied', lesson);
-    return { ok: true };
-  }
-
-  const chooser = host.getJob(jobId)?.orchestratorAction ?? 'meta.orchestrate';
-  host.declineStep(jobId, stepId, note);
-  host.journal(chooser, jobId, stepId, 'denied', lesson);
-  return { ok: true };
+  return settleDraftUnrun(host, jobId, stepId, draft, {
+    event: `denied ${draft.action}: ${note}`,
+    note: draft.raisedBy.kind === 'dispatch' ? `denied: ${note}` : note,
+    journalAction: chooser,
+    outcome: 'denied',
+    lesson: `${draft.action} was run here and the user denied its write: ${note}`,
+  });
 }

@@ -10,7 +10,7 @@ import { renderMarkdown } from '../../markdown.js';
 import { escapeHtml } from '../../util.js';
 import { showStatusToast } from '../../app-bridge.js';
 
-function cssId(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '_'); }
+export function cssId(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '_'); }
 
 // Widget inference is by the VALUE's own type, not any schema — these calls came straight
 // off an MCP tool_use, which carries no schema at the boundary. `kind` doubles as the
@@ -77,16 +77,27 @@ function fieldHtml(draftId, callIdx, key, value) {
 // present) — reusing that exact attribute, with the path as its value, gives this field the
 // same repaint-survival guarantee `fieldHtml`'s tool-arg fields get, in its own namespace
 // (a `bash` call never otherwise sets `data-arg-key`, so there's nothing to collide with).
-function fileFieldHtml(draftId, callIdx, path, content) {
+//
+// `opts` exists for a caller that knows what the file MEANS and wants to edit that instead of
+// the raw bytes — reply-draft.js shows a PR reply's prose, not the `{"body": …}` JSON wrapping
+// it. `opts.value` is then what the textarea holds and `opts.jsonKey` the key it belongs at;
+// collectCalls reads the key back off `data-file-json-key` and re-serializes against the
+// ORIGINAL file content, so every other key in the object survives an edit untouched.
+export function fileFieldHtml(draftId, callIdx, path, content, opts = {}) {
   const id = `wd-f-${cssId(draftId)}-${callIdx}-file-${cssId(path)}`;
+  const label = opts.label ?? path;
+  const labelClass = opts.labelClass ?? 'field-label';
+  const jsonKey = opts.jsonKey ? ` data-file-json-key="${escapeHtml(opts.jsonKey)}"` : '';
+  const extraClass = opts.className ? ` ${opts.className}` : '';
+  const value = opts.value ?? content;
   return `
     <div class="wd-field">
-      <label class="field-label" for="${id}">${escapeHtml(path)}</label>
-      <textarea class="field-textarea wd-file-body" id="${id}" data-call-idx="${callIdx}" data-arg-key="${escapeHtml(path)}" data-kind="file">${escapeHtml(content)}</textarea>
+      <label class="${labelClass}" for="${id}">${escapeHtml(label)}</label>
+      <textarea class="field-textarea wd-file-body${extraClass}" id="${id}" data-call-idx="${callIdx}" data-arg-key="${escapeHtml(path)}" data-kind="file"${jsonKey}>${escapeHtml(value)}</textarea>
     </div>`;
 }
 
-function callHtml(draftId, call, idx) {
+export function callHtml(draftId, call, idx) {
   const label = call.label || (call.bash ? 'Command' : call.tool?.name) || `Call ${idx + 1}`;
   const bashId = `wd-f-${cssId(draftId)}-${idx}-bash`;
   // A call the hook released after its write failed may already have taken effect (the
@@ -134,50 +145,72 @@ function callHtml(draftId, call, idx) {
     </fieldset>`;
 }
 
+// The three chrome pieces around a draft's calls, exported separately so a caller that lays
+// the calls out its own way (pr-block.js drops each PR reply into the comment thread it
+// answers) still gets the identical redraft trail, evidence disclosure and decision row —
+// and, crucially, the same `data-wd-action` / `data-composer` contract wireWriteDraft below
+// binds to. A second copy of this markup would silently drift out of that contract.
+export function draftFeedbackHtml(draft) {
+  const feedback = (draft.feedback ?? [])
+    .map((f) => `<div class="wd-feedback">↩ ${escapeHtml(f)}</div>`)
+    .join('');
+  return feedback ? `<div class="wd-feedbacks">${feedback}</div>` : '';
+}
+
+// detail.js's `detailsKey` is `className|stepId` — a bare "plan-findings tl-findings" would
+// collide with the step's own findings block (identical className, same step), and with a
+// SECOND draft's own evidence block on the same step (two dispatches under one controller),
+// toggling one open/closed state across all of them. The per-draft class (same trick
+// tracked.js's `slugOf` uses for artifact keys) makes it unique.
+export function draftEvidenceHtml(draft) {
+  if (!draft.evidence) return '';
+  return `
+    <details class="plan-findings tl-findings wd-evidence-${cssId(draft.id)}">
+      <summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Evidence</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary>
+      <div class="step-findings md-body">${renderMarkdown(draft.evidence)}</div>
+    </details>`;
+}
+
+// `opts.deny: false` drops the Deny button for a draft where refusing the whole thing isn't a
+// meaningful verdict — a set of PR replies is always right to draft once there are comments, so
+// the real answer to "not this one" is the per-call skip, not a blanket refusal of the action.
+// `opts.acceptLabel` names what Accept actually does when "approve everything" isn't it.
+export function draftDecisionHtml(draft, { deny = true, acceptLabel = 'Accept' } = {}) {
+  return `
+    <div class="wd-error work-error" data-wd-error role="alert" hidden></div>
+    <div class="step-actions">
+      <button type="button" class="o-btn o-btn--primary" data-wd-action="accept">${escapeHtml(acceptLabel)}</button>
+      <button type="button" class="o-btn o-btn--default" data-wd-action="toggle-revise">Propose changes</button>
+      ${deny ? '<button type="button" class="o-btn o-btn--danger" data-wd-action="toggle-deny">Deny</button>' : ''}
+      <div class="thread-composer" data-composer="wd-revise-${escapeHtml(draft.id)}" hidden>
+        <textarea class="thread-compose-input" data-autogrow placeholder="What should change about this draft?"></textarea>
+        <div class="thread-composer-row">
+          <button type="button" class="o-btn o-btn--primary" data-wd-action="submit-revise" disabled>Submit</button>
+        </div>
+      </div>
+      ${deny ? `
+      <div class="thread-composer" data-composer="wd-deny-${escapeHtml(draft.id)}" hidden>
+        <textarea class="thread-compose-input" data-autogrow placeholder="Why are you denying this?"></textarea>
+        <div class="thread-composer-row">
+          <button type="button" class="o-btn o-btn--danger" data-wd-action="submit-deny" disabled>Deny</button>
+        </div>
+      </div>` : ''}
+    </div>`;
+}
+
 // Pure render — no DOM reads, only the draft. `ctx` is currently unused by the body (the
 // header's attribution comes straight off `draft.action`, which the daemon already
 // resolves to the DISPATCHED action's own name for a dispatch-raised draft — see
 // submit_write_draft's handler in daemon.ts) but kept for symmetry with wireWriteDraft and
 // so a future caller can pass render-time context without changing the signature.
 export function renderWriteDraft(draft, ctx = {}) {
-  const feedback = (draft.feedback ?? [])
-    .map((f) => `<div class="wd-feedback">↩ ${escapeHtml(f)}</div>`)
-    .join('');
-  // detail.js's `detailsKey` is `className|stepId` — a bare "plan-findings tl-findings"
-  // would collide with the step's own findings block (identical className, same step), and
-  // with a SECOND draft's own evidence block on the same step (two dispatches under one
-  // controller), toggling one open/closed state across all of them. The per-draft class
-  // (same trick tracked.js's `slugOf` uses for artifact keys) makes it unique.
-  const evidence = draft.evidence
-    ? `<details class="plan-findings tl-findings wd-evidence-${cssId(draft.id)}">
-        <summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Evidence</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary>
-        <div class="step-findings md-body">${renderMarkdown(draft.evidence)}</div>
-      </details>`
-    : '';
   return `
     <div class="wd-card" data-draft-id="${escapeHtml(draft.id)}">
       <div class="wd-head">⚠ ${escapeHtml(draft.action)} wants to ${escapeHtml(draft.summary)}</div>
-      ${feedback ? `<div class="wd-feedbacks">${feedback}</div>` : ''}
+      ${draftFeedbackHtml(draft)}
       <div class="wd-calls">${draft.calls.map((c, i) => callHtml(draft.id, c, i)).join('')}</div>
-      ${evidence}
-      <div class="wd-error work-error" data-wd-error role="alert" hidden></div>
-      <div class="step-actions">
-        <button type="button" class="o-btn o-btn--primary" data-wd-action="accept">Accept</button>
-        <button type="button" class="o-btn o-btn--default" data-wd-action="toggle-revise">Propose changes</button>
-        <button type="button" class="o-btn o-btn--danger" data-wd-action="toggle-deny">Deny</button>
-        <div class="thread-composer" data-composer="wd-revise-${escapeHtml(draft.id)}" hidden>
-          <textarea class="thread-compose-input" data-autogrow placeholder="What should change about this draft?"></textarea>
-          <div class="thread-composer-row">
-            <button type="button" class="o-btn o-btn--primary" data-wd-action="submit-revise" disabled>Submit</button>
-          </div>
-        </div>
-        <div class="thread-composer" data-composer="wd-deny-${escapeHtml(draft.id)}" hidden>
-          <textarea class="thread-compose-input" data-autogrow placeholder="Why are you denying this?"></textarea>
-          <div class="thread-composer-row">
-            <button type="button" class="o-btn o-btn--danger" data-wd-action="submit-deny" disabled>Deny</button>
-          </div>
-        </div>
-      </div>
+      ${draftEvidenceHtml(draft)}
+      ${draftDecisionHtml(draft)}
     </div>`;
 }
 
@@ -191,11 +224,36 @@ function collectCalls(card, draft) {
   const calls = draft.calls.map((call, idx) => {
     const fieldset = card.querySelector(`.wd-call[data-call-idx="${idx}"]`);
     const withLabel = (rest) => (call.label ? { label: call.label, ...rest } : rest);
+    // A per-call verdict, where the layout offers one (reply-draft.js). The daemon strips the
+    // payload of a skipped call down to its identity anyway, so send the drafted original
+    // rather than reading the fields back — an unparseable edit to a call the user has already
+    // decided not to run has no business blocking the ones they did approve.
+    if (fieldset?.querySelector('[data-kind="skip"]')?.checked) {
+      return withLabel({ ...(call.bash !== undefined ? { bash: call.bash } : { tool: call.tool }), skip: true });
+    }
     if (call.bash !== undefined) {
+      // No bash textarea at all means the layout chose not to offer the command for editing
+      // (reply-draft.js shows it read-only) — fall back to the drafted text rather than
+      // sending an empty command.
       const ta = fieldset?.querySelector('[data-kind="bash"]');
       const bash = ta ? ta.value : call.bash;
       const files = {};
-      fieldset?.querySelectorAll('[data-kind="file"]').forEach((el) => { files[el.dataset.argKey] = el.value; });
+      fieldset?.querySelectorAll('[data-kind="file"]').forEach((el) => {
+        const path = el.dataset.argKey;
+        const jsonKey = el.dataset.fileJsonKey;
+        if (!jsonKey) { files[path] = el.value; return; }
+        // The field edited one key of a JSON body; re-serialize onto the ORIGINAL object so
+        // any sibling key the session drafted survives. A body that no longer parses can't be
+        // reassembled — block Accept rather than post a rewritten payload.
+        let base;
+        try { base = JSON.parse(call.files?.[path] ?? '{}'); }
+        catch { errors.push(`"${path}" is no longer valid JSON`); return; }
+        if (!base || typeof base !== 'object' || Array.isArray(base)) {
+          errors.push(`"${path}" is not a JSON object`);
+          return;
+        }
+        files[path] = JSON.stringify({ ...base, [jsonKey]: el.value });
+      });
       return withLabel({ bash, ...(Object.keys(files).length ? { files } : {}) });
     }
     const args = {};

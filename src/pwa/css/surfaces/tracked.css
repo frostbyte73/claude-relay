@@ -387,6 +387,57 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
    as easily as it would a danger one — swap it for --bg + a danger border (an error IS a
    real failure, keeping --danger correct here) so it still reads as distinct. */
 .wd-error.work-error { margin-bottom: 0; background: var(--bg); border: 1px solid var(--danger); }
+.wd-subhead { font-size: 12px; color: var(--text-mute); }
+
+/* A `code.reply-pr-comments` draft is the same card, wrapped around the PR block's comment
+   threads instead of around a stack of commands (pr-block.js) — so it keeps the --warn rail
+   that says "waiting on you" and drops the soft fill, which at thread-list size reads as a
+   giant tinted slab rather than a callout. The threads inside are the PR's own record and
+   must keep looking like it. */
+.wd-card--replies {
+  background: transparent;
+  padding: 10px 0 10px 12px;
+  gap: 6px;
+}
+.wd-card--replies .threads { margin-top: 4px; }
+.pr-reply-unclaimed { margin-top: 8px; }
+
+/* One drafted reply, nested directly under the comment it answers — the composer it replaces,
+   not a command. Indented behind a --warn rail so it reads as an unsent answer to the message
+   above it, distinct from the posted comments it sits among (which carry no rail at all). */
+.thread-reply.wd-call {
+  margin: 2px 0 10px var(--gap-4, 16px);
+  padding: 8px 0 0 12px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--warn);
+  gap: 6px;
+}
+.thread-reply-head { color: var(--warn); }
+.thread-reply-input { min-height: 96px; font-size: 14px; line-height: 1.55; }
+.thread-reply-cmd-text {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-mute);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.thread-reply-skip { font-size: 12px; color: var(--text-mute); align-self: flex-start; }
+/* An ignored reply stays legible — you have to be able to read what you're declining, and to
+   change your mind — but visibly stops being something about to be posted. */
+.thread-reply:has([data-kind="skip"]:checked) {
+  border-left-color: var(--line);
+}
+.thread-reply:has([data-kind="skip"]:checked) .thread-reply-input,
+.thread-reply:has([data-kind="skip"]:checked) .thread-reply-cmd-text {
+  opacity: 0.45;
+}
+.thread-reply:has([data-kind="skip"]:checked) .thread-reply-head {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
 
 .tl-dot {
   position: absolute;
@@ -506,7 +557,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 
 /* ── Orchestrated step card ───────────────────────────────────────────────
    The body of a controller-owned step. Every part is its own stacked row —
-   chips, wait reason, PR block, dispatches, artifacts, gate, composer — so the
+   chips, wait reason, dispatches, artifacts, PR block, gate, composer — so the
    header line above stays name/skill/time and nothing else. */
 .orc-card { display: flex; flex-direction: column; gap: 8px; }
 .orc-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1007,6 +1058,9 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 .thread.thread-has-reply::before { background: var(--accent); }
 .thread.thread-has-edit::before { background: var(--accent-2); }
 .thread.thread-has-ignore::before { background: var(--text-dim); }
+/* Last, so it outranks the three above at equal specificity: a thread holding an unapproved
+   reply is waiting on the user, which beats whatever the triage recommended for it. */
+.thread.thread--replying::before { background: var(--warn); }
 .thread-card { background: transparent; }
 
 /* Thread header — file location is the headline; author + recommendation chip on a second row. */

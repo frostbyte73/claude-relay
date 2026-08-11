@@ -3,14 +3,17 @@
 // (both layouts; mobile arranges the same renderer), so the title/time header, failure
 // callout and inline session tail stay with the timeline and are not repeated here.
 //
-// Everything is stacked as its own row: phase, wait reason, PR block, dispatches,
-// artifacts, gate, composer, overflow. Never one crammed eyebrow line.
+// Everything is stacked as its own row: phase, wait reason, dispatches, artifacts, PR block,
+// gate, composer, overflow. Never one crammed eyebrow line. The order is the controller's own
+// chronology — it specs and plans before it has a branch to push, so the spec and impl plan
+// read above the PR they produced, not below it.
 
 import { work } from '../../state/work.js';
 import { orchestratedRows } from '../../vm/tracked.js';
 import { actionCategory, actionDisplayName, actionIconHtml } from './action-icon.js';
 import { hasPrBlock, renderPrBlockHtml, wirePrBlockActions } from './pr-block.js';
 import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
+import { isReplyDraft } from './reply-draft.js';
 import { renderMarkdown } from '../../markdown.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
 import { openSession } from '../../app-bridge.js';
@@ -169,17 +172,26 @@ function composerHtml(s) {
     </div>`;
 }
 
+// A pending `code.reply-pr-comments` draft belongs in the PR block, one field per comment
+// thread, not in a generic approval card stacked below it — the threads are the only place the
+// replies mean anything. Only when the block is actually rendered: with no PR block there is
+// nowhere for the threads to go, and the generic card is still the honest fallback.
+function replyDraftFor(step, vm) {
+  return orchestratedHasPrBlock(step) && isReplyDraft(vm.controllerDraft) ? vm.controllerDraft : null;
+}
+
 export function renderOrchestratedCard(step, { job } = {}) {
   const vm = orchestratedRows(step);
+  const replyDraft = replyDraftFor(step, vm);
   return `
     <div class="orc-card">
       ${chipsRowHtml(step, vm)}
       ${waitRowHtml(vm)}
-      ${orchestratedHasPrBlock(step) ? renderPrBlockHtml(job, prView(step)) : ''}
       ${dispatchesHtml(vm)}
       ${artifactsHtml(vm)}
+      ${orchestratedHasPrBlock(step) ? renderPrBlockHtml(job, prView(step), { replyDraft }) : ''}
       ${gateHtml(vm)}
-      ${vm.controllerDraft ? renderWriteDraft(vm.controllerDraft) : ''}
+      ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}
       ${actionsHtml(step, vm)}
       ${composerHtml(step)}
     </div>`;
@@ -189,12 +201,16 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
   const card = el.querySelector('.orc-card');
   if (!card) return;
   const vm = orchestratedRows(step);
-  if (orchestratedHasPrBlock(step)) wirePrBlockActions(card, job, prView(step));
+  if (orchestratedHasPrBlock(step)) {
+    wirePrBlockActions(card, job, prView(step), { replyDraft: replyDraftFor(step, vm) });
+  }
   wireOverflowMenu(card);
 
   // The controller's own draft and each dispatch's are self-contained cards (their own
   // Accept/Propose changes/Deny) — wireWriteDraft finds its own markup by draft id inside
-  // this card, same as any other draft mount point.
+  // this card, same as any other draft mount point. That holds for a reply draft too: it
+  // renders inside the PR block rather than below it, but it's the same `.wd-card` contract,
+  // so nothing here needs to know where the markup ended up.
   if (vm.controllerDraft) wireWriteDraft(card, { jobId: job.id, stepId: step.id, draft: vm.controllerDraft });
   vm.dispatchRows.forEach((d) => {
     if (d.draft) wireWriteDraft(card, { jobId: job.id, stepId: step.id, draft: d.draft });

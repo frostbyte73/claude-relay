@@ -48,10 +48,11 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 |---|---|
 | `boundNote` | **The payload to draft.** One entry per reply: the comment id and the exact body to post. This is what the controller wants posted — it wins over everything else. |
 | `artifacts.draftedReplies` | The triage round's full drafts, for context. Only the ones named in `boundNote` are to be drafted here. |
-| `artifacts.postedReplies` | What earlier rounds already posted. Never post one of these twice. |
+| `artifacts.postedReplies` | What earlier rounds already settled — posted, failed, or skipped by the user. Never post one of these twice, and never redraft one the user skipped. |
 | `pr.comments` | Every comment on the PR: `{id, author, body, file?, line?, diffHunk?, url?, inReplyTo?}`. Look each `boundNote` id up here for its `file`/`line`/`url`. |
 | `pr.prUrl` | The PR to post against. |
 | `writeGate.feedback` | Anything the user wrote when proposing changes, once you've drafted. If it asks for a wording change, apply it — that becomes the approved text once accepted. |
+| `writeGate.skippedCalls` | Replies the user reviewed and chose not to post. Final for this draft — see Step 4. |
 
 If `PR_URL` or `boundNote` is empty there is nothing to post — skip to Step 6b and hand it
 back.
@@ -89,38 +90,44 @@ with no preamble, signature, "as discussed" framing, or apology added. The text 
 `boundNote` is what the controller wants said; anything you add is unapproved text on a
 public PR.
 
-Threaded reply to an inline review comment (`<id>` is the integer id from Step 2):
+Every call obeys two rules that the approval UI depends on. The user does not review these
+replies as a stack of shell commands — the PWA renders each one inside the PR comment thread
+it answers, as an editable reply box (`reply-draft.js`). Breaking either rule doesn't fail
+loudly; it just drops that reply back to being shown as a raw `gh` command.
+
+**Rule 1 — `label` is the comment id, exactly.** Copy it from `boundNote` / `pr.comments`
+(`review:<node-id>` or `issue:<n>`). Nothing else: no suffix, no parenthetical, no prose.
+That string is the only thing that says which thread the reply belongs in.
+
+**Rule 2 — the body goes in `files`, never inline in the command.** Point the call at a
+literal `/tmp/outpost-reply-<k>.{json,md}` path where `<k>` is the call's 1-based position in
+this draft (a comment id is not a valid path — the granted paths are
+`/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*`), and give that same path's content in `files`. See
+"File-referencing payloads: draft the content, don't write the file" in
+`~/.outpost/actions/SHARED-write-drafts.md` — the daemon writes whatever content you draft
+(or the user edits) to that exact path once approved. You never write it yourself, and there
+is no shell quoting to get wrong: a body with backticks, apostrophes, `$VAR`, `$(…)` or
+newlines needs no escaping at all, because it never reaches the command line.
+
+Threaded reply to an inline review comment (`<id>` is the integer id from Step 2) — the
+`--input` payload is the endpoint's JSON body, so its `files` content is `{"body": "…"}`:
 
 ```bash
-gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" -f body="<the approved reply, verbatim>"
+gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" --input /tmp/outpost-reply-1.json
 ```
 
-Top-level PR comment (issue comments, review summaries):
+Top-level PR comment (issue comments, review summaries) — `--body-file` takes the markdown
+itself, so its `files` content is the reply text as-is:
 
 ```bash
-gh pr comment <PR_NUMBER> --body "<the approved reply, verbatim>"
+gh pr comment <PR_NUMBER> --body-file /tmp/outpost-reply-2.md
 ```
 
-**A double-quoted body is read by the shell**, so `$VAR`, `$(…)` and backticks are denied
-in one — a command substitution would put an unreviewed file's contents onto a public PR.
-Reply text that needs them (markdown backticks, most often) has two escape hatches:
-
-- **single-quote the body.** The shell expands nothing inside `'…'`, so
-  `--body 'wrap the `insert` in a transaction'` is fine. Only an apostrophe in the text
-  rules this out.
-- **route the body through `files` instead of writing it yourself** — see "File-referencing
-  payloads: draft the content, don't write the file" in
-  `~/.outpost/actions/SHARED-write-drafts.md`. Point the call at a literal `/tmp/` path (write
-  the id in yourself) and give that same path's content in `files`:
-
-  ```bash
-  gh pr comment <PR_NUMBER> --body-file /tmp/outpost-reply-<id>.md
-  gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" --input /tmp/outpost-reply-<id>.json
-  ```
-
-  The `--input` payload is the endpoint's JSON body — `{"body": "…"}`. The daemon writes
-  whatever content you draft (or the user edits) to that exact path once approved — you never
-  write it yourself.
+**Type those two commands exactly.** They are the only shapes the approval UI recognises, and
+recognising one is what lets it show the user your reply as prose under the comment it
+answers. Add a flag, chain a second clause, or point the command at a file you didn't draft in
+`files`, and it can no longer say what the call does — so it shows the raw command instead,
+which is a worse review for the user and reads as something having gone wrong.
 
 Compose one `calls` entry per reply, in `boundNote`'s order:
 
@@ -130,12 +137,15 @@ mcp__outpost__submit_write_draft({
   summary: "Post <n> replies on <PR_URL>",
   evidence: "<boundNote's replies rendered as markdown, one per comment id>",
   calls: [
-    { label: "review:ABC", bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/comments/<id>/replies\" -f body=\"<verbatim>\"" },
-    { label: "issue:123", bash: "gh pr comment <PR_NUMBER> --body \"<verbatim>\"" },
     {
-      label: "review:XYZ (apostrophe + backtick escape hatch)",
-      bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/comments/<id>/replies\" --input /tmp/outpost-reply-<id>.json",
-      files: { "/tmp/outpost-reply-<id>.json": "{\"body\": \"<verbatim>\"}" }
+      label: "review:ABC",
+      bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/comments/<id>/replies\" --input /tmp/outpost-reply-1.json",
+      files: { "/tmp/outpost-reply-1.json": "{\"body\": \"<verbatim>\"}" }
+    },
+    {
+      label: "issue:123",
+      bash: "gh pr comment <PR_NUMBER> --body-file /tmp/outpost-reply-2.md",
+      files: { "/tmp/outpost-reply-2.md": "<verbatim>" }
     }
   ]
 })
@@ -152,6 +162,20 @@ and draft again.
 exact commands the user approved, unchanged. If one fails, keep going with the rest and
 record which failed — a partial post is a real outcome and the controller needs to know
 exactly which threads still have no answer.
+
+**`writeGate.skippedCalls` is the user answering each reply individually.** They reviewed
+these and chose not to post them — comments that needed no answer. This is a final decision
+for this draft, not a request to try again:
+
+- Never post a skipped call, and never redraft one on a later round.
+- Record each in `artifacts.postedReplies` as `skipped by user` (Step 6a), using the call's
+  `label` for the comment id. That artifact is the controller's only record of the decision;
+  leave one out and it will hand the same comment back to you next round.
+- The skip is about that comment, not about you. It is not a failure and not a lesson —
+  don't journal it (Step 7) unless something else actually went wrong.
+
+If the user skips **every** reply, the daemon settles the round itself: you are not resumed
+with a commit phase at all, and the controller is told directly. Nothing is required of you.
 
 ## Step 5 — Verify
 
@@ -170,9 +194,10 @@ Load the MCP tools (deferred behind ToolSearch), then report:
 ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__submit_journal", max_results: 2 })
 ```
 
-`artifacts.postedReplies` is the **only** durable record that these replies went out — the
-daemon does not mark the comments answered, and the controller's ladder reads this artifact
-to know it is done with them. Write it as markdown, one line per comment id, and carry
+`artifacts.postedReplies` is the **only** durable record of what happened to each comment —
+the daemon does not mark them answered, and the controller's ladder reads this artifact to
+know it is done with them. Every comment you were given a call for gets a line: posted,
+failed, or skipped by the user. Write it as markdown, one line per comment id, and carry
 forward everything that was already in `artifacts.postedReplies` so nothing is lost.
 
 ```
@@ -180,8 +205,8 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "pr_comments",
-  memo: "posted <n> replies (<comment ids>); <m> failed: <which and why>",
-  artifacts: { postedReplies: "- review:ABC — posted (threaded)\n- issue:123 — posted\n- review:XYZ — FAILED: 404 on /replies" },
+  memo: "posted <n> replies (<comment ids>); skipped <k> by user; <m> failed: <which and why>",
+  artifacts: { postedReplies: "- review:ABC — posted (threaded)\n- issue:123 — posted\n- review:DEF — skipped by user\n- review:XYZ — FAILED: 404 on /replies" },
   next: { kind: "self-round" }
 })
 ```

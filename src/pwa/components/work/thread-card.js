@@ -2,6 +2,12 @@
 // per-comment edit all went away with the `open-pr` step type — the controller
 // owns those moves now — but jobs migrated from it still carry the comments and
 // drafted replies (see storage/jobs-migrate.ts), so the history stays rendered.
+//
+// The one live thing a thread can carry is a drafted reply: `replyHtmlFor(commentId)` is a slot
+// pr-block.js fills with the pending write draft's field for that specific comment
+// (reply-draft.js), rendered directly beneath it so the reply reads as the answer to the
+// message above it rather than as a footnote at the end of the thread. This module stays
+// read-only either way — it renders what it's handed and owns no controls of its own.
 import { renderMarkdown } from '../../markdown.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -98,13 +104,14 @@ function confidencePill(confidence) {
   return `<span class="thread-confidence thread-confidence-${confidence}">confidence: ${escapeHtml(confidence)}</span>`;
 }
 
-export function renderThreadCard(chain, draft) {
+export function renderThreadCard(chain, draft, replyHtmlFor = () => '') {
   const root = chain[0];
   const leaf = chain[chain.length - 1];
   const loc = root.file ? (root.line ? `${root.file}:${root.line}` : root.file) : 'general comment';
   const recClass = draft?.recommendation ? ` thread-has-${draft.recommendation}` : '';
+  const replies = chain.map((c) => replyHtmlFor(c.id) || '');
   return `
-    <li class="thread${recClass}" data-comment-id="${escapeHtml(leaf.id)}">
+    <li class="thread${recClass}${replies.some(Boolean) ? ' thread--replying' : ''}" data-comment-id="${escapeHtml(leaf.id)}">
       <article class="thread-card">
         <header class="thread-header">
           <span class="thread-loc">${escapeHtml(loc)}</span>
@@ -114,7 +121,7 @@ export function renderThreadCard(chain, draft) {
           ${confidencePill(draft?.confidence)}
         </header>
         ${root.diffHunk ? `<pre class="thread-hunk">${renderDiffHunk(root.diffHunk)}</pre>` : ''}
-        ${chain.map((c) => `
+        ${chain.map((c, i) => `
           <div class="thread-msg">
             <div class="thread-msg-head">
               <span class="thread-avatar">${escapeHtml(initials(c.author))}</span>
@@ -123,6 +130,7 @@ export function renderThreadCard(chain, draft) {
             </div>
             <div class="thread-msg-body markdown">${renderMarkdown(stripHtmlComments(c.body), { allowHtml: true })}</div>
           </div>
+          ${replies[i]}
         `).join('')}
         ${reactionsStrip(chain)}
         ${draft?.rationale ? `<p class="thread-rationale">${escapeHtml(draft.rationale)}</p>` : ''}

@@ -30,6 +30,13 @@ export interface PinnedCall {
   // identically-payloaded pins in one draft where only one of them was actually spent by this
   // particular call (payload alone can't tell them apart; the id can).
   consumedToolUseId?: string;
+  // Decision-only, never persisted on a pin: the user marked this call as one they do NOT want
+  // run. It rides in on the ACCEPT payload — a per-call verdict alongside the per-call edits,
+  // so "post these two, skip the third" is one decision rather than a redraft round-trip.
+  // acceptDraft partitions on it and drops it (its field-pick rebuild keeps only
+  // id/label/bash/tool), and it is only parsed when the caller opts in — a SESSION cannot
+  // pre-skip its own calls, because a call the action doesn't want run simply isn't drafted.
+  skip?: boolean;
   // Set when a PostToolUseFailure released this pin. A non-zero exit or a thrown call means
   // the TOOL reported failure, not that the write provably never reached its destination (a
   // compound clause's first half can still have landed; an MCP write can throw after the
@@ -69,6 +76,11 @@ export interface WriteDraft {
   raisedBy: DraftRaisedBy;
   summary: string;
   calls: PinnedCall[];
+  // The calls the user was shown and chose not to run, recorded at accept time. Never pinned
+  // (nothing here can ever be consumed) — this is the durable answer to "why did only two of
+  // the three replies I drafted go out", both for the resumed session (writeGateFor hands it
+  // straight through) and for anyone reading the step later.
+  skippedCalls?: PinnedCall[];
   evidence?: string;
   feedback?: string[];
   requestedAt: number;
@@ -87,7 +99,11 @@ export interface WriteDraft {
 // 'commit'` forever with a call the session has no way to satisfy. Each PinnedCall is built by
 // explicit field pick, never by spreading the caller's object, so a session cannot smuggle its
 // own `id`/`consumedAt`/`consumedToolUseId`/`releasedAfterFailure` into a fresh pin.
-export function parseDraftCalls(raw: unknown): PinnedCall[] | undefined {
+//
+// `allowSkip` opts the ACCEPT boundary into reading each call's `skip` verdict. It is off for
+// the submit boundary on purpose: `skip` is the user's answer, and a session that could set it
+// on its own draft would be pre-answering for them.
+export function parseDraftCalls(raw: unknown, opts: { allowSkip?: boolean } = {}): PinnedCall[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const calls: PinnedCall[] = [];
   for (const c of raw) {
@@ -121,6 +137,7 @@ export function parseDraftCalls(raw: unknown): PinnedCall[] | undefined {
       ...(bash !== undefined ? { bash } : {}),
       ...(tool !== undefined ? { tool } : {}),
       ...(files !== undefined ? { files } : {}),
+      ...(opts.allowSkip && c.skip === true ? { skip: true } : {}),
     });
   }
   return calls;
@@ -399,6 +416,10 @@ export function matchPinnedCall(
 export interface WriteGatePayload {
   phase: 'draft' | 'commit';
   approvedCalls?: PinnedCall[];
+  // Calls the user was shown and declined to run. Distinct from "not drafted": the session
+  // proposed these, the user said no to these specific ones, and the answer is final for this
+  // draft — a commit round records them as skipped and must not re-draft them.
+  skippedCalls?: PinnedCall[];
   feedback: string[];
 }
 
@@ -413,5 +434,10 @@ export function writeGateFor(draft: WriteDraft | undefined): WriteGatePayload | 
   if (!draft.approvedAt) return { phase: 'draft', feedback: draft.feedback ?? [] };
   const remaining = draft.calls.filter((c) => !c.consumedAt);
   if (remaining.length === 0) return undefined;
-  return { phase: 'commit', approvedCalls: remaining, feedback: draft.feedback ?? [] };
+  return {
+    phase: 'commit',
+    approvedCalls: remaining,
+    ...(draft.skippedCalls?.length ? { skippedCalls: draft.skippedCalls } : {}),
+    feedback: draft.feedback ?? [],
+  };
 }

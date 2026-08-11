@@ -105,6 +105,12 @@ new, not a requirement for every file-referencing call.
 
 - **Accept.** You resume with `writeGate.phase === "commit"` and `writeGate.approvedCalls` —
   the calls the user approved, possibly edited, narrowed to whichever are still unconsumed.
+  The verdict is **per call**, so a draft of several calls can come back partly approved:
+  `writeGate.skippedCalls` holds the ones the user reviewed and chose not to run. Those are
+  decided, not deferred — never run one, never redraft one, and report each as skipped so
+  whatever reads your output upstream knows it was answered rather than dropped. If the user
+  skips *every* call, you are not resumed at all: the daemon settles the draft and tells
+  whoever raised it.
   **Run these verbatim, in the order given.** "Verbatim" means the exact command text (after
   outer whitespace trim) or the exact tool name + deep-equal arguments — not a reformatted,
   "improved," or re-derived equivalent. The hook compares the literal call you attempted

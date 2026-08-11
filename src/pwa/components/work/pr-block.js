@@ -4,6 +4,10 @@
 // something to show, adapting the step's `pr` facts onto the flat shape read here.
 
 import { groupThreads, renderThreadCard } from './thread-card.js';
+import {
+  isReplyDraft, renderReplyCallHtml, replyAcceptLabel, replyCallsByComment, wireReplyDraft,
+} from './reply-draft.js';
+import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml } from './write-draft-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { discardAll } from '../../state/git.js';
 
@@ -85,13 +89,11 @@ export function hasPrBlock(s) {
   return !!(s.prUrl || s.workspace?.branch || (s.comments ?? []).length > 0);
 }
 
-export function renderPrBlockHtml(job, s) {
+export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   const drafts = new Map((s.draftedReplies ?? []).map((d) => [d.commentId, d]));
   const comments = s.comments ?? [];
   const allThreads = groupThreads(comments);
   const isResolved = (chain) => !!chain[chain.length - 1].respondedAt;
-  const openThreads = allThreads.filter((c) => !isResolved(c));
-  const resolvedThreads = allThreads.filter(isResolved);
   const draftFor = (chain) => {
     for (let i = chain.length - 1; i >= 0; i--) {
       const d = drafts.get(chain[i].id);
@@ -99,6 +101,31 @@ export function renderPrBlockHtml(job, s) {
     }
     return undefined;
   };
+
+  // A pending `code.reply-pr-comments` draft renders as the reply composers it replaces — one
+  // per thread — instead of as a stack of `gh api` commands in a generic approval card. The
+  // decision is still the draft's own, taken once for all of them (there is one WriteDraft to
+  // accept), so the whole threads region becomes that draft's `.wd-card`: wireWriteDraft finds
+  // it by `data-draft-id` wherever it lives, and collectCalls reads the edited replies back off
+  // the `.wd-call` fieldsets nested in the thread cards.
+  const pendingReplies = isReplyDraft(replyDraft) ? replyDraft : null;
+  const replyCalls = pendingReplies ? replyCallsByComment(pendingReplies) : new Map();
+  const claimed = new Set();
+  const hasReply = (chain) => chain.some((c) => replyCalls.has(c.id));
+  // Keyed on the individual comment, not the thread: a reply belongs directly under the message
+  // it answers, and a draft that answers two comments in one thread gets both, each in place.
+  const replyForComment = (commentId) => {
+    const hit = replyCalls.get(commentId);
+    if (!hit) return '';
+    claimed.add(hit.idx);
+    return renderReplyCallHtml(pendingReplies, hit.call, hit.idx);
+  };
+
+  // A thread the controller wants to answer stays in the open list even if the watcher already
+  // marked it responded — burying an unapproved reply inside the collapsed "resolved"
+  // disclosure would hide a pending write behind a click.
+  const openThreads = allThreads.filter((c) => !isResolved(c) || hasReply(c));
+  const resolvedThreads = allThreads.filter((c) => isResolved(c) && !hasReply(c));
 
   const repoName = shortName(s.workspace?.repoCwd);
   const prMatch = s.prUrl ? s.prUrl.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?\/pull\/(\d+)/) : null;
@@ -134,10 +161,41 @@ export function renderPrBlockHtml(job, s) {
       ${isMerged ? '<span class="pr-merged">Merged</span>' : ''}
     </div>`;
 
+  // Order matters: `replyForComment` is what fills `claimed`, so the threads have to be
+  // rendered before the leftovers can be worked out.
+  const openThreadsHtml = openThreads
+    .map((chain) => renderThreadCard(chain, draftFor(chain), replyForComment))
+    .join('');
+  // A drafted reply whose `label` names no comment on this PR — a deleted comment, or an id
+  // the action got wrong. It still posts if accepted, so it gets the same treatment (and the
+  // same per-reply skip) out here rather than being silently omitted from the payload the user
+  // is approving; it just names its own target, since no thread is doing that for it.
+  const unclaimedHtml = (pendingReplies?.calls ?? [])
+    .map((c, i) => (claimed.has(i) ? '' : renderReplyCallHtml(pendingReplies, c, i, { label: c.label || 'an unknown comment' })))
+    .join('');
+
+  const threadsHtml = openThreadsHtml ? `<div class="threads">${openThreadsHtml}</div>` : '';
+  const threadsRegion = !pendingReplies ? threadsHtml : `
+    <div class="wd-card wd-card--replies" data-draft-id="${escapeHtml(pendingReplies.id)}">
+      <div class="wd-head">⚠ ${escapeHtml(pendingReplies.summary)}</div>
+      <div class="wd-subhead">Edit any reply in place, or ignore the ones that don't need one. Nothing is posted until you accept.</div>
+      ${draftFeedbackHtml(pendingReplies)}
+      ${threadsHtml}
+      ${unclaimedHtml ? `<div class="wd-calls pr-reply-unclaimed">${unclaimedHtml}</div>` : ''}
+      ${draftEvidenceHtml(pendingReplies)}
+      ${draftDecisionHtml(pendingReplies, {
+    // Denying the whole draft isn't a verdict that fits here: once there are new comments,
+    // drafting replies was the right move — the answer to "not this one" is its skip box, and
+    // to "none of these" is ticking them all, which the daemon settles as its own outcome.
+    deny: false,
+    acceptLabel: replyAcceptLabel(pendingReplies.calls.length, 0),
+  })}
+    </div>`;
+
   // Everything under the header, in chronological order: CTA and open threads
   // (live/actionable, so kept up top) → checks → resolved comments. Spec and
   // implementation plan are artifacts of the step, not of the PR — the orchestrated
-  // card discloses them once, below this block.
+  // card discloses them once, above this block, where the controller produced them.
   const body = `
     ${reviewReady ? `
       <div class="pr-review-cta">
@@ -149,11 +207,7 @@ export function renderPrBlockHtml(job, s) {
       </div>
     ` : ''}
 
-    ${openThreads.length === 0 ? '' : `
-      <div class="threads">
-        ${openThreads.map((chain) => renderThreadCard(chain, draftFor(chain))).join('')}
-      </div>
-    `}
+    ${threadsRegion}
     ${renderChecksHtml(s, prClosed)}
     ${resolvedThreads.length ? `
       <details class="pr-disclosure pr-threads-resolved">
@@ -188,7 +242,8 @@ export function renderPrBlockHtml(job, s) {
   `;
 }
 
-export function wirePrBlockActions(el, job, s) {
+export function wirePrBlockActions(el, job, s, { replyDraft } = {}) {
+  if (isReplyDraft(replyDraft)) wireReplyDraft(el, replyDraft);
   el.querySelector('[data-diff-action="review"]')?.addEventListener('click', () => {
     void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId });
   });
