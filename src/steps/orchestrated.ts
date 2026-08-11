@@ -1,6 +1,7 @@
 import { buildActionCatalog, writeEnvelope, type OrchestratedEnvelope } from '../work/envelope.js';
 import { MAX_ROUNDS } from './orchestrated-policy.js';
 import { shouldDeliver } from './orchestrated-inbox.js';
+import { currentDraftForRaiser, writeGateFor } from '../work/write-draft.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 import type { StepHandler } from './types.js';
 
@@ -44,9 +45,23 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
     // SKILL leans on hardest have to be set here too: which hat the controller is wearing
     // (its own, on a cold spawn) and what it may dispatch.
     const actionCatalog = buildActionCatalog(ctx.actionRegistry);
+    // The controller's own draft (never one raised by a dispatch child — those carry their own
+    // writeGate on their own dispatch envelope). Needed here, not just in resumeControllerRound,
+    // because reconcileInterruptedSteps clears `sessionId` on a `running` step after a daemon
+    // restart — including one that crashed mid-commit of an already-approved draft — which
+    // routes the next decide() through THIS cold-spawn path rather than a resume. That same
+    // reconcile also resets `boundAction` to undefined, so `s.boundAction ?? s.controller` here
+    // always agrees with the freshly-cold-spawned `boundAction` field below — never a sub-action
+    // stale from before the crash. Scoped the same way resumeControllerRound scopes its own
+    // writeGate: an approved-but-partially-consumed draft from an earlier round bound to a
+    // DIFFERENT action must not surface once the controller is (or, here, cold-spawns as) a
+    // different one — see currentDraftForRaiser.
+    const boundAction = s.boundAction ?? s.controller;
+    const writeGate = writeGateFor(currentDraftForRaiser(s, { kind: 'controller' }, boundAction));
     return {
-      boundAction: s.controller,
+      boundAction,
       ...(actionCatalog ? { actionCatalog } : {}),
+      ...(writeGate ? { writeGate } : {}),
       // A batch can be drained with no live session to hand it to — reconcileInterruptedSteps
       // clears a dead controller's session, and a dispatch settling right after drains into
       // `lastDelivered` with no resume to carry it. The cold spawn comes through here, so it

@@ -8,6 +8,8 @@ import type {
 } from './types.js';
 
 export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
+// Groups whose grants mean "may propose this write for approval", not "may run it".
+const GATED_GROUPS: ReadonlySet<string> = new Set(['push']);
 const KINDS: readonly ActionKind[] = ['action','step-orchestrator'];
 const SIDE_EFFECTS: readonly SideEffects[] = ['none','gated-write','worktree-edit','external-write'];
 const RUNNERS: readonly ActionRunner[] = ['claude','builtin'];
@@ -70,6 +72,9 @@ export class ActionRegistry {
 
   getAction(name: string): ActionDef | undefined { return this.actionsByName.get(name); }
   listActions(): ActionDef[] { return [...this.actionsByName.values()]; }
+  gatedFor(actionName: string): ActionAllowlist | undefined {
+    return this.getAction(actionName)?.gated;
+  }
 
   private walkActions(root: string, errors: RegistryLoadError[]): void {
     for (const category of safeReaddir(root)) {
@@ -104,7 +109,7 @@ export class ActionRegistry {
     catch (e) { throw new Error(`output.schema.json invalid: ${(e as Error).message}`); }
 
     const extras = readAllowlist(join(dir, 'allowlist.json'));
-    const allowlist = this.resolvePermissions(fm, extras);
+    const { allowlist, gated } = this.resolvePermissions(fm, extras);
 
     return {
       name: fm.name,
@@ -114,16 +119,22 @@ export class ActionRegistry {
       inputSchema,
       outputSchema,
       allowlist,
+      gated,
     };
   }
 
-  // Returns the union of (core if claude) + each named group + colocated extras.
-  private resolvePermissions(fm: ActionFrontmatter, extras: ActionAllowlist): ActionAllowlist {
+  // Returns the union of (core if claude) + each named group + colocated extras, plus the
+  // subset of that union which came from a gated group (see GATED_GROUPS).
+  private resolvePermissions(
+    fm: ActionFrontmatter, extras: ActionAllowlist,
+  ): { allowlist: ActionAllowlist; gated: ActionAllowlist } {
     const merged: ActionAllowlist = {
-      alwaysAllow: [],
-      alwaysAllowBashPatterns: [],
-      alwaysAllowMcpPatterns: [],
-      alwaysAllowPathPatterns: [],
+      alwaysAllow: [], alwaysAllowBashPatterns: [],
+      alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
+    };
+    const gated: ActionAllowlist = {
+      alwaysAllow: [], alwaysAllowBashPatterns: [],
+      alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
     };
     const groupNames: string[] = [];
     if (fm.outpost.runner === 'claude' && this.permissionGroups.core) groupNames.push('core');
@@ -134,9 +145,12 @@ export class ActionRegistry {
       }
       groupNames.push(name);
     }
-    for (const name of groupNames) mergeAllowlist(merged, this.permissionGroups[name]!);
+    for (const name of groupNames) {
+      mergeAllowlist(merged, this.permissionGroups[name]!);
+      if (GATED_GROUPS.has(name)) mergeAllowlist(gated, this.permissionGroups[name]!);
+    }
     mergeAllowlist(merged, extras);
-    return merged;
+    return { allowlist: merged, gated };
   }
 
   private coerceActionFrontmatter(raw: unknown, dir: string): ActionFrontmatter {
@@ -182,7 +196,6 @@ export class ActionRegistry {
         side_effects: o.side_effects as SideEffects,
         runner: o.runner as ActionRunner,
         permissions: permissions as string[] | undefined,
-        human_gate: typeof o.human_gate === 'boolean' ? o.human_gate : undefined,
         timeout_sec: typeof o.timeout_sec === 'number' ? o.timeout_sec : undefined,
         retries: typeof o.retries === 'number' ? o.retries : undefined,
       },

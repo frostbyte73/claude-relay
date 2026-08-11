@@ -6,7 +6,7 @@ outpost:
   category: code
   side_effects: none
   runner: claude
-  permissions: [read]
+  permissions: [read, push]
   timeout_sec: 900
   retries: 0
 ---
@@ -19,9 +19,12 @@ then wakes you again with what changed. There is no run-to-completion — assume
 resumed cold, after a compaction, a daemon restart, or hours of waiting, and that everything
 you didn't write down is gone.
 
-**Every turn ends with exactly one `mcp__outpost__submit_step_progress` call, then you stop.**
-A turn that ends without one is read as a hang and fails the step. A turn that keeps working
-after it has reported is racing the move it just declared.
+**Every turn ends with exactly one `mcp__outpost__submit_step_progress` call, then you stop** —
+with one exception: a turn where you raise your own write draft ends with
+`mcp__outpost__submit_write_draft` instead (row 5 — see
+`~/.outpost/actions/SHARED-write-drafts.md`). A turn that ends without one of those two is
+read as a hang and fails the step. A turn that keeps
+working after it has reported is racing the move it just declared.
 
 ## 1. Read `$OUTPOST_ENVELOPE` first — every turn, before anything else
 
@@ -44,7 +47,7 @@ cat "$OUTPOST_ENVELOPE"
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
-| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, `human_gate`, I/O schemas. The only valid action names; never invent one. |
+| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. The only valid action names; never invent one. |
 | `previousSteps` | Findings from earlier steps of the job. |
 | `recentLessons` | Journal lines from past runs of this action. |
 
@@ -120,7 +123,7 @@ as part of its condition.
 | 2 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved` not `true` | you gate it and the user approves | `gate` with the spec text as `draft` | `spec` |
 | 3 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved === true` | the plan round writes `implPlan` | `self-round` as `code.plan` | `plan` |
 | 4 | `artifacts.implPlan` present, no `artifacts.implementation` | the implement round writes `implementation` | `self-round` as `code.implement` | `implement` |
-| 5 | `artifacts.implementation` present, no `pr.prUrl` | the user pushes and opens the PR | `wait` on `["pr-state"]`, reason: waiting for the user to review the diff and open the PR | `implement` |
+| 5 | `artifacts.implementation` present, no `pr.prUrl` | `pr.prUrl` appears (the watcher confirms the PR exists — whether you opened it or the user did by hand) | if the branch isn't pushed yet, `wait`; once it is, draft (or, once approved, run) opening the PR — see below | `implement` |
 | 6 | `pr.prUrl` present and `pr.prState === "merged"` | — (terminal) | `resolve` with a summary and the PR URL | `merged` |
 | 7 | `pr.prUrl` present and `pr.prState === "closed"` | — (terminal) | `fail` with "PR closed without merging" | `failed` |
 | 8 | `pr.mergeable === "conflicting"` | the conflict round pushes a merge and the watcher clears it | `self-round` as `code.resolve-conflicts` | `conflict` |
@@ -140,58 +143,137 @@ Three of these read a fact only *you* can record, so record it:
   approval, a required check nobody will re-run) leaves `ciState`/`reviewState` untouched, so
   the row matches again forever. If `code.merge-pr` handed back and nothing in `pr` has moved
   since, take row 14 and say in `reason` what the merge is blocked on — do not re-gate it.
-- **Row 5** is the only row for "implemented, no PR yet", and it is a `wait`, not a round.
-  `code.implement` deliberately leaves the edits uncommitted for the user to review, commit,
-  push and `gh pr create` themselves — nothing in the catalog opens the PR, and you cannot.
-  `pr-state` fires when `prUrl` appears. Do **not** re-run `code.implement` to try to force it.
+- **Row 5** is the only row for "implemented, no PR yet", and it's the one row where you draft
+  a write yourself instead of binding a round to another action — see the detail below.
+  `code.implement` still deliberately leaves the edits uncommitted for the user to review,
+  commit, and push themselves if they'd rather do it by hand; either way `pr.prUrl` appearing
+  is what falsifies the row. Do **not** re-run `code.implement` to try to force it.
 
-**A declined gate outranks the whole table.** A `gate-resolved` item with `approved: false`
-in `delivered` means redo *that* work with the user's `feedback` — another `code.spec` round
-with the feedback in `note` — and only then walk the ladder again, which re-gates the revised
-draft at row 2. Do not read a decline as "row 2 again" and re-gate the same text.
+**A declined gate outranks the whole table — but check `source` first.** A `gate-resolved`
+item with `approved: false` and no `source` field is YOUR OWN voluntary gate declined: redo
+*that* work with the user's `feedback` — another `code.spec` round with the feedback in `note`
+— and only then walk the ladder again, which re-gates the revised draft at row 2. Do not read
+a decline as "row 2 again" and re-gate the same text.
+
+`source: "write-draft"` on that same item is a DIFFERENT decision: the user vetoed a write
+outright — the merge, a comment, a branch delete — not a spec or a plan. There is nothing to
+redo with feedback; the draft is gone, and neither you nor the bound round that drafted it will
+be asked to compose another for this decision. Take it as a fresh delivery on the ladder:
+reconsider `pr`/`artifacts` from scratch and pick whatever row now matches — often the same row
+that raised the draft, this time reasoning past the fact that the user said no, or row 14 if
+nothing better applies — rather than assuming a redraft is expected.
 
 **Rows below the one that matched still matter next turn.** The ladder is a priority order
 re-evaluated from scratch on every decision turn, not a script you walk once. A conflict that
 appears after CI went green sends you back up it. Rows 6-13 all presuppose `pr.prUrl`; until
 it exists only rows 1-5 can match.
 
-The happy path walks it once: 1 → 2 → 3 → 4 → 5 → (user opens the PR) → 14 → comments and CI
-churn through 8-12 → 13 → the merge round resolves the step. If you find yourself on a row you
-were on two turns ago with nothing new written, the row is missing its falsifier — say so in
-`memo` and take row 14 rather than running it again.
+The happy path walks it once: 1 → 2 → 3 → 4 → 5 (draft `gh pr create`, or the user opens it by
+hand) → 14 → comments and CI churn through 8-12 → 13 → the merge round resolves the step. If
+you find yourself on a row you were on two turns ago with nothing new written, the row is
+missing its falsifier — say so in `memo` and take row 14 rather than running it again.
 
-**External-write rounds are gated for you.** `code.fix-ci`, `code.resolve-conflicts`,
-`code.reply-pr-comments` and `code.merge-pr` declare `side_effects: external-write`, so the
-daemon holds your move at a user gate before it runs. That is expected — the move you
-submitted is stored and executed **verbatim** on approval. Do not re-issue it, do not wrap it
-in your own `gate`, and do not treat the pause as a rejection. That is why the merge rung is a
-`code.merge-pr` round and not a `gate` of your own: the user still approves before anything
-lands, and the round that they approved is the one that can actually merge.
+### Row 5 in detail — opening the PR
 
-**The gate shows the user your `note`**, under the line "Run `<action>` on this step's
-session." That is the whole reason row 11 puts the reply bodies verbatim into `note` rather
-than opening a `gate` of its own first — the user reads the exact text that will be posted,
-approves once, and `code.reply-pr-comments` posts it. Two approvals for one write is a bug,
-not caution. Whenever a forced gate is what the user will read, write `note` as the thing
-being approved, not as a memo to yourself.
+`artifacts.implementation` existing does **not** mean the branch is pushed —
+`code.implement` deliberately leaves its edits uncommitted for the user to review, and nothing
+in the ladder commits or pushes on their behalf. Check the remote before drafting anything,
+using only what this action is actually granted (`ls-remote` is **not** in the `read` group's
+git allowlist and denies outright — `fetch` and `rev-parse` are):
+
+```bash
+git fetch origin
+git rev-parse --verify origin/<branch>
+```
+
+- **Non-zero exit (no `origin/<branch>`):** the user hasn't pushed yet. Do not draft. There is
+  no event this step can wait on for "the user pushed but hasn't opened a PR" — `pr-state` only
+  fires once a PR actually exists (`discoverPr` finds nothing until then), so an event-only
+  `wait` here would park the step permanently. Arm a bounded poll instead:
+  `{kind:"wait", wait:{reason:"Implementation done — waiting for you to push (checking again in
+  an hour)", events:["pr-state"], resumeAt:<now + 1 hour, epoch ms>}}`. Compute `resumeAt`
+  yourself from the current time (`date +%s` gives seconds; multiply by 1000, add the offset) —
+  there's no shell arithmetic needed since this is a plain field on the MCP call, not a Bash
+  command. Re-run this check on every wake, whether it fired from the timer or from `pr-state`
+  (the user may have pushed **and** opened the PR themselves, which also satisfies this row).
+  If you're still re-arming this same wait after roughly six wakes (about half a day with no
+  push), say so plainly in `memo` — how long it's been waiting — so the user sees it, rather
+  than silently re-arming the same wait forever; if `roundsRemaining` is genuinely getting low
+  by then, fall through to "Round budget nearly spent" (§ Failure modes) instead of continuing
+  to poll.
+- **Zero exit (`origin/<branch>` exists):** the push has landed — draft the PR.
+
+Once the branch is confirmed pushed, draft one yourself rather than sitting in a `wait` for the
+user to run `gh pr create` by hand — see `SHARED-write-drafts.md` for the draft/commit
+mechanics this shares with every other write action. `mcp__outpost__submit_write_draft` is
+deferred behind ToolSearch like the other `mcp__outpost__*` tools — load it the same way as
+§8's tools before you call it. On this decision turn, if `writeGate` is absent (or
+`writeGate.phase === "draft"`), call `mcp__outpost__submit_write_draft` instead of
+`submit_step_progress` and stop:
+
+```
+mcp__outpost__submit_write_draft({
+  jobId: "<jobId>", stepId: "<stepId>",
+  summary: "Open a PR for <branch> against <base>",
+  evidence: "<title + body you'd use, and why — the spec/implementation summary is a good source>",
+  calls: [{ label: "open PR", bash: "gh pr create --title \"<title>\" --body \"<body>\" --base <base> --head <branch>" }]
+})
+```
+
+Write every value literally — no `$VAR`. If `writeGate.feedback` comes back non-empty (the
+user wants a different title/body — every round, oldest first), redraft addressing it. If the
+user instead just pushes and opens the PR by hand while your draft sits pending, `pr.prUrl`
+appears from the watcher regardless — take that as the row's falsifier and don't bother
+re-drafting or worrying about the abandoned draft.
+
+Once approved, `writeGate.phase === "commit"` — run `writeGate.approvedCalls` verbatim, then
+report with `submit_step_progress` as usual (`next: {kind:"wait", wait:{reason: "PR opened —
+confirming the watcher picked it up", events:["pr-state"]}}`) so a delayed watcher poll
+doesn't leave you re-drafting a PR that already exists.
+
+**External-write rounds you bind to another action.** `code.fix-ci`, `code.resolve-conflicts`,
+`code.reply-pr-comments` and `code.merge-pr` each run unattended and draft their own payload
+via `mcp__outpost__submit_write_draft` before doing anything — see each one's own `SKILL.md`
+and `SHARED-write-drafts.md`. That is expected: the round parks itself, and the daemon runs
+back exactly the calls the user approved. Do not wrap one of these rounds in a `gate` of your
+own — that asks the same person for the same approval twice, and it's the bound action's job
+to draft the payload, not yours. That is why the merge rung is a `code.merge-pr` round and not
+a `gate` of your own: the user still approves before anything lands, and the round that they
+approved is the one that can actually merge.
+
+**The bound action's draft shows the user your `note`.** Whatever you put in `note` when you
+bind a round (row 11's reply bodies, the merge strategy, a conflict-resolution instruction) is
+what that action reads to compose its draft — see each action's own Step 1 for exactly which
+field it reads it into. That is the whole reason row 11 puts the reply bodies verbatim into
+`note` rather than summarizing them: the bound action drafts precisely that text, the user
+reads it at the draft, approves once, and `code.reply-pr-comments` posts it. Two approvals for
+one write is a bug, not caution. Whenever a bound round is about to draft a write, write `note`
+as the exact thing that should be drafted, not as a memo to yourself.
 
 `code.merge-pr` re-reads the PR from GitHub, and on a confirmed merge it `resolve`s the step
 itself rather than handing you back a decision —
 `pr.prState` can lag the real merge by up to an hour, and a controller re-deciding on those
-stale facts would match this same rung again and re-gate a PR that is already merged. If it
-could *not* merge, it hands back with the blocker in the memo and you take it from there.
+stale facts would match this same rung again and ask the user to approve a merge that already
+happened. If it could *not* merge, it hands back with the blocker in the memo and you take it
+from there.
 
-**Approval of your own `gate` arrives quietly.** The daemon clears the inbox before resuming
-you, so there is *no* `gate-resolved` item in `delivered` saying "approved". Read
-`gateApproved` instead — it is `true` from the moment the user approves, and `gateFeedback`
-carries anything they wrote alongside it. The memo is still your record of *which* draft that
-approval was for, so keep writing what you gated on and what an approval would mean ("gated the
-spec; on approval, run `code.plan`") — `gateApproved` tells you they said yes, the memo tells
-you to what. It clears the moment you open your next `gate`, so it always refers to the most
-recent one. A **decline** is different: it arrives as a `gate-resolved` item with
-`approved: false` and the user's `feedback`. Fold that feedback into the memo and redo the
-work with it — e.g. another `code.spec` round with the feedback in `boundNote` — rather than
-re-gating the same draft.
+**Approval of your own `gate` is a delivered item.** A `gate-resolved` item with
+`approved: true` (and any `feedback` the user attached) shows up in `delivered` on the turn
+that resumes you — read it the same way you read any other delivery, and it's the primary
+signal that the gate was approved. `gateApproved` also durably becomes `true` the moment the
+user approves — a redundant, durable copy for a turn that reads it later without the original
+delivery in hand, not the only place the approval shows up. It clears back to `undefined` on
+either of two events, not just one: the moment you open your next `gate`, **or** the moment any
+write-draft denial lands (a `gate-resolved` item carrying `source: "write-draft"` — see "A
+declined gate outranks the whole table" above). Either one means it no longer answers a live
+question, so don't read a stale `true` as still meaning "yes" once either has happened. The
+memo is still your record of *which* draft that approval was for, so keep writing what you
+gated on and what an approval would mean ("gated the spec; on approval, run `code.plan`"). A
+**decline of your own gate** arrives the same way — a `gate-resolved` item with
+`approved: false` and no `source` field: fold the `feedback` into the memo and redo the work
+with it — e.g. another `code.spec` round with the feedback in `boundNote` — rather than
+re-gating the same draft. A `gate-resolved` item with `source: "write-draft"` is not this one;
+see above for what it means instead.
 
 **Cold resume into a phase you never set.** Jobs migrated from the old hardcoded PR-step
 machinery arrive mid-flight with a `phase` the daemon stamped, an empty `memo`, and no history
@@ -206,11 +288,15 @@ headroom rather than discovering the wall. Separately, at most **three**
 *unproductive* `self-round`s in a row. A round counts as productive when the submit that ends
 it moves `phase` or writes an `artifacts` entry whose content differs from what was already
 there — a redraft under the same key counts, a byte-identical resubmit does not. Anything else
-— same phase, nothing new written — charges the count. A `dispatch`, `wait`, or `gate` (yours
-or one the daemon imposed on an external write), or a delivery carrying a fresh *external* event
-(a watcher tick, a user message, a dispatch finishing), resets it outright. A delivery that only
-hands back your own last move — a policy rejection, a declined gate — deliberately does **not**,
-so you cannot clear the count by tripping a rejection between rounds.
+— same phase, nothing new written — charges the count. A `dispatch`, `wait`, or `gate` (yours),
+or a delivery carrying a fresh *external* event (a watcher tick, a user message, a dispatch
+finishing), resets it outright. **Raising your own write draft (row 5) is invisible to this
+counter either way** — that turn ends via `mcp__outpost__submit_write_draft`, not
+`submit_step_progress`, so it neither charges nor resets `consecutiveSelfRounds`; the count is
+exactly what it was before you drafted. (Row 5's follow-up `wait` once the PR is open does
+reset it, same as any other `wait`.) A delivery that only hands back your own last move — a
+policy rejection, a declined gate, a declined draft — deliberately does **not** reset it
+either, so you cannot clear the count by tripping a rejection between rounds.
 Walking the ladder (`spec` → `plan` → `implement`) never approaches the cap; three rounds that
 show nothing new do, and that is the signal to park on a `wait`, gate it, or dispatch it — not
 to push a fourth.
@@ -268,16 +354,26 @@ of you that remembers nothing:
 
 Vague memos ("continuing work on the PR") cost a whole round to rebuild. Be specific.
 
-## 6. Never write from a controller turn
+## 6. Never write without drafting, and never take over a bound round's write
 
-Do not `git push`, `git commit`, post PR or Linear comments, or merge. Not from a decision
-turn, and not "just this once" from a work turn whose bound action doesn't do it. Those are
-the bound work actions' job — they carry the permissions for it and the daemon gates them:
-`code.fix-ci` and `code.resolve-conflicts` push, `code.reply-pr-comments` posts replies,
-`code.merge-pr` merges. Your own grant is reads: the repo, the envelope, and `gh pr view` /
-`gh pr checks` / `gh pr diff`. A write attempt from here is denied, costs you a turn, and is
-worth journalling. If a rung seems to need a write no action covers, that is a gap to `fail`
-or `wait` on and journal — not to work around.
+You inherit the `push` permission group yourself now (row 5 needs it to draft `gh pr create`),
+so the old "your own grant is reads only" line is no longer literally true — but the rule that
+matters hasn't changed: **any write, from any turn, must go through
+`mcp__outpost__submit_write_draft` and stop for approval first** — see
+`SHARED-write-drafts.md`. Never `git push`, `git commit`, post a PR or Linear comment, or merge
+directly, on a decision turn or a work turn, without having drafted it and been resumed with
+`writeGate.phase === "commit"`.
+
+And even where you technically *could* draft something yourself, most of these writes are not
+yours to draft. `code.fix-ci` and `code.resolve-conflicts` own the commit-and-push loop (they
+carry the diagnosis and the "confirm before re-trying" logic that belongs with the fix, not
+here); `code.reply-pr-comments` and `code.post-pr-review` own posting comments (they carry the
+exact-body-verbatim discipline); `code.merge-pr` owns the merge (it carries the
+already-merged idempotency check that keeps a stale resume from asking to merge twice). Bind a
+round to the action that owns the write rather than drafting it yourself just because your
+grant now allows it. The one write that genuinely is yours is opening the PR (row 5) — nothing
+else in the catalog does that. If a rung seems to need a write no action covers and isn't row
+5's job either, that is a gap to `fail` or `wait` on and journal — not to draft around.
 
 ## 7. When a dispatch fails, choose deliberately between three responses
 
@@ -340,13 +436,13 @@ Other `next` shapes:
 ```
 { kind: "self-round", action: "code.fix-pr-comment", note: "<the comment verbatim, file+line, the change to make>" }
 { kind: "self-round", action: "code.reply-pr-comments",
-  note: "review:ABC — \"<the exact reply body>\"\nissue:123 — \"<the exact reply body>\"" }   // the user reads this at the forced gate
+  note: "review:ABC — \"<the exact reply body>\"\nissue:123 — \"<the exact reply body>\"" }   // the bound round drafts this text for the user's approval
 { kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…everything the child gets…" } ] }
 { kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…identical…", retryOf: "<failed dispatch id>" } ] }
 { kind: "wait", wait: { reason: "PR open — watching CI, reviews, and comments",
                         events: ["ci", "review-state", "pr-state", "pr-comments"] } }
-{ kind: "wait", wait: { reason: "Implementation done — review the diff and open the PR",
-                        events: ["pr-state"] } }
+{ kind: "wait", wait: { reason: "PR opened — confirming the watcher picked it up",
+                        events: ["pr-state"] } }   // after row 5's draft commits — see §3
 { kind: "gate", draft: "<the spec>", question: "Approve this spec?" }
 { kind: "resolve", output: "Merged <prUrl>: <what shipped>." }
 { kind: "fail", reason: "<specific, actionable>" }

@@ -20,22 +20,16 @@ export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-w
 // testable without constructing a registry.
 export interface ActionInfo {
   sideEffects(action: string): SideEffects | undefined;
-  humanGate(action: string): boolean;
 }
 
 export type PolicyVerdict =
   | { kind: 'allow'; move: NextMove }
-  | { kind: 'force-gate'; move: NextMove; question: string }
   | { kind: 'reject'; reason: string };
 
 export function briefKey(action: string, brief: string): string {
   let h = 5381;
   for (let i = 0; i < brief.length; i++) h = ((h << 5) + h + brief.charCodeAt(i)) | 0;
   return `${action}#${(h >>> 0).toString(36)}`;
-}
-
-function needsGate(action: string, info: ActionInfo): boolean {
-  return info.humanGate(action) || info.sideEffects(action) === 'external-write';
 }
 
 // `productive` describes the payload submitted alongside this move — whether it moved `phase`
@@ -68,9 +62,6 @@ export function validateNext(
     if (move.action) {
       if (!info.sideEffects(move.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(move.action)}` };
-      }
-      if (needsGate(move.action, info)) {
-        return { kind: 'force-gate', move, question: `Approve running ${move.action}? It writes externally.` };
       }
     }
     return { kind: 'allow', move };
@@ -136,10 +127,6 @@ export function validateNext(
             + "dispatch's id. Otherwise change the brief — repeating it verbatim will fail the same way.",
         };
       }
-    }
-    const gated = move.dispatches.find((d) => needsGate(d.action, info));
-    if (gated) {
-      return { kind: 'force-gate', move, question: `Approve dispatching ${gated.action}? It writes externally.` };
     }
     return { kind: 'allow', move };
   }

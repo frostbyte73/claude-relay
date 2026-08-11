@@ -2,7 +2,7 @@
 // upcoming / finished) from raw store snapshots. Zero DOM — renderers turn Row
 // objects into markup, this module only decides which rows exist and how they sort.
 
-import { stepNeedsYou } from './work-predicates.js';
+import { stepNeedsYou, hasUnapprovedDraft } from './work-predicates.js';
 
 const UPCOMING_CAP = 5;
 const FINISHED_CAP = 8;
@@ -34,10 +34,13 @@ function planReviewRow(j) {
   };
 }
 
-// stepNeedsYou only flags two shapes: a step parked on an explicit approval, and an
-// indefinite meta.wait hold. Both are hard stops the user alone can clear.
-function stepWaitPill(s) {
-  if (s.state === 'gate_pending_approval') {
+// stepNeedsYou flags three shapes: a step parked on an explicit voluntary gate, a step (or
+// one of its dispatches) holding an unapproved write draft, and an indefinite meta.wait
+// hold. All three are hard stops the user alone can clear. `state === 'gate_pending_approval'`
+// alone would miss a dispatch-raised draft — see hasUnapprovedDraft's own doc comment — so
+// it's checked explicitly rather than relying on state.
+export function stepWaitPill(s) {
+  if (s.state === 'gate_pending_approval' || hasUnapprovedDraft(s)) {
     return { label: s.type === 'orchestrated' ? 'Approve move' : 'Approve write', variant: 'gate' };
   }
   return { label: 'On hold', variant: 'gate' };

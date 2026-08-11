@@ -30,7 +30,6 @@ function host(initial: OrchestratedStep, working = false) {
         'code.implement': 'worktree-edit', 'code.fix-ci': 'external-write',
         'code.review-diff': 'none', 'code.spec': 'none', 'code.plan': 'none',
       } as Record<string, 'none' | 'worktree-edit' | 'external-write'>)[a],
-      humanGate: () => false,
     },
     newId: () => `n${++ids}`,
     now: () => 1000,
@@ -74,20 +73,6 @@ describe('applyMove', () => {
     const { h, get } = host(step({ consecutiveSelfRounds: 2 }));
     applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
     expect(get().consecutiveSelfRounds).toBe(0);
-  });
-
-  it('a force-gated external write resets the count, and the controller runs on after approval', () => {
-    const { h, get } = host(step({ phase: 'pr_open', consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS - 1 }));
-    applyMove(h, 'j1', 's1', { phase: 'pr_open', next: { kind: 'self-round', action: 'code.fix-ci' } });
-    expect(get().state).toBe('gate_pending_approval');
-    expect(get().consecutiveSelfRounds).toBe(0);
-
-    resolveGate(h, 'j1', 's1', true);
-    expect(get().consecutiveSelfRounds).toBe(1);
-
-    applyMove(h, 'j1', 's1', { phase: 'pr_open', next: { kind: 'self-round', action: 'code.implement' } });
-    expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBeFalsy();
-    expect(get().consecutiveSelfRounds).toBe(2);
   });
 
   it('rewriting an artifact with new content is productive; resubmitting it verbatim is not', () => {
@@ -245,38 +230,30 @@ describe('applyMove', () => {
     expect(h.spawnDispatch).not.toHaveBeenCalled();
   });
 
-  it('parks on an explicit gate, holding the move that follows it', () => {
+  it('parks on an explicit gate', () => {
     const { h, get } = host(step());
     applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: '# Spec', question: 'ok?' } });
     expect(get().state).toBe('gate_pending_approval');
     expect(get().gate).toMatchObject({ draft: '# Spec', question: 'ok?' });
-    expect(get().gateApproved).toBeUndefined();
   });
 
-  it('force-gates an external-write self-round and defers it verbatim', () => {
+  it('resumes the controller on approval, whatever action it names next, and records the verdict durably', () => {
     const { h, get } = host(step());
-    const move = { kind: 'self-round', action: 'code.fix-ci' } as const;
-    applyMove(h, 'j1', 's1', { next: move });
-    expect(get().state).toBe('gate_pending_approval');
-    expect(get().gate?.deferredMove).toEqual(move);
-    expect(h.resumeController).not.toHaveBeenCalled();
-  });
-
-  it('runs the deferred move on approval without re-gating it', () => {
-    const { h, get } = host(step());
-    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.fix-ci' } });
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
     resolveGate(h, 'j1', 's1', true);
-    expect(get().gateApproved).toBe(true);
     expect(get().state).toBe('running');
     expect(get().gate).toBeUndefined();
-    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.fix-ci', undefined);
+    // gate-resolved lands in lastDelivered, which the next delivery overwrites — gateApproved
+    // is what a controller resuming later (or on a fresh spawn) still reads to know it said yes.
+    expect(get().gateApproved).toBe(true);
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', undefined, undefined);
   });
 
   // A gated step still accepts inbox pushes (shouldDeliver only refuses to DELIVER), and the
   // pr-watcher pushes on any changed signal. Approving the gate must not eat the wake.
   it('keeps watcher events queued through a gate approval, dropping only the gate marker', () => {
     const { h, get } = host(step());
-    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.fix-ci' } });
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });
     expect(get().state).toBe('gate_pending_approval');
     pushInbox(h, 'j1', 's1', {
       kind: 'external', source: 'pr-watcher', summary: 'reviewer requested changes', events: ['pr-comments'],
@@ -315,10 +292,10 @@ describe('applyMove', () => {
     expect(get().gate).toBeUndefined();
   });
 
-  it('a force-gated move clears the pending strike — policy accepted it', () => {
+  it('a gated move clears the pending strike — policy accepted it', () => {
     const { h } = host(step());
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.unknown-action' } }); // rejected → strike
-    applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.fix-ci' } });         // accepted → force-gated
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd', question: 'q' } });           // accepted → gated
     resolveGate(h, 'j1', 's1', false, 'not like that');
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.unknown-action' } }); // rejected again
     expect(h.failStep).not.toHaveBeenCalled();
@@ -335,6 +312,16 @@ describe('applyMove', () => {
     expect(get().inbox.some((i) => i.kind === 'gate-resolved')).toBe(false);
     expect(get().lastDelivered?.some((i) => i.kind === 'gate-resolved')).toBe(true);
     expect(h.resumeController).toHaveBeenCalled();
+  });
+
+  it('a fresh gate clears a stale approval left over from an earlier one', () => {
+    const { h, get } = host(step());
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd1', question: 'q1' } });
+    resolveGate(h, 'j1', 's1', true);
+    expect(get().gateApproved).toBe(true);
+
+    applyMove(h, 'j1', 's1', { next: { kind: 'gate', draft: 'd2', question: 'q2' } });
+    expect(get().gateApproved).toBeUndefined();
   });
 
   it('delivers a policy rejection immediately instead of leaving it queued', () => {

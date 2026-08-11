@@ -373,13 +373,15 @@ export class PrWatcher {
       fromKnownUrl = true;
     } else if (!prUrl) {
       if (!branch) return;
-      // PR discovery: nothing in the catalog opens the PR — code.implement leaves uncommitted
-      // edits and the user pushes and opens it by hand — so matching the step's branch is the
-      // only way the daemon ever learns the URL.
+      // PR discovery: `code.implement` leaves uncommitted edits, and even once
+      // `code.orchestrate-pr`'s row 5 drafts `gh pr create` itself, the approved call's
+      // stdout is never captured into `prUrl` — so matching the step's branch is the only
+      // way the daemon ever learns the URL, whether the PR was opened by that draft or by
+      // the user's own hand.
       //
       // Deliberately unbounded for as long as the step is live. A cap on consecutive misses
       // was tried and reverted: the canonical flow parks the controller on a `wait` for
-      // pr-state while the *user* opens the PR, so nothing bumps the step's round count and
+      // pr-state once the PR is open, so nothing bumps the step's round count and
       // any miss-based cap expires while that wait is doing exactly what it should. Discovery
       // is then the only path that could ever wake it, and the step waits forever on a PR
       // sitting open on GitHub. The cost this bounds is one `gh pr list` per sweep per live

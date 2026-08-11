@@ -40,12 +40,9 @@
     },
     "boundNote": {
       "type": "string",
-      "description": "What the controller asked for this round — including any explicit user waiver of an unresolved comment. This is the text the user read at the gate."
+      "description": "What the controller asked for this round — including, when it applies, the user's explicit waiver of an unresolved comment, as recorded by the controller. Written by the controller (`code.orchestrate-review`) itself; not text the user has read or approved directly."
     },
-    "gateApproved": {
-      "type": "boolean",
-      "description": "True once the user approved the daemon's forced gate on this external write."
-    },
+    "gateApproved": { "type": "boolean" },
     "gateFeedback": { "type": "array", "items": { "type": "string" } },
     "recentLessons": { "type": "array", "items": { "type": "object" } },
     "pr": {

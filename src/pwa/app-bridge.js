@@ -34,6 +34,10 @@ let bridge = {
   openScheduleDetail: null,
   openRunDetail: null,
   promoteSessionToJob: null,
+  // Transient status toast for a failed fire-and-forget action (a denied draft accept, a
+  // 409 race with another device). Several components under work/ need it and none of them
+  // can import app.js directly — same reason every other key here exists.
+  showStatusToast: null,
 };
 
 export function installAppBridge(deps) {
@@ -79,4 +83,7 @@ export function openRunDetail(run) {
 }
 export function promoteSessionToJob(sessionId) {
   return bridge.promoteSessionToJob?.(sessionId);
+}
+export function showStatusToast(text, tone) {
+  return bridge.showStatusToast?.(text, tone);
 }

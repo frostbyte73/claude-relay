@@ -21,8 +21,9 @@ in another timezone, and that everything you didn't write down is gone.
 
 **This is not your PR.** You did not write the branch, you cannot push to it, and the author
 is a person who will read every word you post. Two things go out under your name: one review
-comment set, and one verdict. Both are written by rounds the daemon force-gates, so the user
-approves the exact text before it lands. Everything you do between those two moments is
+comment set, and one verdict. Both are written by rounds that draft the exact text via
+`mcp__outpost__submit_write_draft` and post it only once the user approves — see
+`~/.outpost/actions/SHARED-write-drafts.md`. Everything you do between those two moments is
 reading.
 
 **Every turn ends with exactly one `mcp__outpost__submit_step_progress` call, then you stop.**
@@ -48,11 +49,12 @@ cat "$OUTPOST_ENVELOPE"
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every lens you fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. `headRefOid` is the PR's head commit — the fact rung 8 turns on (§4). |
-| `gateApproved` | `true` once the user has approved a gate. The gates on this step are ones the daemon imposed, not ones you opened (§3). |
-| `gateFeedback` | Every note the user has attached to a gate, oldest first. |
+| `gateApproved` | `true` once you've opened a `gate` of your own and the user approved it. This step's ladder never opens one (§3) — the two writes it makes are drafted by their own bound rounds instead, via `writeGate` below. |
+| `gateFeedback` | Every note the user has attached to a `gate` of yours, oldest first. |
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
-| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, `human_gate`, I/O schemas. The only valid action names; never invent one. |
+| `writeGate` | Present only while **you** (not a bound round) have raised a write draft. Absent otherwise — see `SHARED-write-drafts.md`. This step's ladder never raises one directly either; each write is drafted by the bound round doing it. |
+| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. The only valid action names; never invent one. |
 | `previousSteps` | Findings from earlier steps of the job. |
 | `recentLessons` | Journal lines from past runs of this action. |
 
@@ -156,18 +158,22 @@ Your six moves:
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
 
 **Never open your own `gate` in front of a write.** `code.post-pr-review` and
-`code.submit-pr-verdict` both declare `side_effects: external-write`, so the daemon holds those
-self-rounds at a user gate *for* you, before the round runs, and executes the move **verbatim**
-on approval. That force-gate **is** the user's approval of what goes out. Adding a `gate` of
-your own in front of it asks the same person for the same permission twice, and tells them the
-SKILL and the daemon disagree about who is in charge. If you find yourself drafting a `gate`,
-you are on the wrong move.
+`code.submit-pr-verdict` are external-writes that gate *themselves*: each runs unattended,
+composes its exact payload, and calls `mcp__outpost__submit_write_draft` before doing
+anything — see `SHARED-write-drafts.md`. Once the user approves, it runs the payload
+**verbatim**. That self-draft **is** the user's approval of what goes out — a different
+mechanism from your own voluntary `gate` move, and not one you need to wrap it in. Adding a
+`gate` of your own in front of one of these self-rounds asks the same person for the same
+permission twice, and tells them the SKILL and the bound action disagree about who is in
+charge. If you find yourself drafting a `gate` in front of one of these two rounds, you are on
+the wrong move.
 
-**The gate shows the user your `note`**, under the line "Run `<action>` on this step's
-session." So `note` is not a memo to yourself — it is the artifact the user reads and approves.
-For the post round it carries every comment, each with its file, line and exact body. For the
-verdict round it carries the verdict, what it turns on, and every unresolved item. Whatever is
-not in `note` was not approved and must not go out.
+**The bound round's draft shows the user your `note`.** Whatever you put in `note` when you
+bind the post or verdict round is what that action reads to compose its draft — so `note` is
+not a memo to yourself, it is the text the user will be asked to approve. For the post round
+it carries every comment, each with its file, line and exact body. For the verdict round it
+carries the verdict, what it turns on, and every unresolved item. Whatever is not in `note`
+was not drafted and must not go out.
 
 **Dispatch is for the lenses, and only the lenses.** Children are read-only by construction
 (`workspace: {"kind":"writable"}` on a dispatch is rejected) and nothing in this step edits a
@@ -214,6 +220,16 @@ Two of these rows read a fact only *you* can record, so record it (§5):
 - **Row 9's waiver.** "Approve it anyway, the listener leak is pre-existing" is a user message,
   and `code.submit-pr-verdict` will only approve over a `not-addressed` item if the waiver is
   *in `boundNote`*. Carry it there verbatim, and say in the memo which item it covers.
+- **A `gate-resolved` item with `source: "write-draft"` in `delivered` is the user declining a
+  bound round's draft** — `code.post-pr-review` deciding not to post after all, or
+  `code.submit-pr-verdict` not to submit the verdict it composed. This ladder never opens a
+  `gate` of its own (see `gateApproved` above), so any `gate-resolved` item you ever see carries
+  this `source` — there is no voluntary-decline case to confuse it with here. Treat it exactly
+  like "handed back": no artifact was written (denying stops the write before it runs, same as
+  a `gh` failure would), so it falls to row 7 or row 10 depending on which round raised the
+  draft. Record the user's `feedback` in the memo in place of "what `gh` said" — this is a
+  choice, not an error, but the row is still terminal either way; do not redraft the same
+  payload hoping for a different answer.
 
 **A `user-message` outranks the whole table.** The user watching this step can steer it, and
 that is the point of running a review this way rather than in one shot. "Ignore that failing
@@ -229,8 +245,8 @@ re-evaluated from scratch on every decision turn, not a script you walk once. An
 pushes after your verdict sends you back up it. Rows 8-12 all presuppose
 `artifacts.postedReview`; until it exists only rows 1-7 can match.
 
-The happy path walks it once: 3 → (lenses run) → 5 → (gate, post) → 13 → the author pushes
-(`head-moved`) → 8 → 9 → (gate, verdict) → 11. If you find yourself on a row you were on two turns ago with
+The happy path walks it once: 3 → (lenses run) → 5 → (draft, post) → 13 → the author pushes
+(`head-moved`) → 8 → 9 → (draft, verdict) → 11. If you find yourself on a row you were on two turns ago with
 nothing new written, the row is missing its falsifier — say so in `memo` and take row 13
 rather than running it again.
 
@@ -304,12 +320,12 @@ self-round to go think.
   `resolutions`, but the author needs to know now which comments are the ones that matter.
 - **Anchor each to a file and a line that are in the diff.** A comment on a line the PR did
   not touch is rejected by GitHub and degraded into the review body (see
-  `code.post-pr-review` Step 5) — usable, but weaker. Check against the diff you already read.
+  `code.post-pr-review` Step 6) — usable, but weaker. Check against the diff you already read.
 
 Write the whole set into `artifacts.review`, then move to the post round in the same submit,
 with every comment in `note`: file, line, and the exact body, plus the summary line if you
-want one. The user reads `note` at the force-gate and approves that text. Nothing you leave
-out of `note` gets posted.
+want one. The user reads `note` at the post round's draft and approves that text. Nothing you
+leave out of `note` gets posted.
 
 ### Rungs 8, 9, 13 in detail — the response loop and its budget
 
@@ -346,8 +362,10 @@ than spending a verify round to re-derive the same verdicts.
 `code.verify-resolutions` (1) + that round's hand-back (1) = **four rounds per cycle** out of
 `MAX_ROUNDS = 80`. Fixed overhead is eight: the fan-out, the delivery that ends it, the
 synthesis-and-post move, the post round's hand-back, the first wait, then the verdict move,
-its hand-back, and the resolve. (The two force-gates are free — an approved gate runs its
-deferred move without charging a round.) So the loop has room for about eighteen rounds of
+its hand-back, and the resolve. (Drafting and waiting for the user's approval mid-round is
+free — `mcp__outpost__submit_write_draft` doesn't charge a round the way
+`submit_step_progress` does, so only the bound round's *final* hand-back counts.) So the loop
+has room for about eighteen rounds of
 push-and-recheck, which is more than any real review needs, and you should never be near the
 wall on an honest one. Every one of those rounds is spent on a real push, because nothing but
 a real change wakes you — the other half of why rung 13 arms no timer.
@@ -375,15 +393,24 @@ the user a red step for a review that actually went fine.
 does every wake the daemon delivers you; at zero it accepts only `resolve` or `fail`, so leave
 headroom rather than discovering the wall. Separately, at most **three** *unproductive*
 `self-round`s in a row. A round counts as productive when the submit that ends it moves `phase`
-or writes an `artifacts` entry whose content differs from what was already there. A **gate**
-resets the count outright — including one the daemon imposed on you — and so does a delivery
-that wakes you from a `wait` or a fan-out. A *corrective* delivery does not: a
-`policy-rejection` or a declined gate deliberately leaves the counter where it was, so a
-controller can't dodge the cap by tripping a rejection between rounds. Walking this ladder
-never comes close: the counter tops out at two, on the worst chain there is (a wake, the
-verify-resolutions proposal, then a verify round that found nothing new to say), and the next
-move from there is always a `wait` or a force-gated round, both of which zero it. Three rounds
-in a row that show nothing new is the signal to park on a `wait` — not to push a fourth.
+or writes an `artifacts` entry whose content differs from what was already there. A `dispatch`,
+a `wait`, or a `gate` (yours) resets the count outright regardless of productivity, and so does
+a delivery that wakes you from a `wait` or a fan-out. A **self-round resets it only when that
+binding submission is itself judged productive by the same rule** — this includes a self-round
+that binds `code.post-pr-review` or `code.submit-pr-verdict`: binding one of them is not a
+special case, and if the submission that binds it leaves `phase` and every `artifacts` entry
+unchanged, it charges the unproductive count exactly like any other round that wrote nothing
+new, even though the bound round is about to draft a real write. Put something new in
+`artifacts` (or move `phase`) on the same submit that binds one of these rounds if you want
+that turn to count as productive rather than spent. Raising the write draft itself, inside the
+bound round's own turn, is invisible to this counter either way — it ends via
+`mcp__outpost__submit_write_draft`, not `submit_step_progress`. A *corrective* delivery does
+not reset it: a `policy-rejection` or a declined gate (or a declined draft) deliberately leaves
+the counter where it was, so a controller can't dodge the cap by tripping a rejection between
+rounds. Walking this ladder in the ordinary case never comes close — most binding submissions
+naturally move `phase` or add something to `artifacts` in the same call — but don't rely on
+binding alone to reset the count; three rounds in a row that show nothing new is the signal to
+park on a `wait`, not to push a fourth.
 
 ## 4. Events wake you; facts tell you what happened
 
@@ -455,7 +482,8 @@ turn, and not "just this once" from a work turn whose bound action doesn't do it
 somebody else's repository. Everything your own grant reaches is a read — the worktree, the
 envelope, and `gh pr view` / `gh pr diff` / `gh pr checks` / `gh api` in its GET form. The two
 writes this step makes belong to `code.post-pr-review` and `code.submit-pr-verdict`, which carry
-the permissions for them and which the daemon gates before they run.
+the permissions for them and which draft the exact payload for the user's approval before
+either write actually runs.
 
 The one thing that *is* writable is this step's own worktree: paths under it auto-allow via
 session scope, so an `Edit`/`Write` there succeeds rather than denying. Don't read that as
@@ -528,7 +556,7 @@ Other `next` shapes:
       inputs: { workspace: { repoCwd: "/Users/x/repo", branch: "feature/y" }, diffRange: "origin/main...def4567" } } ] }
 { kind: "dispatch", dispatches: [ { action: "code.review-ui", brief: "…identical…", retryOf: "<failed dispatch id>" } ] }
 { kind: "self-round", action: "code.post-pr-review",
-  note: "src/work/orchestrator.ts:412 — \"<the exact comment body>\"\nsrc/pwa/app.js:88 — \"<the exact comment body>\"" }   // the user reads this at the forced gate
+  note: "src/work/orchestrator.ts:412 — \"<the exact comment body>\"\nsrc/pwa/app.js:88 — \"<the exact comment body>\"" }   // the bound round drafts this text for the user's approval
 { kind: "self-round", action: "code.verify-resolutions",
   note: "Head moved abc1234 → def4567 (3 commits). Re-check all 5 comments." }
 { kind: "self-round", action: "code.submit-pr-verdict",
@@ -576,9 +604,10 @@ the only place `meta.improve-actions` looks. Name the exact command or field.
   line — which is all rung 8 needs. Let it.
 - **`policy-rejection` in `delivered`.** Read `reason`, fix the move it names, submit the
   corrected one this turn. A second rejection with no accepted move in between fails the step.
-- **A force-gate is declined.** The move is dropped and you are resumed with the user's
-  `feedback`. Redo the work with it — a revised comment set in `artifacts.review`, then the post
-  round again with the new text in `note` — rather than re-proposing the same move.
+- **A bound round's draft is declined.** The write never happens, and the round hands back
+  with the reason. Redo the work with it — a revised comment set in `artifacts.review`, then
+  the post round again with the new text in `note` — rather than binding the same round again
+  unchanged.
 - **The PR closes or merges mid-review.** Row 2. `resolve` with what you have; the review is
   moot and there is nothing to fail about.
 - **`gh pr review` refuses to approve your own PR.** Permanent, not transient — the account

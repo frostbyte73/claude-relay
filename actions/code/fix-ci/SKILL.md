@@ -1,6 +1,6 @@
 ---
 name: code.fix-ci
-description: Use when invoked as `/code.fix-ci` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.fix-ci"`. Read the failing checks from the envelope's `pr.ciChecks`, pull their logs, fix the code, run the relevant tests locally, then commit and push (append — never force-push). Finish with `mcp__outpost__submit_step_progress`.
+description: Use when invoked as `/code.fix-ci` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.fix-ci"`. Read the failing checks from the envelope's `pr.ciChecks`, pull their logs, fix the code, run the relevant tests locally, stage the fix, then draft the commit + push via `mcp__outpost__submit_write_draft` and stop — it pushes only once the user approves (see `SHARED-write-drafts.md`). Finish with `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
@@ -17,9 +17,13 @@ This is the same session that implemented the PR (and possibly triaged its comme
 or resolved conflicts). CI on the branch is red and has settled — every check has
 reported and at least one failed. Your job: diagnose the failing checks from their
 logs, fix the code *correctly* using what you already know about why it exists, run
-the relevant tests locally, then commit and push so CI re-runs. If you cannot
-confidently fix it (infra flake, unclear cause, or a failure that isn't a code
-problem), do NOT guess — report it unfixable and hand it back.
+the relevant tests locally, stage the fix, then draft the commit + push for the user's
+approval. If you cannot confidently fix it (infra flake, unclear cause, or a failure that
+isn't a code problem), do NOT guess — report it unfixable and hand it back.
+
+This is a bound-action round on the controller's own session (`type: "orchestrated"`), so
+`writeGate` (see `~/.outpost/actions/SHARED-write-drafts.md`) sits at the **top level** of `$OUTPOST_ENVELOPE`,
+not under a `typePayload`.
 
 ## Step 1 — Read the envelope
 
@@ -52,25 +56,48 @@ gh run view --log-failed              # failed-step logs for the latest run on t
 gh run view <run-id> --log-failed
 ```
 
-## Step 3 — Diagnose and fix
+## Step 3 — Diagnose, fix, and stage
 
 Fix the root cause in the code — not the CI config, unless the config is clearly the
 bug. Use your knowledge of why this code exists. Run the relevant tests/build locally
 to confirm the fix (the same command the failing check runs, e.g. `npm run test:unit`,
-`npx tsc --noEmit`, `mage`, `go test ./...`).
-
-## Step 4 — Commit and push
-
-Append a commit and push. NEVER force-push (no `--force`, no `--force-with-lease`) —
-follow-up rounds append and fast-forward.
+`npx tsc --noEmit`, `mage`, `go test ./...`). Once it's confirmed, stage it:
 
 ```bash
 git add -A
-git commit -m "fix: <what you fixed> to make CI pass"
-git push
 ```
 
-## Step 5 — Report
+Do not commit yet — that's the draft below.
+
+## Step 4 — Draft the commit + push (`writeGate` absent, or `writeGate.phase === "draft"`)
+
+```
+mcp__outpost__submit_write_draft({
+  jobId: "<$JOB_ID>", stepId: "<$STEP_ID>",
+  summary: "Fix <the failing check(s) you fixed>",
+  evidence: "<output of `git diff --staged`>",
+  calls: [
+    { label: "commit", bash: "git commit -m \"fix: <what you fixed> to make CI pass\"" },
+    { label: "push", bash: "git push origin <branch>" }
+  ]
+})
+```
+
+Then stop. `<branch>` is `workspace.branch` from the envelope, written in literally. If
+`writeGate.feedback` is non-empty (the user asked for a different fix or message — every
+round, oldest first), address it — re-diagnose/re-fix if the feedback is about the change
+itself, re-stage, and draft again.
+
+If you could not confidently fix it, skip the draft entirely and go to Step 6 (unfixable) —
+there is nothing to commit.
+
+## Step 5 — Commit: run the approved calls (`writeGate.phase === "commit"`)
+
+Run `writeGate.approvedCalls` **verbatim**, in order — the exact commit message and push the
+user approved. Never force-push (no `--force`, no `--force-with-lease`) — follow-up rounds
+append and fast-forward, and neither pinned call spells one.
+
+## Step 6 — Report
 
 ```
 # fixed: committed + pushed a fix
@@ -100,7 +127,7 @@ mcp__outpost__submit_step_progress({
 
 Report unfixable (with the reason in `memo`) rather than pushing a guessed fix.
 
-## Step 6 — Journal one lesson
+## Step 7 — Journal one lesson
 
 ```
 mcp__outpost__submit_journal({
@@ -124,5 +151,7 @@ this action until a human sees it, and this journal is the only place
   step on the next tick.
 - **Fix doesn't stick (CI still red after push):** the daemon re-detects the settled
   failure and resumes this same round again — no separate retry logic needed here.
+- **The draft is declined:** report unfixable-by-decline in `memo` (Step 6) and hand back —
+  do not silently drop the fix or re-draft the same payload.
 - **Hook server returns 401:** daemon restarted mid-session; print the situation and
   exit. The orchestrator resets the round state at boot and re-surfaces the failure.

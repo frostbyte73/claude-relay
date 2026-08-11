@@ -23,6 +23,21 @@ describe('writeDaemonSettings', () => {
     expect(hook.timeout).toBe(600);
   });
 
+  it('registers a PostToolUseFailure hook pointing at /hook/posttoolfail on the same loopback port', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'set-'));
+    const path = join(dir, 'daemon-settings.json');
+    writeDaemonSettings({ outPath: path, hookPort: 8444 });
+    const j = JSON.parse(readFileSync(path, 'utf8'));
+    const entry = j.hooks.PostToolUseFailure[0];
+    expect(entry.matcher).toBe('');
+    const hook = entry.hooks[0];
+    expect(hook.type).toBe('http');
+    expect(hook.url).toBe('http://127.0.0.1:8444/hook/posttoolfail');
+    expect(hook.headers['X-Daemon-Auth']).toBe('$DAEMON_AUTH');
+    expect(hook.allowedEnvVars).toContain('DAEMON_AUTH');
+    expect(hook.timeout).toBe(30);
+  });
+
   it('registers a Stop hook pointing at /hook/stop on the same loopback port', () => {
     const dir = mkdtempSync(join(tmpdir(), 'set-'));
     const path = join(dir, 'daemon-settings.json');

@@ -1,12 +1,12 @@
 ---
 name: code.reply-pr-comments
-description: Use when invoked as `/code.reply-pr-comments` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.reply-pr-comments"`. Post the replies the user already approved to the PR's review threads — verbatim, nothing else — then report via `mcp__outpost__submit_step_progress`.
+description: Use when invoked as `/code.reply-pr-comments` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.reply-pr-comments"`. Draft the replies via `mcp__outpost__submit_write_draft`, then post exactly what's approved to the PR's review threads — verbatim, nothing else (see `SHARED-write-drafts.md`) — then report via `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
   side_effects: external-write
   runner: claude
-  permissions: [read]
+  permissions: [read, push]
   timeout_sec: 600
   retries: 0
 ---
@@ -15,16 +15,19 @@ outpost:
 
 This is the same session that implemented the PR and triaged its comments.
 `code.orchestrate-pr` decided the drafted replies are ready to go out and bound this round
-to you. Because this action declares `side_effects: external-write`, the daemon held the
-move at a user gate before you were resumed — **the user has already read the exact reply
-bodies in `boundNote` and approved them.** Do not gate them again, do not ask, and do not
-improve them.
+to you.
 
-Your job is exactly one thing: post the replies in `boundNote`, verbatim, to the threads
-they name. Nothing else is granted. This action deliberately does **not** inherit the
-`push` group; `git commit`, `git push`, `gh pr merge`, `gh pr review` and `gh pr create`
-are all denied here. If you find yourself wanting one of those, this is the wrong round —
-hand it back (Step 5b).
+This is a bound-action round on the controller's own session (`type: "orchestrated"`), so
+`writeGate` (see `~/.outpost/actions/SHARED-write-drafts.md`) sits at the **top level** of `$OUTPOST_ENVELOPE`,
+not under a `typePayload`. Your job is exactly one thing: draft the replies in `boundNote`
+for the user's approval, then post exactly what they approved, verbatim, to the threads
+they name.
+
+This action inherits the `push` permission group, which is broad — `git commit`, `git push`,
+`gh pr merge`, `gh pr review`, `gh pr create` and more all pass its raw allowlist. **That is
+not permission to use them.** The gate is what actually confines this round: only the replies
+you draft and the user approves will run. If you find yourself wanting one of the others,
+this is the wrong round — hand it back (Step 6b).
 
 ## Step 1 — Read the envelope
 
@@ -43,14 +46,14 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 
 | Field | What it is |
 |---|---|
-| `boundNote` | **The approved payload.** One entry per reply: the comment id and the exact body to post. This is what the user approved at the gate — it wins over everything else. |
-| `artifacts.draftedReplies` | The triage round's full drafts, for context. Only the ones named in `boundNote` are approved. |
+| `boundNote` | **The payload to draft.** One entry per reply: the comment id and the exact body to post. This is what the controller wants posted — it wins over everything else. |
+| `artifacts.draftedReplies` | The triage round's full drafts, for context. Only the ones named in `boundNote` are to be drafted here. |
 | `artifacts.postedReplies` | What earlier rounds already posted. Never post one of these twice. |
 | `pr.comments` | Every comment on the PR: `{id, author, body, file?, line?, diffHunk?, url?, inReplyTo?}`. Look each `boundNote` id up here for its `file`/`line`/`url`. |
 | `pr.prUrl` | The PR to post against. |
-| `gateFeedback` | Anything the user wrote when approving. If it asks for a wording change, apply it — that is also approved text. |
+| `writeGate.feedback` | Anything the user wrote when proposing changes, once you've drafted. If it asks for a wording change, apply it — that becomes the approved text once accepted. |
 
-If `PR_URL` or `boundNote` is empty there is nothing to post — skip to Step 5b and hand it
+If `PR_URL` or `boundNote` is empty there is nothing to post — skip to Step 6b and hand it
 back.
 
 ## Step 2 — Work out where each reply goes
@@ -75,15 +78,16 @@ gh api "repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments" --paginate --jq '.[] | 
 
 **Read the PR number off that first command and type it in literally** — `<PR_NUMBER>` and
 `<id>` below are digits you write yourself, not `$PR_NUM` or `"$PR_URL"`. A `$VAR` in a
-target slot is whatever an earlier assignment put there, so the grant takes literals only;
-substituting one is the difference between "reply to the PR the user approved" and "reply
-to any PR on github.com".
+target slot is whatever an earlier assignment put there, so drafted calls must be literals
+only; substituting one is the difference between "reply to the PR the user approved" and
+"reply to any PR on github.com".
 
-## Step 3 — Post. Post ONLY what was approved.
+## Step 3 — Draft the replies (`writeGate` absent, or `writeGate.phase === "draft"`)
 
-Post the body **verbatim**. Do not add a preamble, a signature, a "as discussed" framing,
-or an apology. The text in `boundNote` is what the user read and said yes to; anything you
-add is unapproved text on a public PR.
+One call per reply, in the order `boundNote` lists them — each posts the body **verbatim**,
+with no preamble, signature, "as discussed" framing, or apology added. The text in
+`boundNote` is what the controller wants said; anything you add is unapproved text on a
+public PR.
 
 Threaded reply to an inline review comment (`<id>` is the integer id from Step 2):
 
@@ -104,28 +108,52 @@ Reply text that needs them (markdown backticks, most often) has two escape hatch
 - **single-quote the body.** The shell expands nothing inside `'…'`, so
   `--body 'wrap the `insert` in a transaction'` is fine. Only an apostrophe in the text
   rules this out.
-- **write the body to a file first**, then hand `gh` the path. This action may `Write` under
-  `/tmp/` and read a body back from there, and nowhere else:
+- **route the body through `files` instead of writing it yourself** — see "File-referencing
+  payloads: draft the content, don't write the file" in
+  `~/.outpost/actions/SHARED-write-drafts.md`. Point the call at a literal `/tmp/` path (write
+  the id in yourself) and give that same path's content in `files`:
 
   ```bash
   gh pr comment <PR_NUMBER> --body-file /tmp/outpost-reply-<id>.md
   gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" --input /tmp/outpost-reply-<id>.json
   ```
 
-  Use a literal filename directly under `/tmp/` (write the id in yourself). The `--input`
-  payload is the endpoint's JSON body — `{"body": "…"}`.
+  The `--input` payload is the endpoint's JSON body — `{"body": "…"}`. The daemon writes
+  whatever content you draft (or the user edits) to that exact path once approved — you never
+  write it yourself.
 
-Either way the text is still exactly what `boundNote` approved. The file is a transport, not
-a licence to compose something new.
+Compose one `calls` entry per reply, in `boundNote`'s order:
 
-One command per reply, in the order `boundNote` lists them. If one fails, keep going with
-the rest and record which failed — a partial post is a real outcome and the controller
-needs to know exactly which threads still have no answer.
+```
+mcp__outpost__submit_write_draft({
+  jobId: "<$JOB_ID>", stepId: "<$STEP_ID>",
+  summary: "Post <n> replies on <PR_URL>",
+  evidence: "<boundNote's replies rendered as markdown, one per comment id>",
+  calls: [
+    { label: "review:ABC", bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/comments/<id>/replies\" -f body=\"<verbatim>\"" },
+    { label: "issue:123", bash: "gh pr comment <PR_NUMBER> --body \"<verbatim>\"" },
+    {
+      label: "review:XYZ (apostrophe + backtick escape hatch)",
+      bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/comments/<id>/replies\" --input /tmp/outpost-reply-<id>.json",
+      files: { "/tmp/outpost-reply-<id>.json": "{\"body\": \"<verbatim>\"}" }
+    }
+  ]
+})
+```
 
-**Do not batch several replies into one comment**, and do not reply to a comment that is
-not in `boundNote` — including comments authored by you on an earlier round.
+Then stop. **Do not draft a reply to a comment that is not in `boundNote`** — including one
+authored by you on an earlier round. If `writeGate.feedback` is non-empty (the user wants a
+reply reworded or dropped — every round, oldest first), revise the affected `calls` entries
+and draft again.
 
-## Step 4 — Verify
+## Step 4 — Commit: post the replies
+
+`writeGate.phase === "commit"`. Run `writeGate.approvedCalls` **verbatim**, in order — the
+exact commands the user approved, unchanged. If one fails, keep going with the rest and
+record which failed — a partial post is a real outcome and the controller needs to know
+exactly which threads still have no answer.
+
+## Step 5 — Verify
 
 ```bash
 gh pr view "$PR_URL" --json comments --jq '.comments[-3:] | .[] | "\(.author.login): \(.body[0:80])"'
@@ -134,7 +162,7 @@ gh pr view "$PR_URL" --json comments --jq '.comments[-3:] | .[] | "\(.author.log
 Confirm what landed before you report it. `gh` exiting zero is good evidence; this is the
 confirmation.
 
-## Step 5a — Report posted
+## Step 6a — Report posted
 
 Load the MCP tools (deferred behind ToolSearch), then report:
 
@@ -162,22 +190,22 @@ mcp__outpost__submit_step_progress({
 `code.orchestrate-pr` for a decision turn. It owns the ladder — which round runs next, and
 whether anything else needs approving — so do not pick that yourself.
 
-## Step 5b — Report nothing posted
+## Step 6b — Report nothing posted
 
-Nothing to post, or every post failed. Same hand-back, with the reason in `memo`, and no
-`postedReplies` artifact:
+Nothing to post, the draft was declined, or every post failed. Same hand-back, with the
+reason in `memo`, and no `postedReplies` artifact:
 
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "pr_comments",
-  memo: "posted nothing: <boundNote was empty / no prUrl / gh said '<stderr>'>",
+  memo: "posted nothing: <boundNote was empty / no prUrl / user declined the draft (<reason>) / gh said '<stderr>'>",
   next: { kind: "self-round" }
 })
 ```
 
-## Step 6 — Journal one lesson
+## Step 7 — Journal one lesson
 
 ```
 mcp__outpost__submit_journal({

@@ -14,7 +14,6 @@ import type { ActionRunOutcome, ActionRunRecord, ActionRunsStore } from '../stor
 
 export interface ActionRunLedgerDeps {
   store: ActionRunsStore;
-  isHumanGate: (action: string) => boolean;
   now?: () => number;
   onSettled?: (action: string) => void;
 }
@@ -39,7 +38,7 @@ export class ActionRunLedger {
         if (ev.kind === 'delete') { this.prevByJob.delete(ev.jobId); return; }
         const prev = this.prevByJob.get(ev.jobId);
         this.prevByJob.set(ev.jobId, ev.job);
-        const opts = { now: this.now(), isHumanGate: this.deps.isHumanGate };
+        const opts = { now: this.now() };
         for (const e of deriveRunEvents(prev, ev.job, opts)) this.apply(e);
       } catch (e) {
         // JobQueue iterates subscribers unguarded — instrumentation must never be
@@ -66,7 +65,7 @@ export class ActionRunLedger {
   }
 
   private stillRunning(job: JobRecord, run: ActionRunRecord): boolean {
-    const opts = { now: this.now(), isHumanGate: this.deps.isHumanGate };
+    const opts = { now: this.now() };
     const events = deriveRunEvents(undefined, job, opts);
     return events.some((e) =>
       e.t === 'open' && e.round === run.round && (e.key.stepId ?? e.key.jobId) === (run.stepId ?? run.jobId));

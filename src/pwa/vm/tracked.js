@@ -1,7 +1,7 @@
 // Tracked-list view-model: buckets jobs by attention priority, and derives the
 // single "what should the user do next" focus action for a job's right rail.
 
-import { needsYou, stepNeedsYou } from './work-predicates.js';
+import { needsYou, stepNeedsYou, hasUnapprovedDraft, isTerminalStep } from './work-predicates.js';
 
 const NO_LIVE = { orchestrator: false, stepIds: [] };
 
@@ -68,7 +68,12 @@ export function focusAction(job) {
 
   const step = waitingStep(job);
   if (step) {
-    if (step.state === 'gate_pending_approval') {
+    // A dispatch-raised draft never sets the PARENT step's `state` to
+    // `gate_pending_approval` (only the dispatch's own `status` flips to
+    // `awaiting_approval`) — `hasUnapprovedDraft` is what catches that case; the
+    // state check alone would fall through to the meta.wait branch below and offer
+    // "Resume", which resolveWaitStep flatly refuses for anything but an ActionStep.
+    if (step.state === 'gate_pending_approval' || hasUnapprovedDraft(step)) {
       return {
         title: 'Approval required',
         description: step.type === 'orchestrated'
@@ -171,7 +176,10 @@ const ARTIFACT_LABEL = {
   verdict: 'Verdict',
 };
 
-const DISPATCH_TONE = { running: 'investigate', done: 'ok', failed: 'danger' };
+// 'awaiting_approval' is a dispatch that raised its own write draft and is parked for the
+// user — same "your move" semantics as a gate, so it gets the warn tone rather than sitting
+// untoned next to running/done/failed.
+const DISPATCH_TONE = { running: 'investigate', done: 'ok', failed: 'danger', awaiting_approval: 'warn' };
 
 function humanizeKey(k) {
   const spaced = String(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim();
@@ -240,6 +248,17 @@ export function orchestratedRows(step) {
       .map(([key, body]) => ({ key, slug: slugOf(key, takenSlugs), label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
   ];
 
+  const drafts = s.drafts ?? [];
+  // isTerminalStep guard is defense-in-depth, not the primary line: settleOrchestratedStep
+  // (engine.ts) already drops an orchestrated step's non-approved drafts on every settle
+  // path (failed/resolved/cancelled), unlike an ActionStep's own drafts, which nothing
+  // prunes (see step-card.js's draftsHtml, which needs this same guard for real). Kept here
+  // anyway so this file doesn't silently start relying on that backend invariant holding
+  // forever, and so it doesn't look like an asymmetric oversight next to draftsHtml's guard.
+  const draftFor = (raisedByKind, dispatchId) => (isTerminalStep(s) ? null : drafts.find((d) =>
+    !d.approvedAt && d.raisedBy?.kind === raisedByKind
+    && (raisedByKind !== 'dispatch' || d.raisedBy.dispatchId === dispatchId)) ?? null);
+
   return {
     phaseChip: phaseChipOf(s),
     waitingReason: s.state === 'waiting' ? (s.waitingOn?.reason ?? 'Waiting') : null,
@@ -251,15 +270,27 @@ export function orchestratedRows(step) {
       tone: DISPATCH_TONE[d.status] ?? '',
       sessionId: d.sessionId ?? null,
       failure: d.failure ?? null,
+      // A dispatch parked at `awaiting_approval` raised this itself — rendered inside the
+      // dispatch's own row (orchestrated-card.js), never hoisted to the controller's gate.
+      draft: draftFor('dispatch', d.id),
     })),
     artifactRows,
-    gate: s.state === 'gate_pending_approval'
+    // `s.gate` is the controller's OWN voluntary ask (a `gate` NextMove) — a distinct,
+    // still-current mechanism from a write draft, and the two can share `state:
+    // 'gate_pending_approval'` (submitDraft sets the same state for a `controller`-raised
+    // draft). Gating this purely on `s.gate` being set, not on `state`, is what keeps a
+    // controller-raised draft from rendering as a hollow, empty "gate" card here — its real
+    // content (calls/summary/evidence) is `controllerDraft` below instead.
+    gate: s.gate
       ? {
-        draft: s.gate?.draft ?? '',
-        question: s.gate?.question ?? '',
+        draft: s.gate.draft ?? '',
+        question: s.gate.question ?? '',
         feedback: s.gateFeedback ?? [],
       }
       : null,
+    // The controller's own pending write draft (raisedBy: {kind:'controller'}) — distinct
+    // from a dispatch's (folded into dispatchRows above) and from the voluntary `gate` above.
+    controllerDraft: draftFor('controller'),
     // The manual fallback for a controller whose session died mid-step — and, since engine.ts's
     // markStepResolved explicitly clears `.failure` on the way to 'resolved', also the escape
     // for a FAILED step that Edit/Cancel can't reach once a session ever ran (see

@@ -1,7 +1,8 @@
 // Outpost service worker. Three responsibilities:
 //   1. Standard install/activate (claim clients so the SW takes over without reload)
 //   2. Web Push handler with foreground suppression (visible window → in-page message)
-//   3. notificationclick handler that deep-links to /?session=<id>&approval=<id>
+//   3. notificationclick handler that deep-links to /?session=<id>&approval=<id>, or for a
+//      `kind: 'draft'` payload, /?job=<id> — see deep-links.js's SURFACE_PARAMS
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
@@ -35,11 +36,17 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data ?? {};
-  const sessionId = data.sessionId;
-  const approvalId = data.approvalId;
-  const url = sessionId
-    ? `/?session=${encodeURIComponent(sessionId)}${approvalId ? `&approval=${encodeURIComponent(approvalId)}` : ''}`
-    : '/';
+  // A draft-ready push has no session of its own to jump into — a dispatch child's draft is
+  // raised by a background subagent, not the job's top-level session — so it deep-links to
+  // the job on the tracked surface instead, same shape deep-links.js's `?job=` param produces.
+  const target = data.kind === 'draft' && data.jobId
+    ? { surface: 'tracked', id: data.jobId }
+    : { sessionId: data.sessionId, approvalId: data.approvalId };
+  const url = target.surface
+    ? `/?job=${encodeURIComponent(target.id)}`
+    : target.sessionId
+      ? `/?session=${encodeURIComponent(target.sessionId)}${target.approvalId ? `&approval=${encodeURIComponent(target.approvalId)}` : ''}`
+      : '/';
   event.waitUntil((async () => {
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     // If a PWA window is already open, focus it and tell it which deep link to apply —
@@ -47,7 +54,7 @@ self.addEventListener('notificationclick', (event) => {
     // lets the in-page code scroll to the card directly.
     for (const c of clients) {
       if ('focus' in c) {
-        c.postMessage({ type: 'deepLink', sessionId, approvalId });
+        c.postMessage({ type: 'deepLink', ...target });
         return c.focus();
       }
     }

@@ -26,7 +26,6 @@
           "category": { "type": "string" },
           "runner": { "enum": ["claude", "builtin"] },
           "side_effects": { "enum": ["none", "gated-write", "worktree-edit", "external-write"] },
-          "human_gate": { "type": "boolean" },
           "input_schema": {},
           "output_schema": {}
         }

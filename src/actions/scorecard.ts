@@ -43,7 +43,7 @@ const SUCCESS: ReadonlySet<ActionRunOutcome> = new Set<ActionRunOutcome>(['accep
 
 function emptyOutcomes(): Record<ActionRunOutcome, number> {
   return {
-    submitted: 0, accepted: 0, revised: 0, merged: 0,
+    submitted: 0, accepted: 0, revised: 0, denied: 0, merged: 0,
     abandoned: 0, failed: 0, gave_up: 0, interrupted: 0,
   };
 }

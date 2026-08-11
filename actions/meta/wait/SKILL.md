@@ -6,7 +6,6 @@ outpost:
   category: meta
   side_effects: none
   runner: builtin
-  human_gate: false
   timeout_sec: 604800
   retries: 0
 ---

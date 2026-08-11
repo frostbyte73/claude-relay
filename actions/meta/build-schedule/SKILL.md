@@ -40,7 +40,7 @@ Envelope shape:
 | `kind` | Always `"schedule-edit"`. |
 | `mode` | `"new"` (draft from scratch) or `"redraft"` (fix a failed test). |
 | `prompt` | The user's free-text description of what they want scheduled and how often. Treat it as the spec. |
-| `actionCatalog` | The full action catalog — same shape `meta.orchestrate` receives (`name`, `description`, `category`, `runner`, `side_effects`, `human_gate`, `input_schema`, `output_schema` per entry). Use it to check whether an existing action already does what the user wants. |
+| `actionCatalog` | The full action catalog — same shape `meta.orchestrate` receives (`name`, `description`, `category`, `runner`, `side_effects`, `input_schema`, `output_schema` per entry). Use it to check whether an existing action already does what the user wants. |
 | `currentDraft` | Redraft mode only — the previous `{ name, trigger, what }` you (or a prior turn) proposed. |
 | `testError` | Redraft mode only — the real stdout/stderr from the user's Test click on `currentDraft`. |
 | `scheduleEditSessionId` | Pass this straight through to the submit call — it's how the daemon matches your proposal back to the editor that's waiting on it. |

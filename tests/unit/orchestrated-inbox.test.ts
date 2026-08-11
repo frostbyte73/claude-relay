@@ -63,6 +63,18 @@ describe('waitSatisfied', () => {
     expect(waitSatisfied(ready, 500)).toBe(true);
   });
 
+  // Regression: `awaiting_approval` is a dispatch parked on its own write draft, not a settled
+  // one — treating it as "done" would resume the controller as if every child had finished
+  // while one is still waiting on the user's accept/revise/deny.
+  it('does not treat a dispatch parked on its own draft (awaiting_approval) as done', () => {
+    const s = step({
+      waitingOn: { reason: 'fan-out', untilAllDispatchesDone: true },
+      dispatches: [done(), done({ id: 'd2', status: 'awaiting_approval' })],
+      inbox: [item({ kind: 'dispatch-done', dispatchId: 'd1' } as Partial<InboxItem> & { kind: 'dispatch-done' })],
+    });
+    expect(waitSatisfied(s, 500)).toBe(false);
+  });
+
   it('is satisfied by a gate resolution', () => {
     const s = step({
       waitingOn: { reason: 'gate', events: ['ci'] },

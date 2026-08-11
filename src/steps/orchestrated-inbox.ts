@@ -16,7 +16,11 @@ export function waitSatisfied(step: OrchestratedStep, now: number): boolean {
     if (i.kind === 'external' && i.events.some((e) => w.events?.includes(e))) return true;
     if (i.kind === 'dispatch-done') {
       if (w.untilAllDispatchesDone) {
-        if (step.dispatches.every((d) => d.status !== 'queued' && d.status !== 'running')) return true;
+        // `awaiting_approval` is a dispatch parked on its own write draft, not a settled one —
+        // counting it as "done" would resume the controller as if every child had finished
+        // while one is still waiting on the user's accept/revise/deny.
+        if (step.dispatches.every((d) =>
+          d.status !== 'queued' && d.status !== 'running' && d.status !== 'awaiting_approval')) return true;
       } else if (w.events?.includes('dispatches')) {
         return true;
       }

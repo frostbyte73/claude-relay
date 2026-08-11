@@ -1,8 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HookServer, type HookServerOpts } from '../../src/permissions/hook-server.js';
+import { writeDaemonSettings } from '../../src/settings-gen.js';
 import { parseJsonObject } from '../../src/routes/util.js';
 import { handleMcpRequest } from '../../src/mcp-server.js';
 import { freePort } from '../e2e/harness/port.js';
@@ -43,6 +46,7 @@ function makeOpts(): HookServerOpts {
     port: 0,
     daemonAuthSecret: SECRET,
     onPreToolHook: async (body) => { guarded(body); return '{}'; },
+    onPostToolFailureHook: async (body) => { guarded(body); return '{}'; },
     onStopHook: async (body) => { guarded(body); },
     onStatusLineHook: async (body) => { guarded(body); },
     onWorkPlanReady: async (body) => { guarded(body); },
@@ -94,6 +98,26 @@ describe('HookServer — status mapping when a handler throws on a bad body', ()
     expect(res.status).toBe(500);
   });
 
+  // Round 0 shipped the wrong event name (`PostToolUse` instead of `PostToolUseFailure`)
+  // and every test still passed, because all of them called handlePostToolFailureHook
+  // directly — nothing traversed settings-gen's event key/URL through to a live
+  // HookServer route. This does: derive the path settings-gen actually writes, and prove
+  // it resolves to something other than a 404 on the real route table.
+  it('the URL settings-gen writes for PostToolUseFailure resolves to a live HookServer route', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'set-'));
+    const settingsPath = join(dir, 'daemon-settings.json');
+    const port = await freePort();
+    writeDaemonSettings({ outPath: settingsPath, hookPort: port });
+    const j = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    const url = new URL(j.hooks.PostToolUseFailure[0].hooks[0].url);
+
+    server = new HookServer({ ...makeOpts(), port });
+    await server.listen();
+
+    const res = await post(port, url.pathname, JSON.stringify({ session_id: 's', tool_name: 'Bash' }));
+    expect(res.status).not.toBe(404);
+  });
+
   // /work/create-job parses its own body inside HookServer rather than in a daemon callback,
   // and was the last raw JSON.parse on the surface — a non-object body reached the field
   // checks and 400'd on whatever TypeError they happened to raise.
@@ -135,7 +159,7 @@ describe('the real hook callbacks guard their bodies', () => {
   const daemon = readFileSync(`${srcDir}daemon.ts`, 'utf8');
 
   const BODY_CALLBACKS = [
-    'onStatusLineHook', 'onStopHook', 'onPreToolHook',
+    'onStatusLineHook', 'onStopHook', 'onPreToolHook', 'onPostToolFailureHook',
     'onWorkPlanReady', 'onWorkStepResolved', 'onWorkStepFailed', 'onWorkJournal',
   ];
 

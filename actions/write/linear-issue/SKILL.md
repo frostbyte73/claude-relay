@@ -1,13 +1,12 @@
 ---
 name: write.linear-issue
-description: File a new Linear issue against a named team. External-write — the daemon hard-gates this step (human_gate), parking it for the user's approval of team/title/body before the session ever runs; no upstream meta.wait is required for that.
+description: File a new Linear issue against a named team. External-write — drafts the exact team/title/body via `mcp__outpost__submit_write_draft` and stops; files it only once the user approves the payload (see `SHARED-write-drafts.md`).
 outpost:
   kind: action
   category: write
   side_effects: external-write
   runner: claude
-  permissions: []
-  human_gate: true
+  permissions: [push]
   timeout_sec: 120
   retries: 1
 ---
@@ -26,9 +25,14 @@ Create a Linear issue. Returns the resulting issue identifier + URL.
 | `labels` | no | Array of label names (resolved per-team). |
 | `parent_ref` | no | Linear ID / URL of a parent issue to nest under. |
 
-## Two-phase gate
+## The write-draft protocol
 
-This is a hard-gated external write. You run in **two phases**, driven by `typePayload.phase` in `$OUTPOST_ENVELOPE`. You never file the issue without the user's approval — and the daemon enforces it: in the draft phase the `save_issue` tool is **blocked** until approval, so calling it early just fails.
+This action follows the shared draft/commit protocol — see
+`~/.outpost/actions/SHARED-write-drafts.md` for the full mechanics (the tool shape, the
+three outcomes, where `writeGate` lives, the rules that don't bend). This action has no
+`Read`/`Grep` grant — `cat` the absolute path instead, reachable via `core`'s `^cat ` pattern
+regardless of what else this action inherits. This is a standalone action step, so `writeGate`
+is at `typePayload.writeGate` in `$OUTPOST_ENVELOPE`.
 
 Load your tools first (deferred behind ToolSearch):
 
@@ -38,22 +42,36 @@ ToolSearch({ query: "select:mcp__outpost__submit_write_draft,mcp__outpost__submi
 
 If neither comes back, halt. The daemon marks the step failed when your turn ends.
 
-### Draft phase (`typePayload.phase === "draft"`)
+### Draft phase (`typePayload.writeGate` absent, or `typePayload.writeGate.phase === "draft"`)
 
-Compose the issue for review — do **not** file it. The `draft` you submit is the full issue as markdown so the user sees exactly what will be filed.
+Compose the issue for review — do **not** file it.
 
-1. Build the draft from `inputs.team` / `inputs.title` / `inputs.body` (+ `inputs.labels`, `inputs.parent_ref` if present). Render it as markdown headed with the team + title, e.g. `**[TEAM] Title**\n\nbody\n\nLabels: …`. If `typePayload.feedback` is non-empty (the user proposed changes — most recent last), revise to address every point.
-2. Call `mcp__outpost__submit_write_draft` with `draft` set to that markdown, then stop — the step parks for approval. Do NOT call `save_issue`; you may resolve `get_team`/`list_issue_labels` to validate, but the write is blocked here.
+1. Resolve `inputs.team` → `teamId` via `mcp__claude_ai_Linear__get_team`. If `inputs.labels`
+   is set, resolve names → `labelIds` via `mcp__claude_ai_Linear__list_issue_labels`. If
+   `inputs.parent_ref` is set, resolve it → `parentId` via `mcp__claude_ai_Linear__get_issue`.
+   These are reads; they run before drafting so the pinned call carries real ids, not names the
+   user would have to trust.
+2. Build the exact `mcp__claude_ai_Linear__save_issue` arguments from the resolved `teamId` +
+   `inputs.title` / `inputs.body` (+ resolved `labelIds`, `parentId` if present) — the
+   **resolved ids**, not the raw `inputs.team` key or label/parent names. If
+   `typePayload.writeGate.feedback` is non-empty (the user proposed changes — every round,
+   oldest first), revise the arguments to address every point.
+3. Call `mcp__outpost__submit_write_draft` with:
+   - `summary`: `"File [<TEAM>] <title>"`.
+   - `evidence`: the issue rendered as markdown — `**[TEAM] Title**\n\nbody\n\nLabels: …` —
+     so the user reviews readable text, not raw JSON.
+   - `calls`: `[{ label: "file issue", tool: { name: "mcp__claude_ai_Linear__save_issue", args: { …assembled args… } } }]`.
+4. Stop. Do not call `save_issue` directly — the hook denies it with no pin.
 
-### Commit phase (`typePayload.phase === "commit"`)
+### Commit phase (`typePayload.writeGate.phase === "commit"`)
 
-The user approved. File the issue using the approved content (`typePayload.draft` is the reviewed rendering; the structured fields are still in `inputs`).
+Run `typePayload.writeGate.approvedCalls` verbatim — exactly the `save_issue` call the user
+approved (they may have edited team/title/body/labels; use what's pinned, not what you
+originally resolved).
 
-1. Resolve `team` → UUID via `mcp__claude_ai_Linear__get_team`.
-2. If `inputs.labels` is set, resolve names → IDs via `mcp__claude_ai_Linear__list_issue_labels`.
-3. If `inputs.parent_ref` is set, resolve → UUID via `mcp__claude_ai_Linear__get_issue`.
-4. Call `mcp__claude_ai_Linear__save_issue` with the assembled payload (title/body from the approved draft).
-5. Call `mcp__outpost__submit_step_output` with `output` set to the JSON string `{"id": "CORE-1234", "url": "..."}` where `id` is the human identifier.
+1. Call `mcp__claude_ai_Linear__save_issue` with the pinned arguments, unchanged.
+2. Call `mcp__outpost__submit_step_output` with `output` set to the JSON string
+   `{"id": "CORE-1234", "url": "..."}` where `id` is the human identifier.
 
 ## Before you exit — journal a blocker
 

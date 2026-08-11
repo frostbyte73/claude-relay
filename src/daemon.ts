@@ -26,7 +26,7 @@ import { ActionsStore } from './storage/actions-store.js';
 import { ActionRegistry } from './actions/index.js';
 import { actionDirFor } from './actions/registry.js';
 import type { PermissionGroupMap } from './actions/types.js';
-import { handleHook, type HookInput } from './permissions/hook-handler.js';
+import { handleHook, handlePostToolFailureHook, type HookInput, type PostToolFailureHookInput } from './permissions/hook-handler.js';
 import { type ApprovalMode, ApprovalModeStore } from './permissions/approval-mode.js';
 import { RecurrenceTracker } from './storage/recurrence-tracker.js';
 import { WorktreeManager } from './git/worktree-manager.js';
@@ -38,6 +38,7 @@ import { UsagePoller, type AccountUsageSnapshot } from './integrations/usage-pol
 import { loadConfig } from './config.js';
 import { loadEnvFile } from './env-file.js';
 import { parseJsonObject } from './routes/util.js';
+import { parseDraftCalls, draftNotificationTag, type DraftRaisedBy } from './work/write-draft.js';
 import { handleNotificationsMessage, handleSessionMessage } from './ws/client-messages.js';
 import { registerGitRoutes } from './routes/git.js';
 import { registerJobsRoutes } from './routes/jobs.js';
@@ -387,7 +388,6 @@ async function main() {
   const actionRevisionsStore = new ActionRevisionsStore(join(RUNTIME_DIR, 'action-revisions'));
   const actionRunLedger = new ActionRunLedger({
     store: actionRunsStore,
-    isHumanGate: (name) => !!actionRegistry.getAction(name)?.frontmatter.outpost.human_gate,
     onSettled: (action) => {
       try { notifyAll({ type: 'action_run_settled', action }); } catch { /* during startup */ }
     },
@@ -663,7 +663,11 @@ async function main() {
           return rec && !rec.archivedAt ? rec.worktreePath : undefined;
         },
         actionForSession: (id) => engine.actionForSession(id),
-        writeGateHeldForSession: (id) => engine.writeGateHeldForSession(id),
+        gatedForAction: (name) => actionRegistry.gatedFor(name),
+        pinFor: (sid, tool, input) => engine.pinFor(sid, tool, input),
+        onPinConsumed: (sid, callId, toolUseId) => engine.consumePin(sid, callId, toolUseId),
+        draftStateFor: (sid) => engine.draftStateFor(sid),
+        onGatedDenial: (sid, act, reason) => engine.journalGatedDenial(sid, act, reason),
         onNotify: (approval) => {
           console.log(`[hook] enqueued approval ${approval.id.slice(0,8)} for ${approval.toolName}`);
           const summary = summarizeToolInput(approval.toolName, approval.toolInput);
@@ -697,6 +701,12 @@ async function main() {
       });
       console.log(`[hook] decision: ${result.hookSpecificOutput.permissionDecision} for ${hookInput.tool_name}`);
       return JSON.stringify(result);
+    },
+    onPostToolFailureHook: async (body) => {
+      const input = parseJsonObject(body) as PostToolFailureHookInput | null;
+      if (!input) throw new Error('invalid json body');
+      handlePostToolFailureHook(input, (sid, tool, toolInput, toolUseId) => engine.releaseConsumedPin(sid, tool, toolInput, toolUseId));
+      return '{}';
     },
     onWorkPlanReady: async (body) => {
       const payload = parseJsonObject(body) as { jobId: string; mode?: 'initial' | 'replan'; steps: unknown[]; drops?: string[]; feedback?: string; findings?: unknown } | null;
@@ -770,7 +780,54 @@ async function main() {
         return { ok: true };
       },
       submit_write_draft: async (a) => {
-        engine.onWriteDraftReady(a.jobId as string, a.stepId as string, a.draft as string);
+        const jobId = a.jobId as string;
+        const stepId = a.stepId as string;
+        const dispatchId = a.dispatchId as string | undefined;
+        if (typeof a.summary !== 'string' || !a.summary.trim()) {
+          throw new Error('submit_write_draft refused: summary must be a non-empty string');
+        }
+        if (a.evidence !== undefined && typeof a.evidence !== 'string') {
+          throw new Error('submit_write_draft refused: evidence must be a string');
+        }
+        const calls = parseDraftCalls(a.calls);
+        if (!calls) {
+          throw new Error(
+            'submit_write_draft refused: calls must be a non-empty array, each element with '
+            + 'exactly one of `bash` (string) or `tool: {name: string, args: object}`');
+        }
+        // A dispatch child's draft is labelled with the CHILD's action, not the controller's —
+        // actionForStep(jobId, stepId) alone would resolve `stepId` (the PARENT orchestrated
+        // step) to `s.controller`, mislabeling every dispatched-child draft.
+        const action = engine.actionForStep(jobId, stepId, dispatchId) ?? 'unknown';
+        const result = engine.onWriteDraftReady(jobId, stepId, {
+          action,
+          raisedBy: dispatchId
+            ? { kind: 'dispatch', dispatchId }
+            : { kind: 'step' },
+          summary: a.summary,
+          ...(a.evidence ? { evidence: a.evidence } : {}),
+          calls,
+        });
+        // Fail the tool call, not just log it — the MCP protocol's own error channel (see
+        // handleOne's catch in mcp-server.ts) is how the calling session learns its draft was
+        // refused instead of hanging or writing blind on a phantom "ok".
+        if (!result.ok) throw new Error(`submit_write_draft refused: ${result.reason}`);
+        // Only notify once the draft is actually accepted and parked — never on a refusal
+        // above. submitDraft (write-draft-runner.ts) silently coerces a step-less
+        // `{kind:'step'}` raiser to `{kind:'controller'}` for an orchestrated step; mirror
+        // that here so the notification's dedupe tag agrees with the draft actually stored,
+        // not the pre-coercion guess passed above.
+        const job = jobQueue.get(jobId);
+        const step = job?.steps.find((s) => s.id === stepId);
+        const raisedBy: DraftRaisedBy = dispatchId
+          ? { kind: 'dispatch', dispatchId }
+          : step?.type === 'orchestrated' ? { kind: 'controller' } : { kind: 'step' };
+        void pushSender.send({
+          title: job?.title ? `Draft ready: ${job.title}` : 'Draft ready for approval',
+          body: `${action} — ${a.summary as string}`,
+          tag: draftNotificationTag(jobId, stepId, raisedBy),
+          data: { kind: 'draft', jobId, stepId },
+        });
         return { ok: true };
       },
       submit_action_proposal: async (a) => {
@@ -899,7 +956,6 @@ async function main() {
       category: a.frontmatter.outpost.category,
       runner: a.frontmatter.outpost.runner,
       side_effects: a.frontmatter.outpost.side_effects,
-      human_gate: a.frontmatter.outpost.human_gate ?? false,
       input_schema: a.inputSchema,
       output_schema: a.outputSchema,
     })),

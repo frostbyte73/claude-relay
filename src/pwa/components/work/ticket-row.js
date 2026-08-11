@@ -3,7 +3,7 @@
 // step dots) that tracked/list.js and tracked/detail.js compose into their
 // own markup.
 
-import { needsYou } from '../../vm/work-predicates.js';
+import { needsYou, hasUnapprovedDraft } from '../../vm/work-predicates.js';
 
 export const STATE_LABEL = {
   planning: 'Planning',
@@ -44,7 +44,18 @@ export function stepDotState(s) {
   if (s.failure) return 'failed';
   if (s.cancelled) return 'todo';
   if (s.state === 'resolved') return 'ok';
-  if (s.state === 'gate_pending_approval') return 'gate';
+  // Terminal but not a failure (the user denied this ActionStep's write draft) — without
+  // this it falls through to `s.sessionId ? 'active' : ...` below and reads as still
+  // running. Reuses 'todo's neutral grey rather than a new data-state: at 8px this dot
+  // can't carry a glyph the way the timeline dot's ⊘ does, and "todo"'s "nothing more to
+  // see here, not running, not failed, not done" is the same story declined tells.
+  if (s.type === 'action' && s.state === 'declined') return 'todo';
+  // `state === 'gate_pending_approval'` alone misses a dispatch-raised draft — same gap
+  // Critical 2 named in focusAction/stepWaitPill, here in the job-list row's own mini step-
+  // dots (tracked/list.js's stepDots). jobTone(j) above already gets this right (needsYou →
+  // stepNeedsYou already accounts for it), so without this the row's overall tone and its
+  // per-step dot would disagree about which step is the one needing you.
+  if (s.state === 'gate_pending_approval' || hasUnapprovedDraft(s)) return 'gate';
   if (s.type === 'action' && s.state === 'waiting') return 'gate';
   if (s.type === 'orchestrated' && s.phase === 'pr_open'
     && s.pr?.reviewState === 'approved' && s.pr?.ciState === 'success') return 'gate';

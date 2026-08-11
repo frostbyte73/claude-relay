@@ -2,9 +2,11 @@ import { work } from '../../state/work.js';
 import { sessions } from '../../state/sessions.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { orchestratedHasPrBlock, renderOrchestratedCard, wireOrchestratedCard } from './orchestrated-card.js';
+import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
 import { renderMarkdown } from '../../markdown.js';
 import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
+import { isTerminalStep, hasUnapprovedDraft } from '../../vm/work-predicates.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
@@ -32,6 +34,10 @@ function stateTone(s) {
   if (!s.sessionId && s.state === 'running') return 'mute';
   // done.
   if (s.state === 'resolved') return 'ok';
+  // Terminal but not a failure: the user vetoed this step's write draft. Neutral, same
+  // family as cancelled/todo — not "active" (it isn't running) and not "danger" (it isn't
+  // broken).
+  if (s.type === 'action' && s.state === 'declined') return 'mute';
   // The hard hold, either kind: a human_gate action before an external write, or an
   // orchestrated step whose controller gated its own move.
   if (s.state === 'gate_pending_approval') return 'gate';
@@ -62,26 +68,17 @@ function actionFor(s) {
   if (s.type === 'action' && s.state === 'waiting') {
     return `<button class="o-btn o-btn--primary" data-step-action="resume">Resume now</button>`;
   }
-  // human_gate: approve the drafted write, or propose changes (redraft with feedback).
-  if (s.type === 'action' && s.state === 'gate_pending_approval') {
-    return `
-      <button class="o-btn o-btn--primary" data-step-action="approve-gate">Approve &amp; post</button>
-      <button class="o-btn o-btn--default" data-step-action="toggle-gate-feedback">Propose changes</button>
-      <div class="thread-composer" data-composer="gate-feedback" hidden>
-        <textarea class="thread-compose-input" data-autogrow placeholder="What should change about this draft?"></textarea>
-        <div class="thread-composer-row">
-          <button class="o-btn o-btn--primary" data-step-action="submit-gate-feedback">Submit</button>
-        </div>
-      </div>
-    `;
-  }
+  // human_gate: the drafted write itself renders via renderWriteDraft (draftsHtml below),
+  // which carries its own Accept/Propose changes/Deny buttons — nothing to add here.
   // Resolve is a manual fallback for action steps whose session subprocess
   // exited without POSTing output. It must never appear while the session is
   // still running (it's mid-investigation) nor before its slice has loaded —
   // resolving prematurely marks unfinished work done and unblocks the next
   // step. Only 'inactive' means the subprocess actually exited; absent /
-  // foreground / background all mean "not ended", so keep it hidden.
-  if (s.type === 'action' && s.state !== 'resolved' && s.sessionId) {
+  // foreground / background all mean "not ended", so keep it hidden. `declined` is
+  // already terminal (isResolved() in steps/action.ts treats it the same as `resolved`) —
+  // offering Resolve on top of it would read as a stray, meaningless affordance.
+  if (s.type === 'action' && !isTerminalStep(s) && s.sessionId) {
     const slice = sessions.get().sessionsById.get(s.sessionId);
     if (slice?.runState !== 'inactive') return '';
     return `<button class="o-btn o-btn--primary" data-step-action="resolve">Resolve</button>`;
@@ -98,7 +95,16 @@ function dotTone(s) {
   if (s.cancelled) return 'mute';
   if (s.failure) return 'danger';
   if (s.state === 'resolved') return 'done';
-  if (stateTone(s) === 'gate') return 'hot';
+  // Terminal but not a failure — its own neutral tone, distinct from both "done" (✓) and
+  // "failed" (✗).
+  if (s.type === 'action' && s.state === 'declined') return 'declined';
+  // stateTone's 'gate' only sees the step's own `state`, which a dispatch-raised draft
+  // never flips (only the dispatch's own status does) — the same gap Critical 2 named in
+  // focusAction/stepWaitPill, here in the timeline's own dot. Without hasUnapprovedDraft, an
+  // orchestrated step parked on a dispatch's draft would draw the neutral hollow "pending"
+  // ring below instead of the hot "your move" fill, on DESIGN's own "most refined thing we
+  // build" (§7.7).
+  if (stateTone(s) === 'gate' || hasUnapprovedDraft(s)) return 'hot';
   if (!s.sessionId && s.state === 'running') return 'pending';
   // An orchestrated step parked on CI or a dispatch can sit for hours; the busy dot
   // pulses, and DESIGN §10 says don't pulse anything that isn't live.
@@ -110,6 +116,7 @@ function dotGlyph(tone) {
   if (tone === 'done') return '✓';
   if (tone === 'hot') return '!';
   if (tone === 'danger') return '✗';
+  if (tone === 'declined') return '⊘';
   if (tone === 'pending') return '◯';
   return ''; // busy — pulsing fill carries the state
 }
@@ -165,23 +172,22 @@ function waitBlockHtml(s) {
     </div>`;
 }
 
-// The approval block for a human_gate action parked in gate_pending_approval: the exact
-// drafted payload (s.draft) the action will post once approved, plus any feedback the user
-// already sent this round. This is the daemon-enforced gate — the write is blocked until
-// approval. Approve & run / Propose changes render via actionFor.
-function gateBlockHtml(s) {
-  if (s.type !== 'action' || s.state !== 'gate_pending_approval') return '';
-  const draft = s.draft ? renderMarkdown(String(s.draft)) : '';
-  const feedback = (s.gateFeedback ?? [])
-    .map((f) => `<div class="tl-gate-feedback">↩ ${escapeHtml(f)}</div>`)
+// An ActionStep's own write drafts awaiting a decision — the exact calls it will run
+// verbatim once accepted (see write-draft-card.js), editable per field. Approved drafts
+// (kept in `s.drafts` forever, for inspection) are never rendered here — only what's still
+// pending. In practice an ActionStep carries at most one unapproved draft at a time
+// (raisedBy is always `{kind:'step'}` for this step type), but this renders every entry
+// that qualifies rather than assuming that invariant holds forever.
+// `isTerminalStep` guard: an ActionStep's `.failure` doesn't reset `state` (see that
+// function's own doc comment), so a draft raised before a later provisioning failure can
+// stay pending forever on a step that's actually dead — rendering a live Accept/Propose/
+// Deny card whose every button would 409 against the server's own terminal-step guard.
+function draftsHtml(s) {
+  if (s.type !== 'action' || isTerminalStep(s)) return '';
+  return (s.drafts ?? [])
+    .filter((d) => !d.approvedAt)
+    .map((d) => renderWriteDraft(d))
     .join('');
-  const what = s.action ? s.action.split('.').pop() : 'action';
-  return `
-    <div class="tl-gate">
-      <div class="tl-gate-head">⚠ Review before this ${escapeHtml(what)} posts</div>
-      ${draft ? `<div class="tl-gate-body md-body">${draft}</div>` : '<div class="tl-gate-body muted">Drafting…</div>'}
-      ${feedback ? `<div class="tl-gate-feedbacks">${feedback}</div>` : ''}
-    </div>`;
 }
 
 // Token-launch-queue status for this step, in its own row (never crammed onto
@@ -246,7 +252,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
         ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
         ${waitBlockHtml(s)}
-        ${gateBlockHtml(s)}
+        ${draftsHtml(s)}
         ${launchRowHtml(job, s)}
         ${s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
         ${orchestrated ? renderOrchestratedCard(s, { job }) : (metaAction(s) ? `<div class="tl-meta">${metaAction(s)}</div>` : '')}
@@ -274,18 +280,13 @@ export function wireTimelineStep(el, job, s) {
       if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
       else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
-      else if (kind === 'approve-gate') void work.approve(job.id, { gate: 'gate', stepId: s.id });
-      else if (kind === 'toggle-gate-feedback') {
-        el.querySelector('[data-composer="gate-feedback"]')?.toggleAttribute('hidden');
-      } else if (kind === 'submit-gate-feedback') {
-        const ta = el.querySelector('[data-composer="gate-feedback"] textarea');
-        const feedback = (ta?.value ?? '').trim();
-        if (!feedback) { ta?.focus(); return; }
-        void work.reject(job.id, { gate: 'gate', stepId: s.id, feedback });
-      }
       else if (kind === 'retry') void work.retryStep(job.id, s.id).catch((err) => alert(`Retry failed: ${err?.message ?? err}`));
     });
   });
+  if (s.type === 'action' && !isTerminalStep(s)) {
+    (s.drafts ?? []).filter((d) => !d.approvedAt)
+      .forEach((d) => wireWriteDraft(el, { jobId: job.id, stepId: s.id, draft: d }));
+  }
   if (s.type === 'orchestrated') wireOrchestratedCard(el, s, { job });
 }
 

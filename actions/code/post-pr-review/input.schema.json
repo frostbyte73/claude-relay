@@ -38,12 +38,9 @@
     },
     "boundNote": {
       "type": "string",
-      "description": "The approved comment set, verbatim: one entry per comment with file path, line, and the exact body to post. This is the text the user read at the gate."
+      "description": "The comment set to draft, verbatim: one entry per comment with file path, line, and the exact body. Written by the controller (`code.orchestrate-review`), not the user — the user only sees and approves this content once this action turns it into a write-draft card."
     },
-    "gateApproved": {
-      "type": "boolean",
-      "description": "True once the user approved the daemon's forced gate on this external write."
-    },
+    "gateApproved": { "type": "boolean" },
     "gateFeedback": { "type": "array", "items": { "type": "string" } },
     "recentLessons": { "type": "array", "items": { "type": "object" } },
     "pr": {

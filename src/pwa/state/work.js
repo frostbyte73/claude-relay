@@ -140,6 +140,14 @@ export const work = {
   async messageStep(id, stepId, body) { return call(() => workApi.messageStep(id, stepId, body)); },
   async resolveStepGate(id, stepId, approved, feedback) { return call(() => workApi.resolveStepGate(id, stepId, approved, feedback)); },
   async markStepResolved(id, stepId) { return call(() => workApi.markStepResolved(id, stepId)); },
+  // Draft decisions answer `{ok:true}`, no job payload — same shape as launchStep. The job
+  // mutation rides the WS broadcast the accept/revise/deny route triggers server-side, not a
+  // hand-mutate here. Errors propagate to the caller uncaught (unlike `call()`'s callers) —
+  // the write-draft card needs the rejection itself (a 409 race, a 400) to show inline, not
+  // just a generic store-level `error` flag.
+  async acceptDraft(id, stepId, draftId, calls) { return workApi.acceptDraft(id, stepId, draftId, calls); },
+  async reviseDraft(id, stepId, draftId, feedback) { return workApi.reviseDraft(id, stepId, draftId, feedback); },
+  async denyDraft(id, stepId, draftId, reason) { return workApi.denyDraft(id, stepId, draftId, reason); },
   async setPriority(id, highPriority) { return call(() => workApi.setJobPriority(id, highPriority)); },
   async syncJob(id) {
     store.set((s) => ({ ...s, syncingJobId: id, error: null }));

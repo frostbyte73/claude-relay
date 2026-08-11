@@ -288,8 +288,10 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   color: var(--text-dim);
 }
 
-/* human_gate approval block — a harder stop than a meta.wait soak (an external write
-   is about to fire), so it carries the danger accent, not warn. */
+/* An orchestrated step's VOLUNTARY gate — the controller asking a question before its own
+   next move, distinct from a write-draft approval (.wd-card below). A harder stop than a
+   meta.wait soak (the move is one decision away from running), so it carries the danger
+   accent, not warn. */
 .tl-gate {
   margin: 2px 0 8px;
   padding: 8px 12px;
@@ -324,6 +326,68 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   overflow-wrap: anywhere;
 }
 
+/* Write-draft approval card (write-draft-card.js) — the exact payload of an external write,
+   editable per field before Accept. DESIGN §2.2 assigns --warn (not --danger) to "a plan
+   waiting for approval" — --danger is reserved for actual failure/destruction — and this
+   state's own timeline dot already renders --warn (dotTone's 'hot' for gate_pending_
+   approval), so the card agreeing with its own dot matters. It's also what lets the one
+   genuinely destructive control in here (Deny, `.o-btn--danger`) stand out instead of
+   blending into an already-danger-tinted card. §6: 3px rail for a standalone callout (vs.
+   the 2px inline rail an embedded one like .wd-call-released below gets). */
+.wd-card {
+  margin: 2px 0 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--warn-soft, var(--bg-elev-2));
+  border-left: 3px solid var(--warn);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wd-head { font-weight: 600; color: var(--warn); overflow-wrap: anywhere; }
+.wd-feedbacks { display: flex; flex-direction: column; gap: 4px; }
+.wd-feedback { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.wd-calls { display: flex; flex-direction: column; gap: 10px; }
+.wd-call {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Typography is .o-microhead's canonical spec (DESIGN.md §3.2) — .wd-call-label carries
+   nothing of its own beyond that, same pattern as .plan-findings-label. */
+/* A re-armed call may already have taken effect — DESIGN §7.7's "say why before offering
+   the fix" callout treatment (2px inline rail; §6 reserves 3px for a standalone card like
+   .wd-card above), same family as .tl-failure/.tl-wait, just warn-toned. */
+.wd-call-released {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--warn-soft);
+  border-left: 2px solid var(--warn);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  overflow-wrap: anywhere;
+}
+.wd-field { display: flex; flex-direction: column; gap: 4px; }
+/* An arg key is the MCP tool's own field name — a machine identifier, not a human label —
+   so it gets mono, not the uppercase micro-label treatment `.field-label` otherwise carries
+   (inherited from action-picker-dialog.js's schema-authored field names). DESIGN §3.1: mono
+   is for machine truth; §3.2 reserves uppercase for micro-labels/nano tags, neither of which
+   this is. */
+.wd-field .field-label { text-transform: none; letter-spacing: normal; font-family: var(--font-mono); }
+.wd-bash { font-family: var(--font-mono); font-size: 12px; min-height: 60px; }
+/* .work-error's own danger-soft fill would blend into .wd-card's warn-soft background just
+   as easily as it would a danger one — swap it for --bg + a danger border (an error IS a
+   real failure, keeping --danger correct here) so it still reads as distinct. */
+.wd-error.work-error { margin-bottom: 0; background: var(--bg); border: 1px solid var(--danger); }
+
 .tl-dot {
   position: absolute;
   left: -11px;
@@ -347,6 +411,9 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .tl-dot[data-tone="danger"] { background: var(--danger);  border-color: var(--danger); color: var(--bg); }
 .tl-dot[data-tone="pending"] { background: var(--bg);     border-color: var(--line); }
 .tl-dot[data-tone="mute"]   { background: var(--bg-elev-2); border-color: var(--line); opacity: 0.6; }
+/* declined: terminal but not a failure — neutral like mute, but keeps its ⊘ glyph visible
+   (mute is used for cancelled, which shows no glyph at all) rather than reading as "done". */
+.tl-dot[data-tone="declined"] { background: var(--bg-elev-2); border-color: var(--line); color: var(--text-dim); }
 @keyframes tl-pulse { 50% { opacity: 0.55; } }
 
 .tl-content {
@@ -466,6 +533,9 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 }
 .orc-dispatch-brief { color: var(--text-mute); }
 .orc-dispatch-failure { color: var(--danger); }
+/* A dispatch-raised write draft is a full-bleed block same as brief/failure above — without
+   this it auto-places into the grid's first (auto-sized) column and renders crushed. */
+.orc-dispatch .wd-card { grid-column: 1 / -1; }
 
 .orc-msg { margin-top: 0; }
 
@@ -1556,7 +1626,6 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 .ap-chip-sideeff-worktree-edit  { color: var(--accent-2);  border-color: var(--accent-2); background: var(--accent-2-soft); }
 .ap-chip-sideeff-gated-write    { color: var(--accent);    border-color: var(--accent);   background: var(--accent-soft); }
 .ap-chip-sideeff-external-write { color: var(--danger);    border-color: var(--danger);   background: var(--danger-soft); }
-.ap-chip-gate { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
 .ap-detail-head {
   display: flex; align-items: center; gap: 12px;

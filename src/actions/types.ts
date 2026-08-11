@@ -21,7 +21,6 @@ export interface ActionFrontmatter {
     runner: ActionRunner;
     // Inherited permission groups (read/pull/edit/push); core is implicit for claude-runners.
     permissions?: string[];
-    human_gate?: boolean;
     timeout_sec?: number;
     retries?: number;
   };
@@ -44,6 +43,9 @@ export interface ActionDef {
   inputSchema: unknown;
   outputSchema: unknown;
   allowlist: ActionAllowlist;
+  // The subset of `allowlist` that came from a gated group — calls matching these run
+  // only when pinned by an approved WriteDraft. See GATED_GROUPS in registry.ts.
+  gated: ActionAllowlist;
 }
 
 // A plan node. The orchestrator emits a PlanStep[] and it persists on

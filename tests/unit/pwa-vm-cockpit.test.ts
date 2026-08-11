@@ -1,8 +1,39 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { cockpitGroups, sentimentSummary } from '../../src/pwa/vm/cockpit.js';
+import { cockpitGroups, sentimentSummary, stepWaitPill } from '../../src/pwa/vm/cockpit.js';
 
 const NOW = 1_000_000_000_000;
+
+describe('stepWaitPill', () => {
+  // Critical 2: `state === 'gate_pending_approval'` alone misses a dispatch-raised draft
+  // (submitDraft only flips the DISPATCH's own status, never the parent step's state) — all
+  // three raiser kinds must produce the same approval CTA, not the generic "On hold" a
+  // meta.wait fallback would show.
+  it('an ActionStep draft (raisedBy: step) gets Approve write', () => {
+    expect(stepWaitPill({
+      type: 'action', state: 'gate_pending_approval',
+      drafts: [{ id: 'd1', raisedBy: { kind: 'step' } }],
+    })).toEqual({ label: 'Approve write', variant: 'gate' });
+  });
+
+  it('a controller-raised draft gets Approve move', () => {
+    expect(stepWaitPill({
+      type: 'orchestrated', state: 'gate_pending_approval',
+      drafts: [{ id: 'd1', raisedBy: { kind: 'controller' } }],
+    })).toEqual({ label: 'Approve move', variant: 'gate' });
+  });
+
+  it('a dispatch-raised draft gets Approve move even though the PARENT step is still waiting', () => {
+    expect(stepWaitPill({
+      type: 'orchestrated', state: 'waiting',
+      drafts: [{ id: 'd1', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' } }],
+    })).toEqual({ label: 'Approve move', variant: 'gate' });
+  });
+
+  it('an indefinite meta.wait hold (no draft) falls back to On hold', () => {
+    expect(stepWaitPill({ type: 'action', state: 'waiting' })).toEqual({ label: 'On hold', variant: 'gate' });
+  });
+});
 
 describe('cockpitGroups', () => {
   it('waiting includes pending approvals, plan-review jobs, and needy steps, newest first', () => {

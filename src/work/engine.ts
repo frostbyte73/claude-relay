@@ -7,6 +7,7 @@ import type {
   ActionStep,
   Dispatch,
   Finding,
+  InboxItem,
   IterationRecord,
   JobEvent,
   JobEventKind,
@@ -31,6 +32,7 @@ import {
   applyMove, deliverInbox, pushInbox, resolveGate,
   type NewItem, type OrchestratedHost, type ProgressPayload,
 } from './orchestrated-runner.js';
+import { deliverImmediate } from '../steps/orchestrated-inbox.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
@@ -38,6 +40,14 @@ import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import type { LaunchGovernor, LaunchState, LaunchPriority } from './launch-governor.js';
+import {
+  acceptDraft as acceptDraftImpl, denyDraft as denyDraftImpl, reviseDraft as reviseDraftImpl,
+  submitDraft, type DraftDecisionResult, type DraftHost, type SubmitDraftResult,
+} from './write-draft-runner.js';
+import {
+  currentDraftForRaiser, matchPinnedCall, sameRaiser, writeGateFor,
+  type DraftRaisedBy, type PinnedCall, type WriteDraft,
+} from './write-draft.js';
 
 const MAX_EVENTS_PER_JOB = 50;
 const MAX_STEP_EVENTS = 40;
@@ -328,14 +338,18 @@ export class WorkEngine {
     // can be retried (fresh session, state reset to speccing) while a check armed by the
     // old session is still pending. That check is owed by a round that no longer exists.
     if (step.sessionId !== sessionId) return undefined;
-    // A human_gate action's draft turn ends by submitting a draft and parking for approval
+    // A pending (unapproved) draft is always a legitimate turn end, whichever raiser and
+    // whichever top-level state it leaves the step in — the raiser is waiting on the user,
+    // not hung.
+    if (step.drafts?.some((d) => !d.approvedAt)) return undefined;
+    // A write-draft action's draft turn ends by submitting a draft and parking for approval
     // (submit_write_draft → gate_pending_approval). That's a legitimate turn end, not a
     // hang — don't fail it. The commit/redraft turns run when the user acts.
     if (step.type === 'action' && step.state === 'gate_pending_approval') return undefined;
     // A parked controller (waiting on an event, or on the user's gate decision) legitimately
     // ends its turn without submitting again until deliverInbox/resolveStepGate resumes it.
     if (step.type === 'orchestrated' && (step.state === 'waiting' || step.state === 'gate_pending_approval')) return undefined;
-    if (step.state === 'resolved' || step.failure || step.cancelled) return undefined;
+    if (step.state === 'resolved' || step.state === 'declined' || step.failure || step.cancelled) return undefined;
     return { jobId: role.jobId, stepId: role.stepId };
   }
 
@@ -376,7 +390,13 @@ export class WorkEngine {
         // controller sessions on one step.
         if (s.sessionId && s.state === 'running') {
           const label = this.stepLabel(j.id, s.id);
-          this.mutateStep(j.id, s.id, (st) => ({ ...st, sessionId: undefined, updatedAt: this.ctx.now() }));
+          this.mutateStep(j.id, s.id, (st) => ({
+            ...st, sessionId: undefined, updatedAt: this.ctx.now(),
+            // A cold respawn always rebinds to `st.controller` (see spawnStepSession), never to
+            // a persisted boundAction — so a controller that died mid a self-round bound to a
+            // sub-action must not keep reporting that stale binding after the restart.
+            ...(st.type === 'orchestrated' ? { boundAction: undefined } : {}),
+          }));
           this.mutate(j.id, (jj) => this.appendEvent(jj, {
             kind: 'step_retried', who: 'system', stepId: s.id,
             body: `${label} — session interrupted by daemon restart; re-running`,
@@ -411,15 +431,25 @@ export class WorkEngine {
       for (const s of j.steps) {
         if (s.sessionId) {
           this.roleBySession.set(s.sessionId, { role: 'step', jobId: j.id, stepId: s.id });
-          this.bindAction(s.sessionId, actionNameForStep(s));
+          // `s.boundAction`, not just `actionNameForStep(s)` (== `s.controller` for an
+          // orchestrated step): a controller parked at `gate_pending_approval` mid a self-round
+          // rebind survives a restart with `sessionId` untouched (only a `running` step's
+          // session is cleared — see reconcileInterruptedSteps), so the in-memory actionBySession
+          // map has to be rehydrated with the SAME identity actionForStep/pinFor now use, not
+          // the controller's own name.
+          this.bindAction(s.sessionId, s.type === 'orchestrated' ? (s.boundAction ?? s.controller) : actionNameForStep(s));
         }
         // A still-running dispatch's session is persisted on the Dispatch record, but its
         // role is not. Without rebinding it, its submit_step_output falls through the
         // dispatch branch of onStepResolved and resolves the PARENT step on the child's
-        // behalf — see findDispatchStepId.
+        // behalf — see findDispatchStepId. `awaiting_approval` is included too: that's the
+        // boot-time status of a dispatch parked on a draft the user hasn't ruled on yet, and
+        // nothing else ever rebinds it later (acceptDraft/reviseDraft flip the status but
+        // don't touch roleBySession) — without this a restart during the approval window
+        // strands pinFor and leaves the eventual submit_step_output unrouted.
         if (s.type !== 'orchestrated') continue;
         for (const d of s.dispatches) {
-          if (d.status !== 'running' || !d.sessionId) continue;
+          if ((d.status !== 'running' && d.status !== 'awaiting_approval') || !d.sessionId) continue;
           this.roleBySession.set(d.sessionId, { role: 'dispatch', jobId: j.id, stepId: s.id, dispatchId: d.id });
           this.bindAction(d.sessionId, d.action);
         }
@@ -985,7 +1015,7 @@ export class WorkEngine {
   }
 
   private settleDispatch(
-    jobId: string, stepId: string, dispatchId: string, status: 'done' | 'failed',
+    jobId: string, stepId: string, dispatchId: string, status: 'done' | 'failed' | 'cancelled',
     result: { output?: string; failure?: string },
   ): void {
     this.mutateStep(jobId, stepId, (s) => {
@@ -1148,67 +1178,168 @@ export class WorkEngine {
   }
 
   // ─────────────────────────────────────────────────────────
-  // human_gate — draft → review → commit loop for external writes.
-  // The action's draft turn composes the payload and submits it for review
-  // (submit_write_draft) WITHOUT posting; the user approves (→ commit turn posts it)
-  // or proposes changes (→ redraft turn). The external
-  // write is hard-blocked by the hook until gateApproved (see writeGateHeldForSession),
-  // so nothing posts before the user's OK — independent of the skill's behaviour.
+  // Write drafts — accept / revise / deny loop for external writes.
+  // A step (or a controller, or one of its dispatches) composes the exact payload of an
+  // external write and submits it via submit_write_draft WITHOUT performing it. The user
+  // then accepts the pinned calls (→ the session resumes and the hook lets exactly those
+  // calls through, see pinFor/matchPinnedCall), proposes changes (→ resumes with feedback,
+  // nothing pinned), or denies it (→ terminal for the raiser, no pin ever created).
   // ─────────────────────────────────────────────────────────
 
-  // The draft turn submitted a payload for review. Store it and park the step for the
-  // user's approval. Does NOT dispatch — approveGate/rejectGate drive the next turn.
-  onWriteDraftReady(jobId: string, stepId: string, draft: string): void {
-    let ok = false;
-    this.mutateStep(jobId, stepId, (s) => {
-      if (s.type !== 'action' || (s.state !== 'running' && s.state !== 'gate_pending_approval')) return s;
-      ok = true;
-      return { ...s, draft, state: 'gate_pending_approval', updatedAt: this.ctx.now() };
-    });
-    if (!ok) return;
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'session', stepId,
-      body: `${this.stepLabel(jobId, stepId)} — draft ready for your approval`,
-    }));
+  private draftHost(): DraftHost {
+    return {
+      now: () => this.ctx.now(),
+      newId: () => this.ctx.newId(),
+      getJob: (jobId) => this.opts.queue.get(jobId),
+      getStep: (jobId, stepId) => this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId),
+      mutateStep: (jobId, stepId, fn) => this.mutateStep(jobId, stepId, fn),
+      appendStepEvent: (jobId, stepId, who, body) => this.mutate(jobId, (j) =>
+        this.appendEvent(j, { kind: 'state_changed', who, stepId, body })),
+      resumeRaiser: (jobId, stepId, raisedBy, action) => {
+        // Every branch is fire-and-forget from the caller's perspective, and each has a
+        // synchronous-throw tail (writeEnvelope/augmentEnvelopeWithLessons/submitLaunch) past
+        // its own internal provision() guard — `.catch` here is the backstop the comment above
+        // armUnresolvedCheck's stale-Stop bookkeeping (and orchestratedHost's own
+        // resumeController/spawnDispatch wiring) already rely on for every other fire-and-forget
+        // resume: an uncaught rejection here is fatal to the daemon, not just this step.
+        if (raisedBy.kind === 'dispatch') {
+          const dispatchId = raisedBy.dispatchId;
+          this.dispatchResume(jobId, stepId, dispatchId).catch((e) =>
+            this.onStepFailed(jobId, dispatchId, `dispatch resume failed: ${(e as Error).message ?? e}`, { journal: false }));
+          return;
+        }
+        if (raisedBy.kind === 'controller') {
+          // Rebind to the action that actually drafted the write, not the controller's own
+          // action — a self-round bound to a sub-action (`code.merge-pr`, say) drafts under
+          // that action's allowlist, and the hook now requires the resumed session to still be
+          // bound to it for the approved call to match (see the account this fixes). Resuming
+          // as the controller here would run the wrong skill AND deny the write it just got
+          // approved.
+          this.resumeControllerRound(jobId, stepId, action, undefined).catch((e) =>
+            this.onStepFailed(jobId, stepId, `controller resume failed: ${(e as Error).message ?? e}`, { journal: false }));
+          return;
+        }
+        this.dispatchActionResume(jobId, stepId).catch((e) =>
+          this.onStepFailed(jobId, stepId, `step resume failed: ${(e as Error).message ?? e}`, { journal: false }));
+      },
+      settleDispatch: (jobId, stepId, dispatchId, reason) =>
+        this.settleDispatch(jobId, stepId, dispatchId, 'cancelled', { failure: reason }),
+      notifyControllerDenied: (jobId, stepId, feedback) => this.notifyControllerDenied(jobId, stepId, feedback),
+      declineStep: (jobId, stepId, reason) => this.declineStep(jobId, stepId, reason),
+      journal: (action, jobId, stepId, outcome, lesson) =>
+        this.opts.journalStore?.append({ action, jobId, stepId, outcome, lesson, at: this.ctx.now() }),
+    };
   }
 
-  // PWA "Approve & run": the user approved the drafted payload. Flip gateApproved (which
-  // lifts the hook's write-block) and resume the same session in its commit turn to post.
-  approveGate(jobId: string, stepId: string): void {
-    let ok = false;
+  // Delivers a WriteDraft denial to the controller. While the step is still parked at the gate
+  // this goes out of band from the normal shouldDeliver pull cycle — mirrors resolveGate's
+  // decline branch (deliverImmediate, not pushInbox/deliverInbox), because shouldDeliver
+  // refuses everything but a user-message while `gate_pending_approval`, and `gate-resolved`
+  // isn't one. `gate: undefined` is folded into that same mutation, same as resolveGate — a
+  // live `gate` left behind on a `running` step renders Approve/Decline buttons resolveGate
+  // then silently refuses (see orchestrated-inbox.ts's drainForDelivery comment). A step that
+  // already left `gate_pending_approval` on its own (a user message beat the deny to it) still
+  // gets the item queued — dropping it here would leave the controller attempting a write with
+  // no pin, denied by the hook for a reason it never saw.
+  private notifyControllerDenied(jobId: string, stepId: string, feedback: string): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (step?.type !== 'orchestrated') return;
+    // A stale deny against a step that already resolved/failed/cancelled while parked must not
+    // re-provision a worktree its own settle already archived, or resume a session its own
+    // settle already closed. resumeControllerRound's own terminal re-check lives inside its
+    // submitLaunch `run()`, which only fires AFTER provision() — too late to skip the throw a
+    // just-archived worktree would produce there.
+    if (step.state === 'resolved' || step.state === 'failed' || step.failure || step.cancelled) return;
+    // `source: 'write-draft'` discriminates this from resolveGate's own gate-resolved delivery
+    // (a declined VOLUNTARY gate) — see work-types.ts. Without it, a controller reading a bare
+    // `{approved:false, feedback}` can't tell "the write was vetoed outright, pick a different
+    // move" from "redo the drafted work with this feedback", and the two calls for opposite
+    // behavior.
+    const item: InboxItem = {
+      id: this.ctx.newId(), at: this.ctx.now(), kind: 'gate-resolved',
+      approved: false, feedback, source: 'write-draft',
+    };
     this.mutateStep(jobId, stepId, (s) => {
-      if (s.type !== 'action' || s.state !== 'gate_pending_approval') return s;
-      ok = true;
-      return { ...s, state: 'running', gateApproved: true, updatedAt: this.ctx.now() };
+      if (s.type !== 'orchestrated') return s;
+      const withItem = { ...s, inbox: [...s.inbox, item] };
+      // A draft denial opens no gate of its own, so an EARLIER voluntary gate's approval must
+      // not survive to contradict it — the SKILL prose says gateApproved "clears the moment you
+      // open your next gate"; this is the other event that has to clear it, or a controller
+      // resuming with `gateApproved: true` alongside a same-turn decline item gets two answers
+      // to two different questions.
+      const cleared = { ...withItem, gateApproved: undefined };
+      return s.state === 'gate_pending_approval'
+        ? { ...deliverImmediate(cleared, [item]), gate: undefined }
+        : cleared;
     });
-    if (!ok) return;
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'user', stepId, body: `${this.stepLabel(jobId, stepId)} — approved`,
-    }));
-    void this.dispatchActionResume(jobId, stepId);
+    this.resumeControllerRound(jobId, stepId, undefined, undefined).catch((e) =>
+      this.onStepFailed(jobId, stepId, `controller resume failed: ${(e as Error).message ?? e}`, { journal: false }));
   }
 
-  // PWA "Propose changes": the user wants a different payload. Record the feedback and
-  // resume the same session in a redraft turn — it revises and re-submits via
-  // submit_write_draft, re-parking for approval. The write never fired (gateApproved is
-  // still false, so the hook keeps blocking it).
-  rejectGate(jobId: string, stepId: string, feedback: string): void {
-    const note = feedback?.trim();
-    if (!note) return;
-    let ok = false;
-    this.mutateStep(jobId, stepId, (s) => {
-      if (s.type !== 'action' || s.state !== 'gate_pending_approval') return s;
-      ok = true;
-      return { ...s, state: 'running', gateFeedback: [...(s.gateFeedback ?? []), note], updatedAt: this.ctx.now() };
-    });
-    if (!ok) return;
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'state_changed', who: 'user', stepId, body: note,
-    }));
-    void this.dispatchActionResume(jobId, stepId);
+  // The draft turn submitted a payload for review. Parks the step (or dispatch) for the
+  // user's decision — acceptDraft/reviseDraft/denyDraft drive the next turn. Returns the
+  // outcome (rather than swallowing it, as before) so the MCP handler can tell the calling
+  // session its draft was refused instead of reporting success regardless.
+  onWriteDraftReady(jobId: string, stepId: string, draft: Omit<WriteDraft, 'id' | 'requestedAt'>): SubmitDraftResult {
+    return submitDraft(this.draftHost(), jobId, stepId, draft);
   }
 
-  // Resume a human_gate action's persistent session for its next turn (commit after
+  // The only caller is the submit_write_draft MCP handler, which has just a (jobId, stepId,
+  // dispatchId?) triple off the wire — not a Step it already holds. When `dispatchId` is set,
+  // `stepId` names the PARENT orchestrated step, whose own action is the CONTROLLER —
+  // resolving through `actionNameForStep(step)` alone would label a dispatched child's draft
+  // with the controller's action instead of the child's own (same trap `journalGatedDenial`'s
+  // comment documents for the sibling gated-denial path).
+  actionForStep(jobId: string, stepId: string, dispatchId?: string): string | undefined {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (!step) return undefined;
+    if (dispatchId && step.type === 'orchestrated') {
+      return step.dispatches.find((d) => d.id === dispatchId)?.action;
+    }
+    // `s.controller` is fixed for the step's whole life — it never reflects a self-round's
+    // temporary rebind (`self-round { action: 'code.merge-pr' }`), so a draft raised mid-round
+    // would otherwise always be mislabelled with the controller's own action. `boundAction` is
+    // the persisted mirror of the session's actual current identity (see resumeControllerRound).
+    if (step.type === 'orchestrated') return step.boundAction ?? step.controller;
+    return actionNameForStep(step);
+  }
+
+  // PWA "Approve & run": pins the (possibly user-edited) calls and resumes the session —
+  // the hook lets exactly those calls through (see pinFor), everything else still denies.
+  // Returns the outcome (see submitDraft/onWriteDraftReady) so the HTTP route can answer a
+  // refused accept with a real status instead of 200-and-nothing-changed. Async: a
+  // file-referencing call is hashed from disk before the accept can be recorded.
+  acceptDraft(jobId: string, stepId: string, draftId: string, calls: PinnedCall[]): Promise<DraftDecisionResult> {
+    return acceptDraftImpl(this.draftHost(), jobId, stepId, draftId, calls);
+  }
+
+  // PWA "Propose changes": records feedback and resumes the same session for a redraft.
+  // Nothing is pinned — the write still cannot fire until a later accept.
+  reviseDraft(jobId: string, stepId: string, draftId: string, feedback: string): DraftDecisionResult {
+    return reviseDraftImpl(this.draftHost(), jobId, stepId, draftId, feedback);
+  }
+
+  // PWA "Deny": the user is ruling out the write entirely, not asking for a different one.
+  // Routes to whoever chose to run this action and journals against that chooser instead of
+  // the action itself — see denyDraft's doc comment for why.
+  denyDraft(jobId: string, stepId: string, draftId: string, reason: string): DraftDecisionResult {
+    return denyDraftImpl(this.draftHost(), jobId, stepId, draftId, reason);
+  }
+
+  // Terminal, but NOT a failure: no `.failure`, no journal entry against the action, and
+  // the job is not dragged toward `failed`. The step-review sees the reason and re-plans.
+  private declineStep(jobId: string, stepId: string, reason: string): void {
+    this.mutateStep(jobId, stepId, (s) => s.type !== 'action'
+      ? s
+      : { ...s, state: 'declined', updatedAt: this.ctx.now() });
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_resolved', who: 'user', stepId,
+      body: `${this.stepLabel(jobId, stepId)} — declined: ${reason}`,
+    }));
+    void this.tickOne(jobId);
+  }
+
+  // Resume a write-draft action's persistent session for its next turn (commit after
   // approval, or redraft after feedback). Rebuilds the envelope at the stable path so the
   // resumed session re-reads the current phase/draft/feedback, then sendOrResume's it.
   private async dispatchActionResume(jobId: string, stepId: string): Promise<void> {
@@ -1220,7 +1351,21 @@ export class WorkEngine {
     const envelope = handlerFor(s).buildEnvelope(s, j, this.ctx);
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
     augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(actionName) ?? []);
-    const cwd = (await this.opts.worktreeManager.provision(stepId, s.workspace)).path ?? this.orchestratorCwd();
+    // Pre-existing (predates write-draft-gates): provision() is a documented throw site (bad
+    // repoCwd, an invalid id, alignToBase on a writable re-provision) and this method is always
+    // fired `void`/uncaught by its callers — an uncaught throw here is a fatal unhandled
+    // rejection, not a caught error. Guarded now that accept/revise on an ActionStep makes this
+    // the mainline resume path for the whole write-draft feature.
+    let ws: { path: string | null };
+    try {
+      ws = await this.opts.worktreeManager.provision(stepId, s.workspace);
+    } catch (e) {
+      const reason = (e as Error).message ?? String(e);
+      console.warn(`[work] worktree provision failed for step ${stepId}: ${reason}`);
+      this.onStepFailed(jobId, stepId, `workspace provision failed: ${reason}`, { journal: false });
+      return;
+    }
+    const cwd = ws.path ?? this.orchestratorCwd();
     // A resume queued behind an in-flight turn leaves a trailing Stop for the superseded
     // round; record it so the Stop handler drops it rather than failing this live step.
     if (this.opts.sessionManager.isWorking(sessionId)) {
@@ -1244,15 +1389,228 @@ export class WorkEngine {
     });
   }
 
-  // Hook backstop: true while a human_gate action's session is in its draft/redraft phase
-  // (not yet gateApproved). The PreToolUse hook denies external writes for such sessions,
-  // so the write cannot fire before the user approves the draft — even if the skill tries.
-  writeGateHeldForSession(sessionId: string): boolean {
+  // Resume a dispatch child's own session for its next turn after the user acts on a draft it
+  // raised (commit after accept, or redraft after feedback) — dispatchActionResume only knows
+  // how to resume an ActionStep's session, not one keyed by a dispatch id under a controller.
+  // Mirrors spawnDispatchSession's envelope so the resumed session reads the same shape it
+  // would have gotten on a fresh dispatch.
+  private async dispatchResume(jobId: string, stepId: string, dispatchId: string): Promise<void> {
+    const j = this.opts.queue.get(jobId);
+    const s = j?.steps.find((x) => x.id === stepId);
+    if (!j || s?.type !== 'orchestrated') return;
+    const d = s.dispatches.find((x) => x.id === dispatchId);
+    if (!d || !d.sessionId) return;
+    const sessionId = d.sessionId;
+    const workspace = d.workspace ?? readonlyView(s.workspace);
+    let ws: { path: string | null };
+    try {
+      ws = await this.opts.worktreeManager.provision(dispatchId, workspace, {
+        expectRepo: expectRepoOf(s.inputs),
+      });
+    } catch (e) {
+      // Same failure shape as spawnDispatchSession: fail the dispatch, not the parent step —
+      // and never let this rejection go unhandled (this is `void`-called from resumeRaiser, so
+      // an uncaught throw here is a fatal unhandled rejection, not a caught error).
+      const reason = (e as Error).message ?? String(e);
+      console.warn(`[work] worktree provision failed resuming dispatch ${dispatchId}: ${reason}`);
+      this.settleDispatch(jobId, stepId, dispatchId, 'failed', { failure: `workspace provision failed: ${reason}` });
+      return;
+    }
+    const cwd = ws.path ?? this.orchestratorCwd();
+    const writeGate = writeGateFor(currentDraftForRaiser(s, { kind: 'dispatch', dispatchId }));
+    const envelope = {
+      kind: 'step', jobId, stepId: dispatchId, parentStepId: stepId, type: 'action',
+      title: `${d.action} (dispatch)`, description: d.brief, action: d.action, goal: d.brief,
+      ...(d.inputs ? { inputs: d.inputs } : {}),
+      job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
+      previousSteps: [], workspace, typePayload: { ...(writeGate ? { writeGate } : {}) },
+    };
+    const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, dispatchId, envelope);
+    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(d.action) ?? []);
+    if (this.opts.sessionManager.isWorking(sessionId)) {
+      this.owedStaleStops.set(sessionId, (this.owedStaleStops.get(sessionId) ?? 0) + 1);
+    }
+    this.submitLaunch({
+      key: `${jobId}#${stepId}#${dispatchId}`, jobId, stepId, sessionId, action: d.action, label: d.action,
+      run: () => {
+        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        const target = cur?.type === 'orchestrated' ? cur.dispatches.find((x) => x.id === dispatchId) : undefined;
+        if (!target || target.sessionId !== sessionId || target.status === 'done'
+          || target.status === 'failed' || target.status === 'cancelled') return false;
+        this.roleBySession.set(sessionId, { role: 'dispatch', jobId, stepId, dispatchId });
+        this.bindAction(sessionId, d.action);
+        this.opts.sessionManager.sendOrResume(
+          sessionId, cwd,
+          { type: 'user', message: { role: 'user', content: `/${d.action}` } },
+          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatchId, STEP_TYPE: 'action' },
+        );
+        return true;
+      },
+    });
+  }
+
+  // Symmetric both ways: a dispatch session only ever sees the draft raised by ITS OWN
+  // dispatch id, and a step/controller session never sees one raised by any of its dispatch
+  // children (a controller registers as role:'step', so this has to be checked explicitly
+  // rather than falling out of the dispatch branch alone). Shared by draftForSession (pinning)
+  // and draftStateFor (hook deny-reason detail) so they can't drift on which draft is "current".
+  //
+  // Scoped to the session's OWN currently-bound action (actionForSession — the live,
+  // per-session identity `bindAction` maintains, not just the step's persisted mirror) so a
+  // controller that has since rebound to a different action can never match a pin — or see a
+  // writeGate for — a draft an EARLIER, different bound action drafted. The hook doesn't trust
+  // the envelope, so this has to be enforced here independently of the envelope-side scoping in
+  // resumeControllerRound/orchestratedHandler.buildEnvelope, not instead of it.
+  private resolveCurrentDraft(sessionId: string): WriteDraft | undefined {
     const role = this.roleBySession.get(sessionId);
-    if (!role || role.role !== 'step') return false;
-    const s = this.opts.queue.get(role.jobId)?.steps.find((x) => x.id === role.stepId);
-    if (!s || s.type !== 'action' || s.gateApproved) return false;
-    return !!this.ctx.actionRegistry?.getAction(s.action)?.frontmatter.outpost.human_gate;
+    if (!role || role.role === 'orchestrator') return undefined;
+    const step = this.opts.queue.get(role.jobId)?.steps.find((s) => s.id === role.stepId);
+    if (!step) return undefined;
+    const raisedBy: DraftRaisedBy = role.role === 'dispatch'
+      ? { kind: 'dispatch', dispatchId: role.dispatchId }
+      : step.type === 'orchestrated' ? { kind: 'controller' } : { kind: 'step' };
+    return currentDraftForRaiser(step, raisedBy, this.actionForSession(sessionId));
+  }
+
+  // The session's currently-approved draft, if any — the one whose pinned calls the hook may
+  // let through.
+  //
+  // Picks the LATEST approved draft, not the first: submitDraft's `kept` filter retains every
+  // approved draft forever (so a spent pin can still be looked up), so a step making two
+  // gated writes accumulates two — the oldest would starve the second write's pin forever.
+  private draftForSession(sessionId: string): WriteDraft | undefined {
+    const draft = this.resolveCurrentDraft(sessionId);
+    return draft?.approvedAt ? draft : undefined;
+  }
+
+  // Hook deny-reason detail: lets the PreToolUse hook tell "nothing drafted yet" from "a draft
+  // is awaiting the user" from "an approved draft exists but this call isn't (or is no longer)
+  // one of its pins" — each needs different guidance for the model composing the next call.
+  draftStateFor(sessionId: string): 'none' | 'pending' | 'approved' {
+    const draft = this.resolveCurrentDraft(sessionId);
+    if (!draft) return 'none';
+    return draft.approvedAt ? 'approved' : 'pending';
+  }
+
+  // Hook backstop: the one call an approved draft actually authorizes, or undefined. The
+  // PreToolUse hook denies every external write that doesn't match a live pin — even if the
+  // skill tries something the user never saw.
+  pinFor(sessionId: string, toolName: string, toolInput: unknown): PinnedCall | undefined {
+    const draft = this.draftForSession(sessionId);
+    return draft ? matchPinnedCall(draft, toolName, toolInput) : undefined;
+  }
+
+  // PreToolUse allow: the call is about to run, so the pin is spent and can't authorize a
+  // second call. `toolUseId` is Claude's id for THIS call — recorded so a later
+  // PostToolUseFailure can prove it's releasing the pin ITS call spent, not just a pin whose
+  // payload happens to match (see releaseConsumedPin).
+  consumePin(sessionId: string, callId: string, toolUseId?: string): void {
+    this.stampPin(sessionId, callId, { consumedAt: this.ctx.now(), consumedToolUseId: toolUseId, releasedAfterFailure: undefined });
+  }
+
+  // PostToolUseFailure (via releaseConsumedPin) or a direct release: the call didn't
+  // determinably succeed, so the pin is not spent. Also clears consumedToolUseId — leaving it
+  // would read as "not consumed, consumed by tu-1", a self-contradictory record (round 3,
+  // MINOR 3). Harmless today since every lookup gates on consumedAt first, but a released pin
+  // should carry no id to accidentally match against.
+  releasePin(sessionId: string, callId: string): void {
+    this.stampPin(sessionId, callId, { consumedAt: undefined, consumedToolUseId: undefined, releasedAfterFailure: true });
+  }
+
+  // PostToolUseFailure only has the tool name + input the model called with (plus its own
+  // tool_use_id), not the pin id it matched — pinFor can't find it either, since pinFor
+  // deliberately skips consumed calls (that's the whole point of a pin: matchPinnedCall never
+  // re-authorizes a spent one).
+  //
+  // Matches ONLY by tool_use_id — no payload fallback (round 3 review: an earlier version fell
+  // back to payload matching when no id was available, which is fail-OPEN and contradicted
+  // this file's own is_interrupt reasoning one method up). A non-zero exit or a thrown call
+  // means the tool reported failure, not proof the write never landed (a compound clause's
+  // first half can still have run; an MCP write can throw after the server already applied
+  // it) — see PinnedCall.releasedAfterFailure. We accept that residual risk (a possible
+  // duplicate write) for the SPECIFIC call whose failure we were told about, but payload alone
+  // can't tell that call apart from: a duplicate/replayed delivery of an OLDER failure (whose
+  // retry may since have succeeded — releasing then re-arms an already-landed write), a
+  // cross-session/forged id (a spawned session carries DAEMON_AUTH, so forging the loopback
+  // POST costs nothing but command text the model already knows — the id branch at least
+  // requires a real consumed tool_use_id), or two identically-payloaded pins in one draft
+  // where only one was actually spent by this call. "No id available" and "id supplied but
+  // matches nothing" are the same epistemic state — cannot prove which call failed — so both
+  // fail closed the same way, at the cost of one re-approval rather than a possible
+  // double-write. That also means a future payload-shape drift degrades to "no release,
+  // re-approve" rather than to "guess," which is the direction we want. draftForSession keeps
+  // this session-scoped like every other pin lookup, so a dispatch's failure can never reach a
+  // sibling's pin regardless.
+  releaseConsumedPin(sessionId: string, toolName: string, toolInput: unknown, toolUseId: string | undefined): void {
+    const draft = this.draftForSession(sessionId);
+    const tag = `${sessionId.slice(0, 8)} ${toolName}`;
+    // No draft is the ORDINARY case, not a signal: PostToolUseFailure is registered globally
+    // (settings-gen.ts) and this runs unconditionally for every failed tool call anywhere in
+    // the system — a typo in an interactive session, any non-lenient command exiting non-zero
+    // outside a gated step. Logging that at warn would dwarf every other [work] warn in this
+    // file (all scoped to rare engine-internal failures) and bury the two cases below that
+    // actually mean something's wrong. Silent when the session has no WorkEngine role at all
+    // (interactive sessions are the bulk of this); debug-level when it has a role but nothing
+    // approved yet, since that's at least specific to a job/step someone could look up.
+    if (!draft) {
+      if (this.roleBySession.has(sessionId)) {
+        console.debug(`[work] releaseConsumedPin ${tag}: session has a role but no approved draft — nothing to release`);
+      }
+      return;
+    }
+    if (!toolUseId) {
+      console.warn(`[work] releaseConsumedPin ${tag}: failure event carried no tool_use_id — refusing to guess by payload, pin stays consumed`);
+      return;
+    }
+    const match = draft.calls.find((c) => c.consumedAt !== undefined && c.consumedToolUseId === toolUseId);
+    if (!match) {
+      console.warn(`[work] releaseConsumedPin ${tag}: tool_use_id ${toolUseId} matches no currently-consumed pin — stale/duplicate delivery or already released, leaving as-is`);
+      return;
+    }
+    this.releasePin(sessionId, match.id);
+  }
+
+  // A gated denial leaves journal evidence like a step failure does, but is neither derived
+  // nor deduped like one — three differences from journalBlocker:
+  //  - `action` is the caller's (the hook already knows exactly which action it denied),
+  //    NOT actionNameForStep(step): for a dispatch session, role.stepId is the PARENT
+  //    orchestrated step, whose action is the CONTROLLER — journaling against that would
+  //    both miss the child's own evidence and pollute the controller's journal with a lesson
+  //    about someone else's action (review round 2, IMPORTANT 1).
+  //  - dedupe/key on the dispatch's OWN id, not the parent step's, for the same reason
+  //    `stampPin` does: two sequential dispatches of the same child action under one
+  //    controller would otherwise share a dedupe slot and the second denial would be
+  //    silently dropped (review round 3, item 2).
+  //  - the outcome is 'gated_denied', not 'blocked', and hasEntryForStep is scoped to match
+  //    that same outcome (not "any entry") — a gated denial must not occupy onStepFailed's
+  //    one-entry-per-step 'blocked' backstop, which is the only place a step's real failure
+  //    reason survives (review round 2, IMPORTANT 2).
+  journalGatedDenial(sessionId: string, action: string, reason: string): void {
+    const role = this.roleBySession.get(sessionId);
+    if (!role || role.role === 'orchestrator') return;
+    const journal = this.opts.journalStore;
+    if (!journal) return;
+    const stepId = role.role === 'dispatch' ? role.dispatchId : role.stepId;
+    if (journal.hasEntryForStep(action, role.jobId, stepId, { outcome: 'gated_denied' })) return;
+    journal.append({ action, jobId: role.jobId, stepId, outcome: 'gated_denied', lesson: reason });
+  }
+
+  // Scoped to the session's OWN draft (draftForSession), not every draft on the step —
+  // `PinnedCall.id` is only unique WITHIN a draft, so two dispatches under one controller can
+  // each own a `c1`. Stamping across all drafts would let one dispatch's consume/release
+  // reach into a sibling's unrelated pin of the same id.
+  private stampPin(sessionId: string, callId: string, patch: Pick<PinnedCall, 'consumedAt' | 'consumedToolUseId' | 'releasedAfterFailure'>): void {
+    const role = this.roleBySession.get(sessionId);
+    if (!role || role.role === 'orchestrator') return;
+    const draft = this.draftForSession(sessionId);
+    if (!draft) return;
+    this.mutateStep(role.jobId, role.stepId, (s) => ({
+      ...s,
+      drafts: (s.drafts ?? []).map((d) => d.id !== draft.id ? d : {
+        ...d,
+        calls: d.calls.map((c) => c.id === callId ? { ...c, ...patch } : c),
+      }),
+    }));
   }
 
   // `journal: false` for failures the action itself didn't cause — a daemon bounce or a
@@ -1294,7 +1652,12 @@ export class WorkEngine {
     const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
     if (!s) return;
     const action = actionNameForStep(s);
-    if (journal.hasEntryForStep(action, jobId, stepId)) return;
+    // Excludes 'gated_denied' rather than matching 'blocked' specifically: the deferral is
+    // meant to catch ANY self-authored lesson (an action-specific outcome word like
+    // 'unfixable' or 'conflicted' counts, per submit_journal's contract), and only a
+    // mechanical 'gated_denied' hook entry represents no such self-explanation and must not
+    // suppress this step's real failure reason (review round 3, item 1).
+    if (journal.hasEntryForStep(action, jobId, stepId, { excludeOutcome: 'gated_denied' })) return;
     journal.append({ action, jobId, stepId, outcome: 'blocked', lesson: reason });
   }
 
@@ -1329,7 +1692,6 @@ export class WorkEngine {
       failStep: (jobId, stepId, reason) => this.onStepFailed(jobId, stepId, reason),
       actionInfo: {
         sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
-        humanGate: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.human_gate ?? false,
       },
       newId: () => this.ctx.newId(),
       now: () => this.ctx.now(),
@@ -1402,9 +1764,24 @@ export class WorkEngine {
       if (s.type !== 'orchestrated') return s;
       const next: OrchestratedStep = {
         ...s,
-        dispatches: s.dispatches.map((d) => d.status === 'queued'
+        // A dispatch parked at `awaiting_approval` has no one left to decide its draft once
+        // the parent step itself is settling — same as one that never spawned.
+        dispatches: s.dispatches.map((d) => d.status === 'queued' || d.status === 'awaiting_approval'
           ? { ...d, status: 'cancelled', finishedAt: this.ctx.now() }
           : d),
+        // A pending (unapproved) draft has no raiser left to act on it once the step itself is
+        // settling — cancelling the dispatch above doesn't remove ITS draft. This is the main
+        // gate for an ORCHESTRATED step, not just belt-and-suspenders: acceptDraft/reviseDraft/
+        // denyDraft's own terminal-step check is a second, independent layer here (in case some
+        // future settle path forgets to prune here), but without THIS drop a stale draft left
+        // behind would still be a live lever — POST /approve would find it, flip a just-cancelled
+        // dispatch back to `running`, and dispatchResume would re-provision a worktree and
+        // relaunch a child of a dead step. This function is orchestrated-only (see the early
+        // return above) — an ActionStep has no equivalent drop anywhere, so for that step type
+        // the terminal-step check in write-draft-runner.ts is the SOLE gate, not defence-in-depth.
+        // Approved drafts are left alone — they're the audit trail for a write already
+        // (partially) committed, same as everywhere else that keeps them forever.
+        drafts: (s.drafts ?? []).filter((d) => !!d.approvedAt),
       };
       return next;
     });
@@ -1475,12 +1852,32 @@ export class WorkEngine {
     if (!j || !s || s.type !== 'orchestrated' || !s.sessionId) return;
     const sessionId = s.sessionId;
     const boundAction = action ?? s.controller;
+    // OrchestratedEnvelope has no typePayload wrapper; writeGate is added here, as a sibling
+    // top-level field to boundAction/delivered, so a controller resumed after the user acts on
+    // its own draft (accept/revise/deny) can tell whether it's drafting or committing, and see
+    // any redraft feedback. orchestratedHandler.buildEnvelope (steps/orchestrated.ts) computes
+    // the same field independently for its own direct caller in decide() — the cold-spawn path,
+    // reached when reconcileInterruptedSteps clears a dead controller's sessionId mid-draft —
+    // so a respawned controller doesn't lose track of its phase either.
+    // Scoped to `boundAction`: an approved-but-partially-consumed draft from an EARLIER round
+    // bound to a different action (`code.merge-pr`'s failed merge, say) must not surface here
+    // once the controller rebinds to something else (`code.fix-ci`) — see currentDraftForRaiser.
+    //
+    // Assigned unconditionally, NOT `...(writeGate ? { writeGate } : {})`: `s` here is the step
+    // as it stood BEFORE this resume persists the new `boundAction` (that happens later, inside
+    // `run()`), so orchestratedHandler.buildEnvelope's OWN internal writeGate computation just
+    // below still reads the OLD `s.boundAction` and can contribute a stale (but non-empty)
+    // writeGate to the spread. A conditional-spread here would only ever ADD a key, never
+    // overwrite one buildEnvelope's spread already set — an unconditional `writeGate: undefined`
+    // is what actually clears it (JSON.stringify drops it, same absence as never having set it).
+    const writeGate = writeGateFor(currentDraftForRaiser(s, { kind: 'controller' }, boundAction));
     const envelope = {
       ...orchestratedHandler.buildEnvelope(s, j, this.ctx),
       boundAction,
       ...(note ? { boundNote: note } : {}),
       // Persisted on the step by drainForDelivery, so a cold resume still shows what woke it.
       ...(s.lastDelivered?.length ? { delivered: s.lastDelivered } : {}),
+      writeGate,
       actionCatalog: this.buildActionCatalog(),
     };
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
@@ -1518,6 +1915,12 @@ export class WorkEngine {
         if (!this.jobAcceptsStepWork(jobId)) return false;
         this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
         this.bindAction(sessionId, boundAction);
+        // Persist the same identity onto the step (see OrchestratedStep.boundAction) — this is
+        // the ONLY point a controller session's bound action ever changes, so it's the only
+        // point that needs to write it. Unconditional, not just when `action` was given: a
+        // plain wake-up resolves `boundAction` back to `s.controller`, and persisting that is
+        // what retires a stale sub-action from an earlier round.
+        this.mutateStep(jobId, stepId, (st) => st.type === 'orchestrated' ? { ...st, boundAction } : st);
         this.opts.sessionManager.sendOrResume(
           sessionId,
           cwd,
@@ -1634,7 +2037,14 @@ export class WorkEngine {
       const h = handlerFor(s);
       return {
         ...s, failure: undefined, sessionId: undefined, state: h.initialState,
-        reviewed: undefined, updatedAt: this.ctx.now(),
+        reviewed: undefined, drafts: undefined, updatedAt: this.ctx.now(),
+        // A retried orchestrated step always cold-respawns bound to `s.controller` (see
+        // spawnStepSession), never to a persisted `boundAction` — the same reasoning as
+        // reconcileInterruptedSteps clearing it on a daemon-restart drop above. Left set, a
+        // retry after a failed bound self-round (e.g. `code.merge-pr`) would leave the envelope,
+        // the session binding, and `actionForStep`'s derivation all disagreeing about which
+        // action owns the next draft.
+        ...(s.type === 'orchestrated' ? { boundAction: undefined } : {}),
       } as Step;
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore

@@ -350,7 +350,6 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       runner: a.frontmatter.outpost.runner,
       permissions: a.frontmatter.outpost.permissions ?? [],
       side_effects: a.frontmatter.outpost.side_effects,
-      human_gate: a.frontmatter.outpost.human_gate ?? false,
       timeout_sec: a.frontmatter.outpost.timeout_sec ?? null,
       input_schema: a.inputSchema,
       output_schema: a.outputSchema,

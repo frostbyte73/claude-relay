@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Dispatch, InboxItem, JobRecord, PlanIteration, PrFacts, Step, WorkspaceRef } from './work-types.js';
 import type { JournalEntry } from '../storage/journal-store.js';
 import type { ActionRegistry } from '../actions/registry.js';
+import type { WriteGatePayload } from './write-draft.js';
 
 export interface StepTypeCatalogEntry {
   type: Step['type'];
@@ -75,7 +76,6 @@ export interface ActionCatalogEntry {
   category: string;
   runner: 'claude' | 'builtin';
   side_effects: 'none' | 'gated-write' | 'worktree-edit' | 'external-write';
-  human_gate: boolean;
   input_schema: unknown;
   output_schema: unknown;
 }
@@ -92,7 +92,6 @@ export function buildActionCatalog(reg: ActionRegistry | undefined): ActionCatal
     category: a.frontmatter.outpost.category,
     runner: a.frontmatter.outpost.runner,
     side_effects: a.frontmatter.outpost.side_effects,
-    human_gate: a.frontmatter.outpost.human_gate ?? false,
     input_schema: a.inputSchema,
     output_schema: a.outputSchema,
   }));
@@ -128,8 +127,11 @@ export interface ActionEnvelope extends StepEnvelopeBase {
   type: 'action';
   action: string;
   goal: string;
+  inputs?: Record<string, unknown>;
   workspace: { kind: 'none' } | { kind: 'readonly'; repoCwd: string; ref?: string } | { kind: 'writable'; repoCwd: string; branch: string };
-  typePayload: Record<string, never>;
+  // Present only while this step (or the dispatch it is) has raised a write draft — see
+  // writeGateFor. Absent once a draft is fully consumed, same as no draft ever having existed.
+  typePayload: { writeGate?: WriteGatePayload };
 }
 
 export interface OrchestratedEnvelope extends StepEnvelopeBase {
@@ -146,15 +148,19 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   delivered?: InboxItem[];
   dispatches?: Array<Pick<Dispatch, 'id' | 'action' | 'brief' | 'status' | 'output' | 'failure'>>;
   pr?: PrFacts;
-  // resolveGate drops the gate-resolved marker before running the deferred move, so an approval
-  // leaves no inbox item behind — these flags are the only durable record the controller has
-  // that the user said yes (and what they said).
+  // resolveGate drops the gate-resolved marker from the inbox once delivered, so these are
+  // the only durable record of what the user said to a voluntary `gate` move — approve
+  // (gateApproved) and decline (gateFeedback) alike.
   gateApproved?: boolean;
   gateFeedback?: string[];
   // Set on a work turn: the controller is wearing this action's hat this turn.
   boundAction?: string;
   boundNote?: string;
   actionCatalog?: ActionCatalogEntry[];
+  // Present only while the CONTROLLER itself (not one of its dispatches — those get their
+  // own ActionEnvelope.typePayload.writeGate) has raised a write draft. Sibling to boundAction
+  // rather than nested under a typePayload, matching the rest of this envelope's shape.
+  writeGate?: WriteGatePayload;
 }
 
 export type StepEnvelope = ActionEnvelope | OrchestratedEnvelope;

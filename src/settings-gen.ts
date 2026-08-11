@@ -52,6 +52,11 @@ export function writeDaemonSettings(opts: DaemonSettingsOpts): void {
   const cfg = {
     hooks: {
       PreToolUse: [loopbackHook(opts.hookPort, '/hook/pretool', 600)],
+      // Deliberately PostToolUseFailure, not PostToolUse — see PostToolFailureHookInput in
+      // hook-handler.ts for why. The event itself is Claude Code's failure signal (a rejected
+      // `git push` fires it); this daemon does not register a handler for the plain
+      // PostToolUse event at all.
+      PostToolUseFailure: [loopbackHook(opts.hookPort, '/hook/posttoolfail', 30)],
       Stop: [loopbackHook(opts.hookPort, '/hook/stop', 30)],
     },
     statusLine: {

@@ -13,6 +13,20 @@
    hardcoded hex, no hardcoded font names.
 */
 
+/* ── Screen-reader-only text ──────────────────────────────────────────── */
+/* Standard visually-hidden-but-announced pattern — for an accessible name (a
+   <legend>, a label) that would otherwise visually duplicate an adjacent, already-visible
+   caption. Not `display:none` — that would also hide it from assistive tech. */
+.o-sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── Row primitive: icon · content · time ────────────────────────────── */
 /* Vertical padding derives from --gap-3 (base.css's density ramp:
    compact/default/roomy — default gap-3 is 12px, matching the padding this

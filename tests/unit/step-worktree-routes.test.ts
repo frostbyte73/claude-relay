@@ -165,7 +165,7 @@ describe('WorkEngine — inbox and gate on a terminated job', () => {
   it('ignores a gate resolution on a done job\'s step', async () => {
     const h = jobRoutesHarness('done', {
       state: 'gate_pending_approval',
-      gate: { draft: 'd', question: 'q', requestedAt: 1, deferredMove: { kind: 'self-round' } },
+      gate: { draft: 'd', question: 'q', requestedAt: 1 },
     });
     h.engine.resolveStepGate('job-1', 'step-1', true);
     await new Promise((r) => setTimeout(r, 10));

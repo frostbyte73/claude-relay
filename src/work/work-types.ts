@@ -1,3 +1,5 @@
+import type { WriteDraft } from './write-draft.js';
+
 export type JobState =
   | 'planning'
   | 'plan_pending_review'
@@ -81,6 +83,9 @@ interface StepBase {
   parallelGroup?: string;
   sessionId?: string;
   events?: StepEvent[];
+  // Write drafts awaiting the user. A list because two dispatches under one controller can
+  // be parked simultaneously; at most one is ever unresolved for an action step.
+  drafts?: WriteDraft[];
   failure?: { reason: string; at: number };
   cancelled?: boolean;
   // Set true once a submit_continue step-review has covered this settled step, so
@@ -115,21 +120,16 @@ export interface ActionStep extends StepBase {
   forwardOutput?: boolean;
   // 'waiting' is a builtin-runner-only state: a meta.wait hold. The engine parks the
   // step here (no session spawned) until the user resumes or `resumeAt` elapses.
-  // 'gate_pending_approval' is the hard human-gate: an action whose frontmatter
-  // declares `human_gate: true` parks here (no session spawned) before its session
-  // ever runs, until the user approves (→ running) or declines (→ cancelled). The
-  // daemon enforces this regardless of whether a planner inserted a meta.wait.
-  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
+  // 'gate_pending_approval' is the write-draft hold: the session has already spawned and run
+  // at least one turn, called `submit_write_draft`, and is parked here — still attached
+  // (`s.sessionId` stays set; see actionHandler.decide in steps/action.ts) — until the user
+  // approves (→ running, which resumes that SAME session to run the pinned calls) or denies
+  // (→ declined, below).
+  // 'declined' is terminal-but-not-a-failure: the user denied this step's write draft. The
+  // job orchestrator's step-review gets the reason and re-plans around it.
+  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed' | 'declined';
   // Epoch ms when a timed meta.wait auto-resumes. Unset for an indefinite manual hold.
   resumeAt?: number;
-  // human_gate draft/review/commit loop. The action
-  // runs in a draft phase that composes `draft` and parks in gate_pending_approval WITHOUT
-  // performing the external write (the hook hard-blocks the write until gateApproved). The
-  // user approves (→ commit phase posts it) or proposes changes (→ redraft phase with the
-  // accumulated gateFeedback). The write only ever fires once gateApproved is set.
-  draft?: string;
-  gateFeedback?: string[];
-  gateApproved?: boolean;
 }
 
 export interface Dispatch {
@@ -138,7 +138,7 @@ export interface Dispatch {
   brief: string;
   inputs?: Record<string, unknown>;
   workspace?: WorkspaceRef;
-  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'awaiting_approval' | 'done' | 'failed' | 'cancelled';
   sessionId?: string;
   output?: string;
   failure?: string;
@@ -156,7 +156,14 @@ export type InboxItem =
   | { id: string; at: number; kind: 'user-message'; body: string }
   | { id: string; at: number; kind: 'dispatch-done'; dispatchId: string }
   | { id: string; at: number; kind: 'external'; source: 'pr-watcher'; summary: string; events: WatchedEvent[] }
-  | { id: string; at: number; kind: 'gate-resolved'; approved: boolean; feedback?: string }
+  // `source: 'write-draft'` discriminates a write-draft accept/revise/deny (notifyControllerDenied
+  // in engine.ts) from the controller's own voluntary `gate` move being resolved (resolveGate in
+  // orchestrated-runner.ts) — same shape otherwise, but "redo the drafted work with this
+  // feedback" (the right read for a declined voluntary gate) and "the write was vetoed outright,
+  // pick a different move" (a denied draft) call for opposite controller behavior. Absent for a
+  // voluntary gate, since every existing consumer (and every controller SKILL already shipped)
+  // reads its absence as that case.
+  | { id: string; at: number; kind: 'gate-resolved'; approved: boolean; feedback?: string; source?: 'write-draft' }
   | { id: string; at: number; kind: 'timer' }
   | { id: string; at: number; kind: 'policy-rejection'; reason: string };
 
@@ -179,9 +186,6 @@ export interface GateRequest {
   draft: string;
   question: string;
   requestedAt: number;
-  // The move this gate holds. Executed verbatim on approval WITHOUT re-validating —
-  // otherwise a force-gated write would be re-gated forever.
-  deferredMove: NextMove;
 }
 
 export interface PrFacts {
@@ -221,8 +225,21 @@ export interface OrchestratedStep extends StepBase {
   pendingPolicyStrike?: boolean;
   pr?: PrFacts;
   gate?: GateRequest;
+  // The user's answer to a VOLUNTARY `gate` move (the controller asking a question) — not
+  // the deleted force-gate. Decline is durable via gateFeedback below; this is approve's
+  // equivalent record, since resolveGate's `gate-resolved` delivery is transient (overwritten
+  // by the next inbox delivery) and a controller resuming later still needs to know it said yes.
   gateApproved?: boolean;
   gateFeedback?: string[];
+  // The action the controller's session is CURRENTLY bound to — the same value
+  // resumeControllerRound passes to bindAction(sessionId, ...), mirrored onto the step so it
+  // survives a daemon restart and so actionForStep can answer without a live session.
+  // `controller` is fixed for the step's whole life and never reflects a self-round's temporary
+  // rebind (`self-round { action: 'code.merge-pr' }`) — this is what does. Set on EVERY
+  // controller resume, including a plain wake-up (where it resolves back to `controller` itself)
+  // — otherwise a stale sub-action from an earlier round would outlive it and mislabel a later
+  // draft. Absent before the first resume; a cold spawn is always bound to `controller`.
+  boundAction?: string;
   iterations?: IterationRecord[];
   reviewComments?: ReviewComment[];
   draftedReplies?: DraftedReply[];

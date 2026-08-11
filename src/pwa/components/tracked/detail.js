@@ -44,6 +44,7 @@ export function stepIsMovable(s) {
 // the only thing these tools are withheld from is a step that is still mid-turn or already over.
 export function editBlockedReason(s) {
   if (s.state === 'resolved') return 'Step already finished';
+  if (s.type === 'action' && s.state === 'declined') return 'You denied this step’s write draft';
   if (s.cancelled) return 'Step is cancelled';
   return 'Step is still running — editable once it finishes or fails';
 }
@@ -181,7 +182,9 @@ function detailsKey(d) {
 }
 
 // Every in-timeline composer — the orchestrated card's "Message the controller" and
-// "Propose changes" boxes, and an action step's gate-feedback box — is a
+// voluntary-gate "Propose changes" boxes, and a write-draft card's "Propose changes"/"Deny"
+// boxes (write-draft-card.js, keyed `wd-revise-<draftId>`/`wd-deny-<draftId>` — a step can
+// carry more than one draft, so the name alone isn't unique) — is a
 // `[data-composer="<name>"]` wrapper around one textarea, scoped to its step.
 function composerKey(c) {
   const step = c.closest('[data-step-id]');
@@ -195,8 +198,31 @@ function composerByKey(root, key) {
   return null;
 }
 
+// A write-draft field's sanitized `id` (write-draft-card.js's fieldHtml/callHtml:
+// `wd-f-<draftId>-<callIdx>-<cssId(argKey)>`) collapses two arg keys that differ only in
+// punctuation to the SAME id — `cssId` maps every non `[A-Za-z0-9_-]` character to `_`, so
+// `user.id` and `user_id` both become `user_id`. Keying a snapshot on that id would bleed
+// one field's restored value into the other's. Build the key from the RAW pieces instead:
+// the enclosing card's `data-draft-id` (never sanitized) + the field's own `data-call-idx`
+// + its raw `data-arg-key` — or a sentinel for the one field with no arg key, the bash
+// command textarea.
+function draftFieldKey(el) {
+  const card = el.closest('.wd-card');
+  const draftId = card ? card.getAttribute('data-draft-id') : '';
+  const callIdx = el.getAttribute('data-call-idx') ?? '';
+  const argKey = el.dataset.argKey ?? ' bash';
+  return `${draftId}|${callIdx}|${argKey}`;
+}
+
+function draftFieldByKey(root, key) {
+  for (const el of root.querySelectorAll('.wd-card [id^="wd-f-"]')) {
+    if (draftFieldKey(el) === key) return el;
+  }
+  return null;
+}
+
 function snapshotUi(root) {
-  const snap = { details: new Map(), composers: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null };
+  const snap = { details: new Map(), composers: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null, draftFields: new Map() };
   root.querySelectorAll('details').forEach((d) => snap.details.set(detailsKey(d), d.open));
   root.querySelectorAll('[data-composer]').forEach((c) => {
     snap.composers.set(composerKey(c), {
@@ -214,6 +240,17 @@ function snapshotUi(root) {
   const launchTa = root.querySelector('.launch-context-textarea');
   if (launchTa && launchTa.value) snap.launchContext = launchTa.value;
   snap.menuOpen = !!root.querySelector('.tk-menu-body:not([hidden])');
+  // Write-draft card fields (write-draft-card.js) — an edit here is the feature's entire
+  // promise (the user's correction pinned verbatim on Accept), so it must survive a repaint
+  // the same as any composer text. A sibling step's `submit_step_progress` bumps
+  // `job.updatedAt` on an unrelated timer while the user is mid-edit, and without this pass
+  // the next repaint would silently revert every field to the action's original values —
+  // Accept would then pin the UN-edited payload with nothing telling the user anything was
+  // lost. Keyed on draftFieldKey (the field's RAW draftId/callIdx/argKey), not its sanitized
+  // `id` — see draftFieldKey's own comment for why.
+  root.querySelectorAll('.wd-card [id^="wd-f-"]').forEach((el) => {
+    snap.draftFields.set(draftFieldKey(el), el.type === 'checkbox' ? { checked: el.checked } : { value: el.value });
+  });
   const ae = document.activeElement;
   if (ae && root.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT')) {
     const composer = ae.closest('[data-composer]');
@@ -221,6 +258,10 @@ function snapshotUi(root) {
       replan: !!ae.closest('.replan-composer'),
       launchContext: !!ae.closest('.launch-context'),
       composer: composer ? composerKey(composer) : null,
+      // A wd-field carries its own stable id; only set when the focused element IS one
+      // (distinct from being inside a `.wd-card` generally — the composer branch above
+      // already owns the revise/deny textareas, which also live inside a `.wd-card`).
+      draftField: ae.id && ae.id.startsWith('wd-f-') ? draftFieldKey(ae) : null,
       start: ae.selectionStart,
       end: ae.selectionEnd,
     };
@@ -242,7 +283,18 @@ function restoreUi(root, snap) {
     const prev = snap.composers.get(composerKey(c));
     if (!prev) return;
     const ta = c.querySelector('textarea');
-    if (ta && prev.value) ta.value = prev.value;
+    if (ta && prev.value) {
+      ta.value = prev.value;
+      // A write-draft composer's Submit button starts `disabled` and is only re-enabled by
+      // its own `input` listener (write-draft-card.js's wireComposer) — a programmatic
+      // `.value =` fires no native `input` event, so without this the restored text would
+      // sit in the box with a dead Submit button until the user typed or deleted a
+      // character. wireWriteDraft/wireOrchestratedCard have already attached their
+      // listeners by the time restoreUi runs (wiring happens before snapshot/restore), so
+      // the synthetic event reaches them. Harmless no-op for every other composer here,
+      // none of which listen for `input`.
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     if (prev.open) c.removeAttribute('hidden');
   });
   if (snap.replan && (snap.replan.open || snap.replan.value)) {
@@ -259,18 +311,26 @@ function restoreUi(root, snap) {
     const ta = root.querySelector('.launch-context-textarea');
     if (ta) ta.value = snap.launchContext;
   }
+  root.querySelectorAll('.wd-card [id^="wd-f-"]').forEach((el) => {
+    const prev = snap.draftFields.get(draftFieldKey(el));
+    if (!prev) return;
+    if (el.type === 'checkbox') el.checked = prev.checked;
+    else el.value = prev.value;
+  });
   if (snap.focus) {
     let ta = null;
     if (snap.focus.replan) {
       ta = root.querySelector('.replan-textarea');
     } else if (snap.focus.launchContext) {
       ta = root.querySelector('.launch-context-textarea');
+    } else if (snap.focus.draftField) {
+      ta = draftFieldByKey(root, snap.focus.draftField);
     } else if (snap.focus.composer) {
       ta = composerByKey(root, snap.focus.composer)?.querySelector('textarea') ?? null;
     }
     if (ta) {
       ta.focus();
-      try { ta.setSelectionRange(snap.focus.start, snap.focus.end); } catch { /* non-text input */ }
+      try { ta.setSelectionRange(snap.focus.start, snap.focus.end); } catch { /* non-text input, e.g. checkbox/number */ }
     }
   }
 }

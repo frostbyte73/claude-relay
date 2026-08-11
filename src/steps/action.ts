@@ -1,5 +1,6 @@
 import type { ActionStep, JobRecord } from '../work/work-types.js';
-import { writeEnvelope } from '../work/envelope.js';
+import { writeEnvelope, type ActionEnvelope } from '../work/envelope.js';
+import { currentDraftForRaiser, writeGateFor } from '../work/write-draft.js';
 import type { StepHandler } from './types.js';
 
 function previousOutputs(job: JobRecord, selfId: string) {
@@ -17,7 +18,12 @@ export const actionHandler: StepHandler<ActionStep> = {
   type: 'action',
   initialState: 'running',
 
-  isResolved(s) { return s.state === 'resolved'; },
+  // `declined` is terminal-but-not-a-success (the user vetoed the step's write) — treated as
+  // settled here on purpose: every call site that reads isResolved already ORs in `cancelled`
+  // (another non-success terminal) for the same "is this step done, whatever the outcome"
+  // question, so folding `declined` in here is consistent rather than adding a second method
+  // nobody but this state would use.
+  isResolved(s) { return s.state === 'resolved' || s.state === 'declined'; },
 
   decide(s, job, ctx) {
     if (s.cancelled || s.failure) return null;
@@ -39,23 +45,22 @@ export const actionHandler: StepHandler<ActionStep> = {
     }
 
     // gate_pending_approval / an already-attached session are owned by the draft/commit
-    // resume loop (approveGate / rejectGate drive those imperatively), not decide().
+    // resume loop (acceptDraft/reviseDraft/denyDraft drive those imperatively), not decide().
     if (s.state !== 'running') return null;
     if (s.sessionId) return null;
 
-    // First spawn. For a human_gate action this is the draft phase: the session composes
-    // the write and submits it for review (submit_write_draft → gate_pending_approval)
-    // WITHOUT posting — the hook hard-blocks the external write until the user approves.
+    // First spawn: a gated-write action's session composes the write and submits it via
+    // submit_write_draft (→ gate_pending_approval) WITHOUT posting — the hook hard-blocks the
+    // external write until the user approves. A read-only or worktree-edit action just runs.
     const envelope = actionHandler.buildEnvelope(s, job, ctx);
     const path = writeEnvelope(ctx.jobsDir, job.id, s.id, envelope);
     return { kind: 'spawn-session', jobId: job.id, stepId: s.id, envelopePath: path };
   },
 
-  buildEnvelope(s, job, ctx) {
-    // human_gate actions run a draft→commit loop. `phase` tells the skill which turn it
-    // is: `draft` composes the payload and calls submit_write_draft (no external write —
-    // the hook blocks it); `commit` posts the approved `draft` and calls submit_step_output.
-    const humanGate = !!ctx?.actionRegistry?.getAction(s.action)?.frontmatter.outpost.human_gate;
+  buildEnvelope(s, job, ctx): ActionEnvelope {
+    // An ActionStep's own draft is always raised as `{kind:'step'}` — submitDraft coerces the
+    // kind to `controller` only for an orchestrated step.
+    const writeGate = writeGateFor(currentDraftForRaiser(s, { kind: 'step' }));
     return {
       kind: 'step',
       jobId: job.id,
@@ -74,14 +79,7 @@ export const actionHandler: StepHandler<ActionStep> = {
       },
       previousSteps: previousOutputs(job, s.id),
       workspace: s.workspace,
-      typePayload: humanGate
-        ? {
-            humanGate: true,
-            phase: s.gateApproved ? 'commit' : 'draft',
-            draft: s.draft,
-            feedback: s.gateFeedback ?? [],
-          }
-        : {},
+      typePayload: { ...(writeGate ? { writeGate } : {}) },
     };
   },
 };

@@ -151,3 +151,29 @@ describe('renderTimelineStep findings collapse', () => {
     expect(html).not.toMatch(/tl-findings" open>/);
   });
 });
+
+// Same gap Critical 2 named in focusAction/stepWaitPill: a dispatch-raised draft never
+// flips the PARENT orchestrated step's own `state` to `gate_pending_approval` — only the
+// timeline dot's own hasUnapprovedDraft check catches it. Without that, this step (DESIGN
+// §7.7 calls the timeline "the most refined thing we build") would draw a neutral hollow
+// "pending" ring instead of the hot "your move" fill while a dispatch sits on its own draft.
+describe('renderTimelineStep dot tone for a dispatch-raised draft', () => {
+  const job = { id: 'j1' };
+
+  it('is hot even though the parent step state is still waiting', () => {
+    const html = renderTimelineStep(job, {
+      id: 's1', type: 'orchestrated', controller: 'code.orchestrate-pr', title: 'Ship it',
+      state: 'waiting', dispatches: [], inbox: [],
+      drafts: [{ id: 'd1', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' } }],
+    }, 0);
+    expect(html).toMatch(/<div class="tl-dot" data-tone="hot">/);
+  });
+
+  it('is pending for an ordinary waiting step with no draft', () => {
+    const html = renderTimelineStep(job, {
+      id: 's1', type: 'orchestrated', controller: 'code.orchestrate-pr', title: 'Ship it',
+      state: 'waiting', dispatches: [], inbox: [],
+    }, 0);
+    expect(html).toMatch(/<div class="tl-dot" data-tone="pending">/);
+  });
+});

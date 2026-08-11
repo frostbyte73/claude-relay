@@ -1,13 +1,12 @@
 ---
 name: write.run-github-workflow
-description: Use when a job needs to trigger a specific GitHub Actions workflow (e.g. a deploy, release, e2e, or nightly pipeline) on a given branch/ref and then confirm it actually succeeded. Dispatches the named workflow with any required workflow_dispatch inputs, waits for the resulting run to reach a terminal state (may take seconds, minutes, or hours), and returns the conclusion plus failure logs. External-write — pair with an upstream human.gate confirming workflow/ref/inputs before invoking.
+description: Use when a job needs to trigger a specific GitHub Actions workflow (e.g. a deploy, release, e2e, or nightly pipeline) on a given branch/ref and then confirm it actually succeeded. Drafts the exact dispatch (workflow/ref/inputs) via `mcp__outpost__submit_write_draft` and stops; once approved, dispatches it, waits for the resulting run to reach a terminal state (may take seconds, minutes, or hours), and returns the conclusion plus failure logs. External-write — see `SHARED-write-drafts.md`.
 outpost:
   kind: action
   category: write
   side_effects: external-write
   runner: claude
-  permissions: [pull]
-  human_gate: true
+  permissions: [pull, push]
   timeout_sec: 21600
   retries: 0
 ---
@@ -18,11 +17,13 @@ Dispatch one GitHub Actions workflow and wait for it to finish. Returns whether
 the run succeeded, its URL/id, timing, and — on failure — the failed-step logs.
 
 This is an **external write**: `gh workflow run` triggers real CI, which may
-deploy, publish, or mutate infrastructure. The orchestrator inserts a
-`human.gate` before this step to confirm the workflow, ref, and inputs; do not
-add your own confirmation prompt and do not re-dispatch on your own initiative.
-`retries: 0` is set deliberately — a retry would fire the workflow a second
-time.
+deploy, publish, or mutate infrastructure. It follows the shared draft/commit protocol — see
+`~/.outpost/actions/SHARED-write-drafts.md` for the full mechanics (this action has no
+`Read`/`Grep` grant — `cat` the absolute path instead, reachable via `core`'s `^cat ` pattern).
+This is a standalone action step, so `writeGate` is at `typePayload.writeGate` in
+`$OUTPOST_ENVELOPE`.
+`retries: 0` is set deliberately — a retry would fire the workflow a second time, and a retry
+of an already-approved draft is not something to attempt on your own initiative either.
 
 ## Step 1 — read inputs
 
@@ -36,7 +37,7 @@ The envelope's `inputs` field:
 |---|---|---|
 | `workflow` | yes | The workflow to run — its file name (`deploy.yml`), its display name, or its numeric id. Passed straight to `gh workflow run`. |
 | `ref` | yes | Branch or tag to run the workflow on (e.g. `main`, `release/1.4`). The workflow's `.yml` must exist on this ref, and `workflow_dispatch` must be enabled. |
-| `repo` | no | `owner/name`, informational only — **the dispatch always targets the checkout this step runs in.** If `repo` names a different repo than `workspace.repoCwd`, do not dispatch: fail the step (Step 5) saying the two disagree. |
+| `repo` | no | `owner/name`, informational only — **the dispatch always targets the checkout this step runs in.** If `repo` names a different repo than `workspace.repoCwd`, do not dispatch: fail the step (Step 6) saying the two disagree. |
 | `inputs` | no | Object of `workflow_dispatch` input name → value. Each becomes a `-f name=value` flag. |
 | `expect_conclusion` | no | Terminal conclusion that counts as success. Default `success`. |
 | `workspace` | no | `{repoCwd}` — the checkout the dispatch runs against. This is what decides the repo. |
@@ -44,50 +45,66 @@ The envelope's `inputs` field:
 **If `inputs` is missing** (older plans), fall back to the envelope's top-level
 `goal`/`title`/`description` to identify the workflow and ref, and note the
 assumption in your output. If you cannot determine a workflow name AND a ref,
-do not guess — submit a failed step (see Step 5) explaining what was missing.
+do not guess — submit a failed step (see Step 6) explaining what was missing.
 
 You run in the checkout at `workspace.repoCwd`, and `gh` infers the repo from it. Confirm
-that is the repo the gate approved before dispatching:
+that is the intended repo before drafting:
 
 ```bash
 gh repo view --json nameWithOwner
 ```
 
-## Step 2 — dispatch the workflow
+## Step 2 — draft the dispatch (`typePayload.writeGate` absent, or `phase === "draft"`)
 
-Record a UTC dispatch timestamp first (you'll use it to disambiguate the run):
+Compose the exact dispatch — do **not** run it.
+
+Write every value literally into the command (the workflow name, `--ref`, and each `-f`
+pair) — no `$VAR`. **No `--repo`.** The dispatch is only ever drafted in this shape: a
+literal workflow name, `--ref <literal>`, and literal `-f name=value` inputs — no other flag.
+`--repo` would let one approved "run deploy.yml on main" fire a deploy, release, or infra
+pipeline in any repo the token can reach; leaving it out is what binds the dispatch to the
+checkout the user was shown.
+
+```
+mcp__outpost__submit_write_draft({
+  jobId: "<$JOB_ID>", stepId: "<$STEP_ID>",
+  summary: "Dispatch <workflow> on <ref>" + (inputs ? " with <inputs>" : ""),
+  calls: [{ label: "dispatch", bash: "gh workflow run \"<workflow>\" --ref \"<ref>\" -f key1=value1 -f key2=value2" }]
+})
+```
+
+Then stop. If `typePayload.writeGate.feedback` is non-empty (the user proposed a different
+workflow/ref/inputs — every round, oldest first), revise the command to address every point
+and submit again.
+
+## Step 3 — commit: dispatch, then find the run id (`typePayload.writeGate.phase === "commit"`)
+
+Record a UTC dispatch timestamp and the pre-dispatch run ids first — you'll need both to
+disambiguate the run the approved dispatch creates:
 
 ```bash
 gh run list --workflow "<workflow>" --branch "<ref>" --event workflow_dispatch \
   --limit 20 --json databaseId,createdAt,status
 ```
 
-Note the ids that already exist. Then dispatch:
+Then run `typePayload.writeGate.approvedCalls` **verbatim** — the exact dispatch command the
+user approved, unchanged even if you'd phrase it differently now. Pin matching is exact command
+text, so copy the string out of `approvedCalls` itself rather than retyping it from memory —
+retyping risks a spelling that no longer matches (e.g. dropping the quotes below) and gets
+denied on a payload that was already approved:
 
 ```bash
-gh workflow run "<workflow>" --ref "<ref>" \
-  -f key1=value1 -f key2=value2
+gh workflow run "<workflow>" --ref "<ref>" -f key1=value1 -f key2=value2
 ```
 
-**No `--repo`.** The dispatch is granted only in the shape above — a literal workflow name,
-`--ref <literal>`, and literal `-f name=value` inputs. `human_gate: true` parks the *step*
-for a human, but the commands the session then runs auto-execute against that one approval;
-`--repo` would let one approved "run deploy.yml on main" fire a deploy, release, or infra
-pipeline in any repo the token can reach. Dropping it is what binds the dispatch to the
-checkout the user was shown. A `$VAR` workflow or ref is denied for the same reason — write
-the values in literally.
-
-`gh workflow run` prints a confirmation but **does not** return the run id.
-
-## Step 3 — find the run id
-
-Poll `gh run list` (same filter as above) until a run appears that is NOT in the
-pre-dispatch id set — that's your run. If several appear, pick the one whose
-`createdAt` is newest and after your dispatch timestamp. Grab its `databaseId`.
+`gh workflow run` prints a confirmation but **does not** return the run id. Poll `gh run
+list` (same filter as above) until a run appears that is NOT in the pre-dispatch id set —
+that's your run. If several appear, pick the one whose `createdAt` is newest and after your
+dispatch timestamp. Grab its `databaseId`.
 
 If no new run shows up within ~60s of dispatching, the workflow likely rejected
 the dispatch (wrong ref, `workflow_dispatch` not enabled, missing required
-input). Capture the error and submit a failed step.
+input). Capture the error and submit a failed step (Step 6).
 
 ## Step 4 — wait for completion
 
@@ -145,7 +162,7 @@ failed-step logs in a `failureLog` field with a one-line `summary`. Keep the log
 excerpt focused on the erroring step — the next planner pass reads it to decide
 whether to retry, fix, or abandon.
 
-If dispatch itself failed (Step 2/3) so no run exists, prefer
+If dispatch itself failed (Step 3) so no run exists, prefer
 `mcp__outpost__submit_step_failed` (load it the same way) with a message naming
 the missing/invalid input; fall back to `submit_step_output` with
 `{"ok": false, ...}` if that tool isn't available.

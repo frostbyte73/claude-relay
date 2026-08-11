@@ -10,6 +10,7 @@ import { work } from '../../state/work.js';
 import { orchestratedRows } from '../../vm/tracked.js';
 import { actionCategory, actionDisplayName, actionIconHtml } from './action-icon.js';
 import { hasPrBlock, renderPrBlockHtml, wirePrBlockActions } from './pr-block.js';
+import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
 import { renderMarkdown } from '../../markdown.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
 import { openSession } from '../../app-bridge.js';
@@ -77,6 +78,7 @@ function dispatchRowHtml(d) {
         : ''}
       ${d.brief ? `<div class="orc-dispatch-brief">${escapeHtml(d.brief)}</div>` : ''}
       ${d.failure ? `<div class="orc-dispatch-failure">${escapeHtml(d.failure)}</div>` : ''}
+      ${d.draft ? renderWriteDraft(d.draft) : ''}
     </div>`;
 }
 
@@ -170,6 +172,7 @@ export function renderOrchestratedCard(step, { job } = {}) {
       ${dispatchesHtml(vm)}
       ${artifactsHtml(vm)}
       ${gateHtml(vm)}
+      ${vm.controllerDraft ? renderWriteDraft(vm.controllerDraft) : ''}
       ${actionsHtml(step, vm)}
       ${composerHtml(step)}
     </div>`;
@@ -178,8 +181,17 @@ export function renderOrchestratedCard(step, { job } = {}) {
 export function wireOrchestratedCard(el, step, { job } = {}) {
   const card = el.querySelector('.orc-card');
   if (!card) return;
+  const vm = orchestratedRows(step);
   if (orchestratedHasPrBlock(step)) wirePrBlockActions(card, job, prView(step));
   wireOverflowMenu(card);
+
+  // The controller's own draft and each dispatch's are self-contained cards (their own
+  // Accept/Propose changes/Deny) — wireWriteDraft finds its own markup by draft id inside
+  // this card, same as any other draft mount point.
+  if (vm.controllerDraft) wireWriteDraft(card, { jobId: job.id, stepId: step.id, draft: vm.controllerDraft });
+  vm.dispatchRows.forEach((d) => {
+    if (d.draft) wireWriteDraft(card, { jobId: job.id, stepId: step.id, draft: d.draft });
+  });
 
   card.querySelectorAll('[data-orc-session]').forEach((btn) => {
     btn.addEventListener('click', (e) => {

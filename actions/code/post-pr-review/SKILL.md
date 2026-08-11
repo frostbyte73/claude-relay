@@ -1,12 +1,12 @@
 ---
 name: code.post-pr-review
-description: Use when invoked as `/code.post-pr-review` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.post-pr-review"`. Post the review comments the user already approved onto somebody else's PR as one GitHub review — verbatim, nothing added — and record exactly what landed in `artifacts.postedReview`. Finish with `mcp__outpost__submit_step_progress`.
+description: Use when invoked as `/code.post-pr-review` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.post-pr-review"`. Draft the exact review comments via `mcp__outpost__submit_write_draft`, then post them onto somebody else's PR as one GitHub review — verbatim, nothing added — once approved (see `SHARED-write-drafts.md`), and record exactly what landed in `artifacts.postedReview`. Finish with `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
   side_effects: external-write
   runner: claude
-  permissions: [read, pull]
+  permissions: [read, pull, push]
   timeout_sec: 600
   retries: 0
 ---
@@ -19,26 +19,25 @@ round to you — **this is not a fresh session and not a dispatch.** You keep th
 controller's conversation, its worktree and its envelope; only the bound action changed
 for one turn.
 
-Because this action declares `side_effects: external-write`, the daemon held the move at a
-user gate before you were resumed, and it rendered the controller's `note` into the gate
-draft. **The user has already read the exact comment bodies in `boundNote` and approved
-them.** Do not gate them again, do not ask, and do not improve them.
-
-Your job is exactly one thing: post the comments in `boundNote`, verbatim, as one GitHub
+This is a bound-action round on the controller's own session (`type: "orchestrated"`), so
+`writeGate` (see `~/.outpost/actions/SHARED-write-drafts.md`) sits at the **top level** of `$OUTPOST_ENVELOPE`,
+not under a `typePayload`. Your job is exactly one thing: draft the comments in `boundNote`
+for the user's approval, then post exactly what they approved, verbatim, as one GitHub
 review on the PR they belong to.
 
 - **Do not re-review.** You are not deciding what is wrong with the PR on this turn; that
-  decision is upstream and already approved.
+  decision is upstream, already in `boundNote`.
 - **Do not soften.** Not a hedge, not a "nit:" prefix that was not there, not an added
-  compliment.
-- **Do not add comments that were not approved** — including one you notice now. If
+  compliment — draft exactly what `boundNote` says.
+- **Do not add comments that were not in `boundNote`** — including one you notice now. If
   something new matters, say so in the memo and let the controller run another round.
 
-Nothing else is granted. This action deliberately does **not** inherit the `push` group;
-`git commit`, `git push`, `gh pr merge`, `gh pr comment`, `gh pr create` and `gh pr review`
-are all denied here. The verdict — approve or request changes — is a separate round
-(`code.submit-pr-verdict`) with its own gate. If you find yourself wanting one of those,
-this is the wrong round: hand it back (Step 6b).
+This action inherits the `push` permission group, which is broad — `git commit`, `git push`,
+`gh pr merge`, `gh pr comment`, `gh pr create` and more all pass its raw allowlist. **That is
+not permission to use them.** The gate is what actually confines this round: only the review
+POST you draft and the user approves will run. The verdict — approve or request changes — is
+a separate round (`code.submit-pr-verdict`) with its own draft. If you find yourself wanting
+one of those, this is the wrong round: hand it back (Step 7b).
 
 ## Step 1 — Read the envelope
 
@@ -57,13 +56,13 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 
 | Field | What it is |
 |---|---|
-| `boundNote` | **The approved payload.** One entry per comment: file path, line, and the exact body. This is what the user saw at the gate — it wins over everything else, including your own memory of the review. |
-| `artifacts.review` | The synthesis round's full comment set, for context. Only the ones named in `boundNote` are approved. |
+| `boundNote` | **The payload to draft.** One entry per comment: file path, line, and the exact body. This is what the user reads at the draft — it wins over everything else, including your own memory of the review. |
+| `artifacts.review` | The synthesis round's full comment set, for context. Only the ones named in `boundNote` are to be drafted. |
 | `artifacts.postedReview` | What an earlier round already posted. Never post one of these twice. |
 | `pr.prUrl` / `inputs.prUrl` | The PR to review. |
-| `gateFeedback` | Anything the user wrote when approving. A wording change there is also approved text — apply it. |
+| `writeGate.feedback` | Anything the user wrote when proposing changes to the draft, once you've drafted. A wording change there is also approved text once accepted — apply it. |
 
-If `PR_URL` or `boundNote` is empty there is nothing to post — skip to Step 6b and hand it
+If `PR_URL` or `boundNote` is empty there is nothing to post — skip to Step 7b and hand it
 back.
 
 ## Step 2 — Pin the commit you are reviewing
@@ -79,24 +78,16 @@ Note the PR number and `headRefOid`. If `headRefOid` has moved since the finding
 written, say so in the memo — the line numbers may no longer line up, and Step 5 is where
 you will find out.
 
-## Step 3 — Build the payload file
+## Step 3 — Compose the payload
 
 A multi-comment review is nested JSON — an array of comment objects — so it cannot be
 expressed with `gh api -f` flags, and a heredoc is not usable either (the allowlist's
-`splitShellCommand` does not understand heredocs, so a heredoc'd command is denied). Write
-the payload with the **Write tool** to a path directly under `/tmp/`:
-
-```
-Write({ file_path: "/tmp/outpost-review-<PR_NUMBER>.json", content: "…" })
-```
-
-Outside this step's own worktree, `/tmp/` is the only place this action may write. The
-worktree auto-allows via session scope — an `Edit`/`Write` under it succeeds rather than
-denying — but it is a throwaway detached PR-head checkout, `git worktree remove --force`d
-when the step settles: nothing you leave there survives, and nothing there reaches the PR.
-The payload has to be somewhere `gh` can still read it and somewhere the allowlist pins, so
-put it in `/tmp/`, and make the filename a **literal** — write the PR number into it yourself
-rather than letting the shell expand a variable, or the post in Step 4 is denied.
+`splitShellCommand` does not understand heredocs, so a heredoc'd command is denied). Compose
+it as a string now; Step 4 hands it to `submit_write_draft` as `files` rather than writing it
+yourself — see "File-referencing payloads: draft the content, don't write the file" in
+`~/.outpost/actions/SHARED-write-drafts.md`. The daemon writes it, once approved, to a literal
+path under `/tmp/` (write the PR number into the filename yourself — a shell variable in the
+path is denied at Step 5).
 
 The payload shape:
 
@@ -112,71 +103,81 @@ The payload shape:
 ```
 
 **`"event"` is always `"COMMENT"` on this round.** `APPROVE` and `REQUEST_CHANGES` are
-verdicts, and the verdict is `code.submit-pr-verdict`'s round, gated separately so the user
-approves the verdict as a verdict. The allowlist cannot see inside this file — it pins
-*where* the file comes from, not what is in it — so this instruction is the actual
-guardrail, exactly like `code.merge-pr`'s "never write `--delete-branch`". Writing
-`"event": "APPROVE"` here approves somebody else's PR on a gate the user read as
-"post these comments".
+verdicts, and the verdict is `code.submit-pr-verdict`'s round, drafted and approved
+separately so the user sees the verdict as a verdict. The allowlist cannot see inside this
+file — it pins *where* the file comes from, not what is in it — so this instruction is the
+actual guardrail, exactly like `code.merge-pr`'s "never draft `--delete-branch`". Writing
+`"event": "APPROVE"` here approves somebody else's PR on a draft the user read as "post these
+comments".
 
 For a comment on a multi-line span use `"start_line"` + `"line"`. For a comment on the
 left (deleted) side use `"side": "LEFT"`. Do not invent `position` offsets — `line` +
 `side` is the modern spelling and the one GitHub validates cleanly.
 
-## Step 4 — Post the review
+## Step 4 — Draft the post (`writeGate` absent, or `writeGate.phase === "draft"`)
 
-One command, one line, literal PR number:
-
-```bash
-gh api --method POST "repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews" --input /tmp/outpost-review-<PR_NUMBER>.json
+```
+mcp__outpost__submit_write_draft({
+  jobId: "<$JOB_ID>", stepId: "<$STEP_ID>",
+  summary: "Post <n> review comments on <PR_URL>",
+  evidence: "<the comment set rendered as markdown — file, line, body, one per comment, plus the summary line if any>",
+  calls: [{
+    label: "post review",
+    bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews\" --input /tmp/outpost-review-<PR_NUMBER>.json",
+    files: { "/tmp/outpost-review-<PR_NUMBER>.json": "<the payload from Step 3>" }
+  }]
+})
 ```
 
 `{owner}` and `{repo}` are `gh api`'s own placeholders, filled from the remote of the repo
-your cwd sits in. **Write them literally, exactly as spelled above** — a spelled-out
-`repos/<owner>/<repo>/…` is denied, because it would let this round post the review the
-user approved for *this* PR onto a PR in a repo it was never shown. The placeholders are
-the only thing that binds the endpoint to the worktree you reviewed, so **do not `cd` out
-of the worktree before running it.**
+your cwd sits in — write them literally, exactly as spelled above. A spelled-out
+`repos/<owner>/<repo>/…` would let this round post the review the user approved for *this*
+PR onto a PR in a repo it was never shown. `<PR_NUMBER>` is a literal digit, and the
+`--input` path — the same literal path used as the `files` key — has no `$VAR` anywhere in
+it. Do not `cd` out of the worktree before drafting or before Step 5.
 
-What is granted is exactly that shape and nothing around it:
+Then stop. If `writeGate.feedback` is non-empty (the user wants a comment reworded or
+dropped — every round, oldest first), revise `boundNote`'s content, update `files`, and draft
+again — the payload changes, the command doesn't.
 
-| Allowed | Notes |
-|---|---|
-| `--method POST` / `-X POST` | the only method |
-| `repos/{owner}/{repo}/pulls/<n>/reviews` | the only endpoint; `{owner}`/`{repo}` literal, `<n>` a bare number |
-| `--input /tmp/<literal-filename>` | the only payload source |
+## Step 5 — Commit: post the review
 
-Anything else denies — a named owner/repo, a `$VAR` PR number, a second flag
-(`--hostname`, `--jq`, another `--method`), a `--input` path outside `/tmp/`, a
-`\`-continuation across lines, or a second command chained with `&&`. That closure is the
-point: `--input` is a file read, so an unpinned one would publish `/etc/passwd` or
-`~/.outpost/.env` as review text on a public PR.
+`writeGate.phase === "commit"`. Run `writeGate.approvedCalls` **verbatim** — the exact `gh
+api` call the user approved. The `--input` file is already on disk with the approved
+(possibly user-edited) payload — the daemon wrote it at accept time, so there is nothing to
+rebuild here even on a fresh turn.
 
-If the worktree's remote genuinely is not the PR's repo, this round cannot post — hand it
-back (Step 6b) with that as the reason rather than reaching for a spelled-out endpoint.
-
-## Step 5 — Handle comments GitHub refuses
+## Step 6 — Handle comments GitHub refuses
 
 If a `path`/`line` is not part of the PR's diff, GitHub answers `422` and **rejects the
-whole review** — nothing is posted. That is not a reason to drop the comment silently.
+whole review** — nothing is posted. That is not a reason to drop the comment silently, and
+it is not a new write to draft from scratch — the approved text doesn't change, only where
+it lands.
 
 1. Read the `422` body; it names the offending comment(s)
    (`pull_request_review_thread.line must be part of the diff`).
 2. Move each offending comment out of `comments` and into the review `body`, prefixed with
    the file and line it was meant for, e.g.
    `**src/work/orchestrator.ts:412** — <approved body, verbatim>`.
-3. Rewrite the payload file and post again.
-4. Record every degraded comment in `postedReview` (Step 6a) as `degraded-to-body` with the
+3. **This is a new payload, so it needs a new draft — not a silent rewrite-and-retry.** The
+   failed call already released its own pin (see SHARED-write-drafts.md's "Rules that don't
+   bend"), but the file's approved-content digest still points at the ORIGINAL placement; a
+   changed payload against the same path is exactly the "changed since the draft was
+   approved" case the hook exists to deny, unapproved-and-silent is not an option here anyway.
+   Go back to Step 4 with the reshaped payload as the new `files` value (same command, same
+   `/tmp/` path, moved comments) and get it approved before Step 5 runs again.
+4. Record every degraded comment in `postedReview` (Step 7a) as `degraded-to-body` with the
    reason.
 
-The body text stays verbatim; only its *placement* changed. A comment the user approved and
-that never reached the PR is a silent failure of this whole step, and `postedReview` is the
-only place anyone would ever see it.
+The body text stays verbatim; only its *placement* changed — do not use this recovery path to
+reword, drop, or add anything. A comment the user approved and that never reached the PR is a
+silent failure of this whole step, and `postedReview` is the only place anyone would ever
+see it.
 
-If the post fails for any other reason, do not retry blindly — hand it back (Step 6b) with
+If the post fails for any other reason, do not retry blindly — hand it back (Step 7b) with
 `gh`'s stderr.
 
-## Step 6a — Report what landed
+## Step 7a — Report what landed
 
 Load the MCP tools (deferred behind ToolSearch), then report:
 
@@ -224,25 +225,26 @@ mcp__outpost__submit_step_progress({
 `code.orchestrate-review` for a decision turn. It owns the ladder — whether to wait, verify
 resolutions, or submit a verdict — so do not pick that yourself.
 
-## Step 6b — Report nothing posted
+## Step 7b — Report nothing posted
 
-Nothing to post, or the post failed. Same hand-back, with the reason in `memo`, and **no**
-`postedReview` artifact — an empty artifact would falsify the controller's rung and it
-would never retry. This is the path where the memo matters most: the controller's rows 7 and
-10 have no artifact to read, so your line *is* the record, and it still replaces everything
-that was there. Name what `gh` said, then carry the controller's narrative forward.
+Nothing to post, the draft was declined, or the post failed. Same hand-back, with the reason
+in `memo`, and **no** `postedReview` artifact — an empty artifact would falsify the
+controller's rung and it would never retry. This is the path where the memo matters most: the
+controller's rows 7 and 10 have no artifact to read, so your line *is* the record, and it
+still replaces everything that was there. Name what happened, then carry the controller's
+narrative forward.
 
 ```
 mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "review_pending",
-  memo: "posted nothing: <boundNote was empty / no prUrl / gh said '<stderr>'>. <then the controller's narrative, carried forward>",
+  memo: "posted nothing: <boundNote was empty / no prUrl / user declined the draft (<reason>) / gh said '<stderr>'>. <then the controller's narrative, carried forward>",
   next: { kind: "self-round" }
 })
 ```
 
-## Step 7 — Journal one lesson
+## Step 8 — Journal one lesson
 
 ```
 mcp__outpost__submit_journal({
@@ -266,12 +268,11 @@ Name the exact command or field, not the category.
   step on the next tick. Don't guess at what to post.
 - **The session died after posting but before reporting.** The round re-runs. Read
   `gh pr view "$PR_URL" --json reviews` first: if a review of yours is already there at
-  that commit, record it in `postedReview` rather than posting it twice. A duplicate review
-  on somebody else's PR is worse than a delayed one.
+  that commit, record it in `postedReview` rather than posting it twice.
 - **The PR head moved between the findings and now.** Post against the *current*
   `headRefOid`; comments whose lines no longer exist come back as `422` and go through
-  Step 5. Say in the memo that the head moved.
-- **The PR was closed or merged while the gate was open.** GitHub still accepts a review on
-  a merged PR, but it is noise. Hand it back (Step 6b) and let the controller decide.
+  Step 6. Say in the memo that the head moved.
+- **The PR was closed or merged while the draft was pending.** GitHub still accepts a review
+  on a merged PR, but it is noise. Hand it back (Step 7b) and let the controller decide.
 - **Hook server returns 401.** Daemon restarted mid-session; print the situation and exit.
   Do not post on a session that cannot report what it posted.

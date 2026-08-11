@@ -202,14 +202,56 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
   },
   {
     name: 'submit_write_draft',
-    description: 'Submit the drafted payload of a human_gate write action (e.g. write.linear-comment / write.linear-issue) for the user\'s approval. `draft` is the full payload as markdown — the exact body that will be posted. Sets the step to gate_pending_approval and DOES NOT perform the external write (the daemon blocks it until approval). The user approves (→ this session resumes in its commit phase and posts) or proposes changes (→ resumes in a redraft phase with their feedback). Call this in the draft phase instead of writing; only call the external-write tool in the commit phase (envelope typePayload.phase === "commit").',
+    description:
+      'Submit the exact payload of an external write for the user\'s approval, and DO NOT perform '
+      + 'the write. `calls` is the ordered list of calls you will make once approved — each is either '
+      + '`{bash}` (the literal command text) or `{tool: {name, args}}` (an MCP tool and its arguments '
+      + 'verbatim). The user sees every field and may edit any of them. If a `bash` call references a '
+      + 'file via --input/--body-file/--notes-file, draft its body inline as `files: {"<path>": '
+      + '"<content>"}` instead of writing the file yourself — the user edits the body directly in the '
+      + 'approval card, and the daemon writes your approved (possibly user-edited) content to that '
+      + 'exact path itself at accept time, then pins the write to that content\'s digest. Every `files` '
+      + 'key must be a path the same call\'s `bash` actually references and must be under /tmp/, or the '
+      + 'whole draft is refused. `evidence` is read-only context for their decision (a staged diff, a '
+      + 'rendered preview); `summary` is one line naming what will happen. Parks this unit for '
+      + 'approval. The user accepts (→ you resume with writeGate.phase === "commit" and approvedCalls, '
+      + 'which you must run VERBATIM — the hook denies anything else), proposes changes (→ you resume '
+      + 'in the draft phase with their feedback), or denies (→ the write never happens). Call this '
+      + 'instead of writing; a gated write attempted without an approved pin is denied.',
     inputSchema: {
       type: 'object',
-      required: ['jobId', 'stepId', 'draft'],
+      required: ['jobId', 'stepId', 'summary', 'calls'],
       properties: {
         jobId: { type: 'string' },
         stepId: { type: 'string' },
-        draft: { type: 'string', description: 'The full payload to be posted, as markdown.' },
+        dispatchId: { type: 'string', description: 'Set only if you are a dispatched child.' },
+        summary: { type: 'string', description: 'One line naming what will happen.' },
+        evidence: { type: 'string', description: 'Read-only markdown context for the decision.' },
+        calls: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              bash: { type: 'string', description: 'Literal command text, exactly as it will run.' },
+              tool: {
+                type: 'object',
+                required: ['name', 'args'],
+                properties: { name: { type: 'string' }, args: { type: 'object' } },
+              },
+              files: {
+                type: 'object',
+                description:
+                  'Only for a `bash` call: path -> file body, for each --input/--body-file/'
+                  + '--notes-file path this call references whose content you want editable inline '
+                  + 'in the approval card. Every key must be one of this call\'s own referenced '
+                  + 'paths and must be under /tmp/.',
+                additionalProperties: { type: 'string' },
+              },
+            },
+          },
+        },
       },
     },
   },

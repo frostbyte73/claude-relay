@@ -2,9 +2,7 @@
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
     "^gh pr view(\\s|$)",
-    "^gh pr merge[ \\t]+[0-9]+[ \\t]+(?:--squash|--merge|--rebase)(?:[ \\t]+--auto)?(?:[ \\t]+--(?:subject|body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*[ \\t]*$",
-    "^git push [A-Za-z][A-Za-z0-9._-]* --delete(?: --)? (?![\"']?(?:main|master|HEAD|trunk|develop|heads/[^\\s\"']*|refs/heads/[^\\s\"']*|release[/-][^\\s\"']*)[\"']?\\s*$)(?:\"[^\"\\s]+\"|'[^'\\s]+'|[^-\\s\"'][^\\s\"']*)\\s*$",
-    "^git push --delete [A-Za-z][A-Za-z0-9._-]*(?: --)? (?![\"']?(?:main|master|HEAD|trunk|develop|heads/[^\\s\"']*|refs/heads/[^\\s\"']*|release[/-][^\\s\"']*)[\"']?\\s*$)(?:\"[^\"\\s]+\"|'[^'\\s]+'|[^-\\s\"'][^\\s\"']*)\\s*$"
+    "^gh pr merge[ \\t]+[0-9]+[ \\t]+(?:--squash|--merge|--rebase)(?:[ \\t]+--auto)?(?:[ \\t]+--(?:subject|body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*[ \\t]*$"
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": []

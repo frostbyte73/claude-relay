@@ -10,6 +10,7 @@ export interface HookServerOpts {
   port: number;
   daemonAuthSecret: string;
   onPreToolHook: (body: string) => Promise<string>;
+  onPostToolFailureHook: (body: string) => Promise<string>;
   onStopHook: (body: string) => Promise<void>;
   onStatusLineHook: (body: string) => Promise<void>;
   onWorkPlanReady: (body: string) => Promise<void>;
@@ -47,6 +48,7 @@ export class HookServer {
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const KNOWN_ROUTES = new Set([
       '/hook/pretool',
+      '/hook/posttoolfail',
       '/hook/stop',
       '/hook/statusline',
       '/work/plan-ready',
@@ -75,6 +77,11 @@ export class HookServer {
       try {
         if (url === '/hook/pretool') {
           const result = await this.opts.onPreToolHook(body);
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(result);
+        } else if (url === '/hook/posttoolfail') {
+          const result = await this.opts.onPostToolFailureHook(body);
           res.statusCode = 200;
           res.setHeader('content-type', 'application/json');
           res.end(result);

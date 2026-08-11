@@ -122,8 +122,7 @@
       }
     },
     "gateApproved": {
-      "type": "boolean",
-      "description": "True once the user approved the daemon's forced gate on this external write."
+      "type": "boolean"
     },
     "gateFeedback": {
       "type": "array",

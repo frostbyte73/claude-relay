@@ -15,6 +15,7 @@ async function request(path, init = {}) {
 
 const jobPath = (id) => `/jobs/${encodeURIComponent(id)}`;
 const stepPath = (id, stepId) => `${jobPath(id)}/steps/${encodeURIComponent(stepId)}`;
+const draftPath = (id, stepId, draftId) => `${stepPath(id, stepId)}/drafts/${encodeURIComponent(draftId)}`;
 
 export const workApi = {
   listJobs()                       { return request('/jobs'); },
@@ -50,4 +51,15 @@ export const workApi = {
   },
   markStepResolved(id, stepId)     { return request(`${stepPath(id, stepId)}/mark-resolved`, { method: 'POST', body: '{}' }); },
   setJobPriority(id, highPriority) { return request(`${jobPath(id)}/priority`, { method: 'POST', body: JSON.stringify({ highPriority }) }); },
+  // Write-draft decisions (Task 9's routes). `calls` is the user's (possibly edited) payload —
+  // it IS what gets pinned and executed on accept, not just a confirmation flag.
+  acceptDraft(id, stepId, draftId, calls) {
+    return request(`${draftPath(id, stepId, draftId)}/accept`, { method: 'POST', body: JSON.stringify({ calls }) });
+  },
+  reviseDraft(id, stepId, draftId, feedback) {
+    return request(`${draftPath(id, stepId, draftId)}/revise`, { method: 'POST', body: JSON.stringify({ feedback }) });
+  },
+  denyDraft(id, stepId, draftId, reason) {
+    return request(`${draftPath(id, stepId, draftId)}/deny`, { method: 'POST', body: JSON.stringify({ reason }) });
+  },
 };

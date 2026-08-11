@@ -1,7 +1,8 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
-import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
+import type { JobRecord, OrchestratedStep, Step } from '../work/work-types.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
 import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
@@ -9,6 +10,8 @@ import type { WorktreeManager } from '../git/worktree-manager.js';
 import { readJsonBody, readJsonObject } from './util.js';
 import { serializeJob } from '../work/job-liveness.js';
 import { readJobEvents } from '../storage/job-event-log.js';
+import { parseDraftCalls } from '../work/write-draft.js';
+import type { DraftDecisionResult } from '../work/write-draft-runner.js';
 
 export interface JobsRoutesDeps {
   jobQueue: JobQueue;
@@ -37,6 +40,65 @@ function orchestratedStep(jobQueue: JobQueue, jobId: string, stepId: string): Or
   if (!job || job.state === 'abandoned' || job.state === 'done') return undefined;
   const step = job.steps.find((s) => s.id === stepId);
   return step?.type === 'orchestrated' ? step : undefined;
+}
+
+// Same terminated-job guard as orchestratedStep, but not restricted to type 'orchestrated' —
+// an ActionStep raises its own draft too (raisedBy: {kind:'step'}), so the accept/revise/deny
+// routes need to find either step kind, not just a controller-owned one.
+function liveStep(jobQueue: JobQueue, jobId: string, stepId: string): Step | undefined {
+  const job = jobQueue.get(jobId);
+  if (!job || job.state === 'abandoned' || job.state === 'done') return undefined;
+  return job.steps.find((s) => s.id === stepId);
+}
+
+// Maps a WorkEngine draft-decision outcome onto an HTTP response: 200 + body on success,
+// otherwise the reason as plain text under `result.status` — 404 when the draftId matches
+// nothing (stale card, typo, wrong job: refresh and look again), 409 when it matches a draft
+// that's already been decided or a step that's already terminal (someone/something else got
+// there first: retrying this exact decision won't help). Defaults to 409 for the handful of
+// reasons that don't set `status` explicitly (all of them are state conflicts, not missing
+// resources). Shared by the three accept/revise/deny routes so they answer refusals identically.
+function respondDraftDecision(res: ServerResponse, result: DraftDecisionResult): void {
+  if (!result.ok) { res.statusCode = result.status ?? 409; res.end(result.reason); return; }
+  res.statusCode = 200;
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ ok: true }));
+}
+
+// One handler for all three verbs — draftId is already resolved by the route's regex, so
+// there is no "find the pending draft" step left (a step can hold several at once, one per
+// live dispatch, so guessing which one the PWA means is not safe).
+async function handleDraftDecision(
+  engine: WorkEngine, req: IncomingMessage, res: ServerResponse,
+  jobId: string, stepId: string, draftId: string, verb: 'accept' | 'revise' | 'deny',
+): Promise<void> {
+  const payload = await readJsonObject<{ calls?: unknown; feedback?: unknown; reason?: unknown }>(req, res);
+  if (!payload) return;
+
+  if (verb === 'accept') {
+    // The user's (possibly edited) calls are a second untrusted boundary, same as the
+    // session's own submit_write_draft payload — reuse the one validator rather than trusting
+    // shape here and letting acceptDraft's own field-pick rebuild silently produce an
+    // unconsumable pin (neither `bash` nor `tool`, or both).
+    const calls = parseDraftCalls(payload.calls);
+    if (!calls) {
+      res.statusCode = 400;
+      res.end('calls must be a non-empty array, each element with exactly one of '
+        + '`bash` (string) or `tool: {name: string, args: object}`');
+      return;
+    }
+    respondDraftDecision(res, await engine.acceptDraft(jobId, stepId, draftId, calls));
+  } else if (verb === 'revise') {
+    if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) {
+      res.statusCode = 400; res.end('feedback required'); return;
+    }
+    respondDraftDecision(res, engine.reviseDraft(jobId, stepId, draftId, payload.feedback));
+  } else {
+    if (typeof payload.reason !== 'string' || !payload.reason.trim()) {
+      res.statusCode = 400; res.end('reason required'); return;
+    }
+    respondDraftDecision(res, engine.denyDraft(jobId, stepId, draftId, payload.reason));
+  }
 }
 
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
@@ -131,11 +193,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.resumeWait(id, payload.stepId, payload.note);
           break;
-        case 'gate':
-          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-          engine.approveGate(id, payload.stepId);
-          break;
-        default: res.statusCode = 400; res.end('gate must be plan|wait|gate'); return;
+        default: res.statusCode = 400; res.end('gate must be plan|wait'); return;
       }
     } catch (e) {
       res.statusCode = 500; res.end(`error: ${(e as Error).message}`); return;
@@ -156,12 +214,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
         if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
         engine.onPlanRejected(id, payload.feedback);
         break;
-      case 'gate':
-        if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-        if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
-        engine.rejectGate(id, payload.stepId, payload.feedback);
-        break;
-      default: res.statusCode = 400; res.end('gate must be plan|gate'); return;
+      default: res.statusCode = 400; res.end('gate must be plan'); return;
     }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -409,6 +462,18 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
     engine.markStepResolved(jobId!, stepId!);
     res.statusCode = 204; res.end();
+  });
+
+  // A step can hold several drafts at once (two live dispatches under one controller can each
+  // be parked) — draftId is what disambiguates which one this decision is about, not "the"
+  // pending draft on the step.
+  server.route('POST', '/api/work/jobs/:id/steps/:stepId/drafts/:draftId/:verb', async (req, res) => {
+    const m = (req.url ?? '').match(
+      /^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/drafts\/([\w-]+)\/(accept|revise|deny)$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const [, jobId, stepId, draftId, verb] = m;
+    if (!liveStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
+    await handleDraftDecision(engine, req, res, jobId!, stepId!, draftId!, verb as 'accept' | 'revise' | 'deny');
   });
 
   server.route('POST', '/api/work/jobs/:id/tick', (req, res) => {

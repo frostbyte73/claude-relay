@@ -17,11 +17,13 @@ const DRAFT = '## Merge plan\n\nRun `gh pr merge --squash` on **PR #12**.\n';
 const QUESTION = 'Merge this PR now?';
 
 // A JobRecord (src/work/work-types.ts) with one orchestrated step parked in
-// `gate_pending_approval` — where a controller lands after a `gate` move, holding the
-// move it wants to make until the user approves or declines. The step carries a
+// `gate_pending_approval` — where a controller lands after a voluntary `gate` move (it's
+// asking the user a question, not being forced to by policy). The step carries a
 // sessionId so the engine treats the controller as already spawned and leaves it parked
 // (orchestratedHandler.decide only spawns when there's no session, and shouldDeliver
-// keeps a gated step the user's turn while its inbox is empty).
+// keeps a gated step the user's turn while its inbox is empty). Approving or declining
+// does not replay any held move — it just delivers the verdict and resumes the controller,
+// which decides its own next move from there.
 function seedJob(repoCwd: string, branch: string) {
   const now = Date.now();
   return {
@@ -46,7 +48,6 @@ function seedJob(repoCwd: string, branch: string) {
           draft: DRAFT,
           question: QUESTION,
           requestedAt: now,
-          deferredMove: { kind: 'resolve', output: 'Merged PR #12.' },
         },
         sessionId: SESSION_ID,
         dispatches: [
@@ -122,14 +123,21 @@ seededTest('renders the controller, phase, dispatches and the gate draft as sepa
   await expect(card.locator('.tl-gate-body strong')).toHaveText('PR #12');
 });
 
-seededTest('Approve runs the move the controller gated', async ({ outpostPage, daemon }) => {
+seededTest('Approve clears the gate, records the verdict, and resumes the controller', async ({ outpostPage, daemon }) => {
   await openJob(outpostPage);
   const card = outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] .orc-card`);
 
   await card.locator('[data-orc-action="approve-gate"]').click();
 
-  await expect.poll(async () => (await fetchStep(outpostPage, daemon)).state, { timeout: 5_000 }).toBe('resolved');
-  expect((await fetchStep(outpostPage, daemon)).gate).toBeUndefined();
+  // Approving a voluntary gate no longer replays a held move — the daemon's own next moves
+  // are: clear the gate, mark it durably approved, deliver the verdict, and hand the turn
+  // back to the controller. The controller then decides what to do next; the mock session
+  // here just returns a plain text reply, so `running` (not `resolved`) is where it settles.
+  await expect.poll(async () => (await fetchStep(outpostPage, daemon)).state, { timeout: 5_000 }).toBe('running');
+  const step = await fetchStep(outpostPage, daemon);
+  expect(step.gate).toBeUndefined();
+  expect(step.gateApproved).toBe(true);
+  expect(step.lastDelivered?.some((i: any) => i.kind === 'gate-resolved' && i.approved === true)).toBe(true);
   // The gate controls disappear once the step has moved on.
   await expect(outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] [data-orc-action="approve-gate"]`)).toHaveCount(0);
 });

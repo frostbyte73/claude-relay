@@ -37,8 +37,8 @@ describe('trackedGroups', () => {
   });
 
   it('merge-ready (approved + green) -> waiting, not needs-you', () => {
-    // Merging is the controller's move; the user's turn arrives when the policy
-    // force-gates it (state -> gate_pending_approval), not before.
+    // Merging is the controller's own move; the user's turn only arrives if the
+    // controller itself asks (a `gate` move, state -> gate_pending_approval), not before.
     const jobs = [{ id: 'j1', state: 'executing',
       steps: [{ id: 's1', type: 'orchestrated', state: 'waiting', phase: 'pr_open',
         pr: { reviewState: 'approved', ciState: 'success' } }], live: live(false, []) }];
@@ -97,6 +97,33 @@ describe('focusAction', () => {
         gate: { question: 'Merge this PR?' } }], live: live(false, []) });
     expect(a.cta.action).toBe('review-gate');
     expect(a.description).toBe('Merge this PR?');
+  });
+
+  // Critical 2: `step.state === 'gate_pending_approval'` alone misses a dispatch-raised
+  // draft (only the dispatch's own status flips — see hasUnapprovedDraft's doc comment in
+  // work-predicates.js), which used to fall through to the meta.wait branch below and offer
+  // "Resume" — a CTA that calls `work.approve(job.id, {gate:'wait', stepId})`, which
+  // `resolveWaitStep` flatly refuses for anything but an ActionStep: 200, nothing changed.
+  it('an ActionStep draft (raisedBy: step) -> review-gate, not resume', () => {
+    const a = focusAction({ id: 'j1', state: 'executing',
+      steps: [{ id: 's1', title: 'Post the comment', type: 'action', state: 'gate_pending_approval',
+        drafts: [{ id: 'd1', raisedBy: { kind: 'step' } }] }], live: live(false, []) });
+    expect(a.cta.action).toBe('review-gate');
+  });
+
+  it('a controller-raised draft -> review-gate, not resume', () => {
+    const a = focusAction({ id: 'j1', state: 'executing',
+      steps: [{ id: 's1', title: 'Land the PR', type: 'orchestrated', state: 'gate_pending_approval',
+        drafts: [{ id: 'd1', raisedBy: { kind: 'controller' } }] }], live: live(false, []) });
+    expect(a.cta.action).toBe('review-gate');
+  });
+
+  it('a dispatch-raised draft -> review-gate, not resume, even though the parent step is still waiting', () => {
+    const a = focusAction({ id: 'j1', state: 'executing',
+      steps: [{ id: 's1', title: 'Fix CI', type: 'orchestrated', state: 'waiting',
+        drafts: [{ id: 'd1', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' } }] }], live: live(false, []) });
+    expect(a.cta.action).toBe('review-gate');
+    expect(a.title).toBe('Approval required');
   });
 
   it('merge-ready -> no action; the job is waiting on the controller to gate the merge', () => {
@@ -211,14 +238,49 @@ describe('orchestratedRows', () => {
     expect(new Set(slugs).size).toBe(slugs.length);
   });
 
-  it('exposes the gate only while parked on it', () => {
+  it('exposes the voluntary gate whenever s.gate is set, independent of state', () => {
+    // s.gate and state:'gate_pending_approval' are set/cleared together by the real engine
+    // (openGate/resolveGate), but a controller-raised write draft ALSO uses that same state
+    // without ever touching s.gate — so gating this purely on state (the old behavior) would
+    // render a hollow gate card for a draft instead of the draft's own content. See
+    // controllerDraft below for the write-draft case.
     const gated = step({
       state: 'gate_pending_approval',
       gate: { draft: 'gh pr merge', question: 'Merge?' },
       gateFeedback: ['not yet'],
     });
     expect(orchestratedRows(gated).gate).toEqual({ draft: 'gh pr merge', question: 'Merge?', feedback: ['not yet'] });
-    expect(orchestratedRows(step({ gate: { draft: 'x', question: 'y' } })).gate).toBeNull();
+    expect(orchestratedRows(step()).gate).toBeNull();
+  });
+
+  it('exposes the controller\'s own pending write draft separately from the voluntary gate', () => {
+    const draft = { id: 'd1', raisedBy: { kind: 'controller' }, action: 'code.fix-ci', summary: 'push a fix', calls: [] };
+    const s = step({ state: 'gate_pending_approval', drafts: [draft] });
+    const rows = orchestratedRows(s);
+    expect(rows.gate).toBeNull();
+    expect(rows.controllerDraft).toEqual(draft);
+  });
+
+  it('does not surface an approved draft as pending, and ignores a draft raised by a different party', () => {
+    const approved = { id: 'd1', raisedBy: { kind: 'controller' }, action: 'code.fix-ci', summary: 'x', calls: [], approvedAt: 5 };
+    const dispatchDraft = { id: 'd2', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' }, action: 'code.implement', summary: 'y', calls: [] };
+    expect(orchestratedRows(step({ drafts: [approved, dispatchDraft] })).controllerDraft).toBeNull();
+  });
+
+  it('folds a dispatch-raised draft into that dispatch\'s own row, not the controller\'s', () => {
+    const draft = { id: 'd1', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' }, action: 'code.implement', summary: 'push a fix', calls: [] };
+    const rows = orchestratedRows(step({
+      dispatches: [
+        { id: 'dp1', action: 'code.implement', brief: 'do it', status: 'awaiting_approval' },
+        { id: 'dp2', action: 'code.fix-ci', brief: 'fix', status: 'running' },
+      ],
+      drafts: [draft],
+    }));
+    expect(rows.dispatchRows[0].draft).toEqual(draft);
+    expect(rows.dispatchRows[1].draft).toBeNull();
+    expect(rows.controllerDraft).toBeNull();
+    // awaiting_approval is "your move" the same as a gate — it must not render untoned.
+    expect(rows.dispatchRows[0].tone).toBe('warn');
   });
 
   it('offers mark-resolved while the step is live, and as the escape from a failed one', () => {

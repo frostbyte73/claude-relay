@@ -21,6 +21,7 @@ export type ActionRunOutcome =
   | 'submitted'
   | 'accepted'
   | 'revised'
+  | 'denied'
   | 'merged'
   | 'abandoned'
   | 'failed'
@@ -30,7 +31,7 @@ export type ActionRunOutcome =
 // Outcomes a gate (or the PR) has actually ruled on. A run still sitting at
 // `submitted` is pending, and stays out of every rate's denominator.
 export const ADJUDICATED_OUTCOMES: ReadonlySet<ActionRunOutcome> = new Set<ActionRunOutcome>([
-  'accepted', 'revised', 'merged', 'abandoned', 'failed', 'gave_up',
+  'accepted', 'revised', 'denied', 'merged', 'abandoned', 'failed', 'gave_up',
 ]);
 
 export interface ActionRunRecord {

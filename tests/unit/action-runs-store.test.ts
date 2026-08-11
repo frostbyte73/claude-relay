@@ -103,10 +103,14 @@ describe('ActionRunsStore queries', () => {
 });
 
 describe('ActionRunLedger.reconcileAtBoot', () => {
+  const pendingDraft = {
+    id: 'd1', action: 'write.linear-comment', raisedBy: { kind: 'step' as const },
+    summary: 's', calls: [], requestedAt: 0,
+  };
   const step = (id: string, over: Partial<ActionStep> = {}): ActionStep => ({
     id, type: 'action', title: 't', description: '',
     workspace: { kind: 'none' }, action: 'write.linear-comment', goal: 'g',
-    state: 'running', sessionId: `sess-${id}`,
+    state: 'gate_pending_approval', sessionId: `sess-${id}`, drafts: [pendingDraft],
     createdAt: 0, updatedAt: 0, ...over,
   });
   const job = (steps: ActionStep[]): JobRecord => ({
@@ -115,7 +119,7 @@ describe('ActionRunLedger.reconcileAtBoot', () => {
   });
 
   function ledgerOver(s: ActionRunsStore) {
-    return new ActionRunLedger({ store: s, isHumanGate: (a) => a === 'write.linear-comment', now: () => NOW + 5_000 });
+    return new ActionRunLedger({ store: s, now: () => NOW + 5_000 });
   }
 
   const draftRun = { action: 'write.linear-comment', round: 'draft' };
@@ -124,7 +128,9 @@ describe('ActionRunLedger.reconcileAtBoot', () => {
     const s = store();
     const run = open(s, { stepId: 'a', ...draftRun });
     // The gate was approved while the daemon was down: the live round is `commit`, not `draft`.
-    ledgerOver(s).reconcileAtBoot([job([step('a', { gateApproved: true })])]);
+    ledgerOver(s).reconcileAtBoot([job([step('a', {
+      state: 'running', drafts: [{ ...pendingDraft, approvedAt: NOW, calls: [] }],
+    })])]);
     expect(s.get(run.id)).toMatchObject({ outcome: 'interrupted', endedAt: NOW + 5_000 });
   });
 

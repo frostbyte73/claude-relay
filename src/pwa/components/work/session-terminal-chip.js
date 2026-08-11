@@ -46,12 +46,15 @@ export function stepDurationText(step) {
 export function terminalChipVariant(step) {
   if (step.cancelled) return 'cancelled';
   if (step.failure) return 'failed';
+  // ActionStep-only: the user denied this step's write draft. Terminal, but not a failure —
+  // its own variant rather than folding into 'failed'.
+  if (step.type === 'action' && step.state === 'declined') return 'declined';
   if (step.state === 'resolved') return 'finished';
   return null;
 }
 
-const GLYPH = { finished: '✓', failed: '✗', cancelled: '⊘' };
-const LABEL = { finished: 'Finished', failed: 'Failed', cancelled: 'Cancelled' };
+const GLYPH = { finished: '✓', failed: '✗', cancelled: '⊘', declined: '⊘' };
+const LABEL = { finished: 'Finished', failed: 'Failed', cancelled: 'Cancelled', declined: 'Declined' };
 
 export function renderTerminalChipHtml(step) {
   const variant = terminalChipVariant(step);

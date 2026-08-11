@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { dirname, join, resolve } from 'node:path';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRegistry } from '../actions/index.js';
+import type { ActionAllowlist } from '../actions/types.js';
 import { literalRedirectPath, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
 import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
 
@@ -478,4 +479,23 @@ export class Allowlist {
   toConfig(scope: 'global' | { project: string } = 'global'): AllowlistConfig {
     return toConfigFromRules(scope === 'global' ? this.global : this.loadProject(scope.project));
   }
+}
+
+// Whether a call is one this config *gates* — i.e. it is only reachable because a gated
+// group granted it, so it needs an approved pin before it may run. Deliberately ANY-clause
+// (not every-clause like `allows`): `git status && git push` must gate on the push.
+export function gatedMatch(cfg: ActionAllowlist, toolName: string, toolInput: unknown): boolean {
+  const rules = compileFromConfig(cfg);
+  if (toolName === 'Bash') {
+    const cmd = (toolInput as { command?: unknown })?.command;
+    if (typeof cmd !== 'string') return false;
+    // Mirrors rulesAllow's whole-tool shortcut so the two functions can't disagree about
+    // the same config: a gated group handing out bare `alwaysAllow: ['Bash']` has granted
+    // arbitrary external writes, so every command under it needs a pin, parseable or not.
+    if (rules.alwaysAllow.has('Bash')) return true;
+    const clauses = splitShellClauses(cmd);
+    if (clauses === null) return false;
+    return clauses.some((c) => rules.bashPatterns.some((p) => p.test(stripLeadingAssignments(c.text))));
+  }
+  return rulesAllow(rules, toolName, toolInput);
 }

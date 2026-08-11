@@ -10,9 +10,10 @@ const info: ActionInfo = {
     'code.review-diff': 'none',
     'code.implement': 'worktree-edit',
     'code.fix-ci': 'external-write',
+    'code.merge-pr': 'external-write',
     'write.linear-comment': 'gated-write',
+    'write.linear-issue': 'external-write',
   } as Record<string, ReturnType<ActionInfo['sideEffects']>>)[a],
-  humanGate: (a) => a === 'write.linear-comment',
 };
 
 function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
@@ -148,16 +149,14 @@ describe('validateNext', () => {
     expect(v).toMatchObject({ kind: 'reject' });
   });
 
-  it('force-gates a self-round bound to an external-write action', () => {
-    const move = { kind: 'self-round', action: 'code.fix-ci' } as const;
-    const v = validateNext(step(), move, info);
-    expect(v).toMatchObject({ kind: 'force-gate', move });
-    expect((v as { question: string }).question).toMatch(/code\.fix-ci/);
+  it('a dispatch bound to an external-write action is allowed without a gate', () => {
+    const move = { kind: 'dispatch' as const, dispatches: [{ action: 'write.linear-issue', brief: 'file it' }] };
+    expect(validateNext(step(), move, info).kind).toBe('allow');
   });
 
-  it('force-gates a dispatch to a human_gate action', () => {
-    const move: NextMove = { kind: 'dispatch', dispatches: [{ action: 'write.linear-comment', brief: 'x' }] };
-    expect(validateNext(step(), move, info).kind).toBe('force-gate');
+  it('a self-round bound to an external-write action is allowed without a gate', () => {
+    const move = { kind: 'self-round' as const, action: 'code.merge-pr' };
+    expect(validateNext(step(), move, info).kind).toBe('allow');
   });
 
   it('does not gate a worktree-edit or read-only action', () => {

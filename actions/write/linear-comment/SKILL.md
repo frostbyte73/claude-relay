@@ -1,13 +1,12 @@
 ---
 name: write.linear-comment
-description: Post a comment to a Linear issue. External-write — the daemon hard-gates this step (human_gate), parking it for the user's approval of the body before the session ever runs; no upstream meta.wait is required for that.
+description: Post a comment to a Linear issue. External-write — drafts the exact comment body via `mcp__outpost__submit_write_draft` and stops; posts it only once the user approves the payload (see `SHARED-write-drafts.md`).
 outpost:
   kind: action
   category: write
   side_effects: external-write
   runner: claude
-  permissions: []
-  human_gate: true
+  permissions: [push]
   timeout_sec: 120
   retries: 1
 ---
@@ -24,9 +23,14 @@ Post a single comment back to a Linear issue. Returns the comment id + URL.
 | `body` | yes | Markdown body. |
 | `links` | no | Array of `{label, url}` rendered as a "Related" block at the bottom. |
 
-## Two-phase gate
+## The write-draft protocol
 
-This is a hard-gated external write. You run in **two phases**, driven by `typePayload.phase` in `$OUTPOST_ENVELOPE`. You never post without the user's approval — and the daemon enforces it: in the draft phase the `save_comment` tool is **blocked** until approval, so calling it early just fails.
+This action follows the shared draft/commit protocol — see
+`~/.outpost/actions/SHARED-write-drafts.md` for the full mechanics (the tool shape, the
+three outcomes, where `writeGate` lives, the rules that don't bend). This action has no
+`Read`/`Grep` grant — `cat` the absolute path instead, reachable via `core`'s `^cat ` pattern
+regardless of what else this action inherits. This is a standalone action step, so `writeGate`
+is at `typePayload.writeGate` in `$OUTPOST_ENVELOPE`.
 
 Load your tools first (deferred behind ToolSearch):
 
@@ -36,21 +40,30 @@ ToolSearch({ query: "select:mcp__outpost__submit_write_draft,mcp__outpost__submi
 
 If neither comes back, halt. The daemon marks the step failed when your turn ends.
 
-### Draft phase (`typePayload.phase === "draft"`)
+### Draft phase (`typePayload.writeGate` absent, or `typePayload.writeGate.phase === "draft"`)
 
 Compose the exact comment body — do **not** post it.
 
-1. Start from `inputs.body`. If `typePayload.feedback` is non-empty (the user proposed changes on a previous draft — most recent last), revise the body to address every point.
-2. If `inputs.links` is non-empty, append a `\n\n---\n**Related:**\n- [label](url)\n...` section.
-3. Call `mcp__outpost__submit_write_draft` with `draft` set to the final markdown body. Then stop — the step parks for the user's approval. Do NOT call `save_comment`; you may `get_issue` to sanity-check the target, but the write is blocked here.
+1. Resolve `issue_ref` to the Linear UUID via `mcp__claude_ai_Linear__get_issue` (handles ID
+   and URL) — a read, so it's safe to do before drafting.
+2. Start from `inputs.body`. If `inputs.links` is non-empty, append a
+   `\n\n---\n**Related:**\n- [label](url)\n...` section. If `typePayload.writeGate.feedback`
+   is non-empty (the user proposed changes — every round, oldest first), revise the body to
+   address every point.
+3. Call `mcp__outpost__submit_write_draft` with:
+   - `summary`: `"Comment on <issue_ref>"`.
+   - `evidence`: omit, or the issue's current title/state if it adds useful context.
+   - `calls`: `[{ label: "post comment", tool: { name: "mcp__claude_ai_Linear__save_comment", args: { issueId: "<resolved UUID>", body: "<final markdown body>" } } }]`.
+4. Stop. Do not call `save_comment` directly — the hook denies it with no pin.
 
-### Commit phase (`typePayload.phase === "commit"`)
+### Commit phase (`typePayload.writeGate.phase === "commit"`)
 
-The user approved. `typePayload.draft` is the approved body — post it verbatim.
+Run `typePayload.writeGate.approvedCalls` verbatim — exactly the `save_comment` call the user
+approved (they may have edited the body; use what's pinned).
 
-1. Resolve `issue_ref` to the Linear UUID via `mcp__claude_ai_Linear__get_issue` (handles ID and URL).
-2. Call `mcp__claude_ai_Linear__save_comment` with the resolved UUID + `typePayload.draft`.
-3. Call `mcp__outpost__submit_step_output` with `output` set to the JSON string `{"comment_id": "...", "url": "..."}`.
+1. Call `mcp__claude_ai_Linear__save_comment` with the pinned arguments, unchanged.
+2. Call `mcp__outpost__submit_step_output` with `output` set to the JSON string
+   `{"comment_id": "...", "url": "..."}`.
 
 Never edit the issue itself, never resolve threads, never delete prior comments.
 

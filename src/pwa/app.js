@@ -614,6 +614,19 @@ function showStatusToast(text, tone) {
   setTimeout(() => t.remove(), 3600);
 }
 
+// Backstop for a `void someApiCall()` that forgets its own `.catch()` — otherwise the
+// rejection vanishes into the console and the click that caused it reads as having done
+// nothing at all (a stray click that never got its own explicit handling, the way the
+// write-draft accept/revise/deny buttons DO — that flow shows its own inline error too, so
+// this is belt-and-suspenders for it, and the only net for everything else). Restricted to
+// a real `Error` (not an arbitrary rejected value — a string, `undefined`, a WS-retry
+// sentinel) so this doesn't invent a confusing "Something went wrong" out of a rejection
+// that was never meant to reach the user.
+window.addEventListener('unhandledrejection', (e) => {
+  if (!(e.reason instanceof Error)) return;
+  showStatusToast(`Action failed: ${e.reason.message}`);
+});
+
 // D7: thinking-lifecycle + usage-recording helpers, relocated verbatim from
 // the deleted mobile-session-view.js singleton. These are genuine session
 // state mutations (not view rendering) — ws/dispatch.js and diff-overlay.js
@@ -764,13 +777,16 @@ document.addEventListener('visibilitychange', () => {
 // SW → page bridge. The SW posts {type:'push',...} when foreground-suppressed; we don't
 // double-render here because the existing notifications WS already delivered the event.
 // {type:'deepLink',...} fires when the user taps a notification while a PWA window is
-// open — the SW focused us, now we apply the session+approval routing without nav.
+// open — the SW focused us, now we apply the session+approval (or surface+id, e.g. a
+// draft-ready push's job link) routing without nav.
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', (event) => {
     const msg = event.data;
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'deepLink') {
-      applyDeepLink({ sessionId: msg.sessionId, approvalId: msg.approvalId });
+      applyDeepLink(msg.surface
+        ? { surface: msg.surface, id: msg.id }
+        : { sessionId: msg.sessionId, approvalId: msg.approvalId });
     }
   });
 }
@@ -922,6 +938,7 @@ installAppBridge({
     if (!sessionId) return;
     openDiffOverlay({ sessionId });
   },
+  showStatusToast,
 });
 import('./components/session-view/session-ws.js').then(({ _installWsHandler }) => {
   _installWsHandler(dispatchSession);

@@ -62,7 +62,7 @@ export function openActionPickerDialog(jobId, opts = {}) {
 
   // The ActionRegistry catalog — NOT the on-disk `actions` list. Only the catalog
   // carries the frontmatter this dialog reads: `kind` (which decides orchestrated vs
-  // action step), runner/side_effects/human_gate for the chips, and the input/output
+  // action step), runner/side_effects for the chips, and the input/output
   // schemas the detail pane renders.
   function catalogOf(s) { return s.catalog ?? []; }
 
@@ -95,7 +95,6 @@ export function openActionPickerDialog(jobId, opts = {}) {
             <span class="ap-row-meta">
               <span class="ap-chip ap-chip-runner">${escapeHtml(a.runner)}</span>
               <span class="ap-chip ap-chip-sideeff ap-chip-sideeff-${escapeHtml(a.side_effects)}">${escapeHtml(a.side_effects)}</span>
-              ${a.human_gate ? `<span class="ap-chip ap-chip-gate">gate</span>` : ''}
             </span>
             <span class="ap-row-desc">${escapeHtml(a.description ?? '')}</span>
           </button>
@@ -124,7 +123,6 @@ export function openActionPickerDialog(jobId, opts = {}) {
         <div class="ap-detail-meta">
           <span class="ap-chip ap-chip-runner">${escapeHtml(picked.runner)}</span>
           <span class="ap-chip ap-chip-sideeff ap-chip-sideeff-${escapeHtml(picked.side_effects)}">${escapeHtml(picked.side_effects)}</span>
-          ${picked.human_gate ? `<span class="ap-chip ap-chip-gate">human-gate</span>` : ''}
         </div>
       </div>
       <div class="ap-detail-desc">${escapeHtml(picked.description ?? '')}</div>

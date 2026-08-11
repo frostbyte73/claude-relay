@@ -82,7 +82,15 @@ function findBalancedParen(s: string, openIdx: number): number {
   return -1;
 }
 
-function findBacktickEnd(s: string, openIdx: number): number {
+// Exported so a second consumer walking already-split clause text (write-draft.ts's
+// extractFileReferences) can treat a backtick span as one atomic unit, the same boundary this
+// file's own `walk()` uses to decide what to recurse into as a separate clause — rather than
+// re-deriving "where does this backtick end" with its own, possibly-drifting logic. NOTE: this
+// does NOT track quote state the way `findBalancedParen` does — a `` ` `` inside a comment
+// inside the span (e.g. an apostrophe in `# don't touch`) is invisible to it, same as it always
+// was; callers that need to know whether the identically-bounded content is itself "safe" to
+// re-scan character-by-character must NOT do so — skip the whole span verbatim instead.
+export function findBacktickEnd(s: string, openIdx: number): number {
   for (let i = openIdx + 1; i < s.length; i++) {
     if (s[i] === '\\' && i + 1 < s.length) { i++; continue; }
     if (s[i] === '`') return i;

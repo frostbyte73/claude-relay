@@ -94,9 +94,9 @@ describe('orchestratedHandler.buildEnvelope', () => {
     });
   });
 
-  // resolveGate clears the inbox and runs the deferred move, so the approval leaves no
-  // gate-resolved item behind — without these fields the controller's only clue is its own memo,
-  // which is empty on a migrated job.
+  // resolveGate clears the gate-resolved item from the inbox once delivered, so neither an
+  // approval nor a decline's feedback would otherwise survive it — without these fields the
+  // controller's only clue is its own memo, which is empty on a migrated job.
   it('carries the gate verdict so an approval is detectable without the memo', () => {
     const s = step({ gateApproved: true, gateFeedback: ['tighten the spec'] });
     const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
@@ -130,7 +130,7 @@ describe('orchestratedHandler.buildEnvelope', () => {
     expect(env.boundAction).toBe('code.orchestrate-pr');
     expect(env.actionCatalog).toEqual([{
       name: 'code.review-diff', description: 'review a diff', kind: 'action', category: 'code',
-      runner: 'claude', side_effects: 'none', human_gate: false,
+      runner: 'claude', side_effects: 'none',
       input_schema: { type: 'object' }, output_schema: { type: 'object' },
     }]);
   });
@@ -153,5 +153,51 @@ describe('orchestratedHandler.buildEnvelope', () => {
   it('omits the action catalog when no registry is wired', () => {
     const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
     expect(env).not.toHaveProperty('actionCatalog');
+  });
+
+  // reconcileInterruptedSteps clears `sessionId` on a `running` step after a daemon restart —
+  // including one that died mid-commit of an already-approved draft — which routes the next
+  // decide() through THIS cold-spawn envelope rather than resumeControllerRound. Without this,
+  // a respawned controller would lose track of whether it was drafting or committing.
+  it('carries the controller\'s own pending draft as a draft-phase writeGate', () => {
+    const s = step({
+      drafts: [{
+        id: 'd1', action: 'code.orchestrate-pr', raisedBy: { kind: 'controller' },
+        summary: 'push a fix', calls: [{ id: 'c1', bash: 'git push origin fix' }],
+        requestedAt: 1,
+      }],
+    });
+    const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
+    expect(env.writeGate).toEqual({ phase: 'draft', feedback: [] });
+  });
+
+  it('carries the controller\'s own approved draft as a commit-phase writeGate', () => {
+    const s = step({
+      drafts: [{
+        id: 'd1', action: 'code.orchestrate-pr', raisedBy: { kind: 'controller' },
+        summary: 'push a fix', calls: [{ id: 'c1', bash: 'git push origin fix' }],
+        requestedAt: 1, approvedAt: 2,
+      }],
+    });
+    const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
+    expect(env.writeGate).toEqual({
+      phase: 'commit', feedback: [], approvedCalls: [{ id: 'c1', bash: 'git push origin fix' }],
+    });
+  });
+
+  it('never surfaces a dispatch\'s draft as the controller\'s own writeGate', () => {
+    const s = step({
+      drafts: [{
+        id: 'd1', action: 'code.review-diff', raisedBy: { kind: 'dispatch', dispatchId: 'x1' },
+        summary: 'a child\'s write', calls: [{ id: 'c1', bash: 'echo hi' }], requestedAt: 1,
+      }],
+    });
+    const env = orchestratedHandler.buildEnvelope(s, job(s), ctx) as Record<string, unknown>;
+    expect(env).not.toHaveProperty('writeGate');
+  });
+
+  it('omits writeGate when the controller has no draft', () => {
+    const env = orchestratedHandler.buildEnvelope(step(), job(step()), ctx) as Record<string, unknown>;
+    expect(env).not.toHaveProperty('writeGate');
   });
 });

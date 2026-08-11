@@ -27,7 +27,6 @@ export function skillCatalog(state) {
       allowlist: a.allowlist ?? cat?.allowlist ?? {},
       runner: cat?.runner ?? 'claude',
       permissions: cat?.permissions ?? [],
-      humanGate: cat?.human_gate ?? false,
       sideEffects: cat?.side_effects ?? 'none',
       kind: 'action',
     };
@@ -40,7 +39,6 @@ export function skillCatalog(state) {
     allowlist: {},
     runner: 'claude',
     permissions: [],
-    humanGate: false,
     sideEffects: 'none',
     kind: 'skill',
   }));

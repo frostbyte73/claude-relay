@@ -735,7 +735,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     // forget from spawnDispatchSession, so a missing method here becomes an unhandled rejection
     // rather than a clean assertion failure.
     const actionRegistry = {
-      getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+      getAction: () => ({ frontmatter: { outpost: { side_effects: 'none' } } }),
       listActions: () => [],
     } as never;
     const engine = new WorkEngine({
@@ -999,7 +999,7 @@ function makeGovernedEngine() {
   } as never;
   const linearWriter = { setState: async () => undefined } as never;
   const actionRegistry = {
-    getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+    getAction: () => ({ frontmatter: { outpost: { side_effects: 'none' } } }),
     listActions: () => [],
   } as never;
   let concurrency = 0;
@@ -1299,7 +1299,7 @@ describe('WorkEngine — a throw outside provision() still settles the round', (
       linearWriter: { setState: async () => undefined } as never,
       actionRegistry: {
         listActions: () => [],
-        getAction: () => ({ frontmatter: { outpost: { side_effects: 'none', human_gate: false } } }),
+        getAction: () => ({ frontmatter: { outpost: { side_effects: 'none' } } }),
       } as never,
       journalStore: {
         hasEntryForStep: () => true,

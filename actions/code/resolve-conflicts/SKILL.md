@@ -1,6 +1,6 @@
 ---
 name: code.resolve-conflicts
-description: Use when invoked as `/code.resolve-conflicts` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.resolve-conflicts"`. Merge the base branch (default `origin/main`) into the branch, resolve conflicts using knowledge of why the code exists, commit with the default merge message and push — or `git merge --abort` and report unresolvable. Finish with `mcp__outpost__submit_step_progress`.
+description: Use when invoked as `/code.resolve-conflicts` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step`, `type=orchestrated`, and `boundAction == "code.resolve-conflicts"`. Merge the base branch (default `origin/main`) into the branch, resolve conflicts using knowledge of why the code exists, stage the result, then draft the commit + push via `mcp__outpost__submit_write_draft` and run it once approved (see `SHARED-write-drafts.md`) — or `git merge --abort` and report unresolvable. Finish with `mcp__outpost__submit_step_progress`.
 outpost:
   kind: action
   category: code
@@ -16,8 +16,13 @@ outpost:
 This is the same session that implemented the PR (and triaged its comments). Main has
 advanced and the PR now conflicts, blocking the merge. Your job: bring the branch up to
 date with the base branch, resolve the conflicts *correctly* using what you already know
-about why this code exists, then commit and push if the round asks for it. If you cannot
-resolve confidently, abort cleanly and hand it back — never push a guessed resolution.
+about why this code exists, stage the result, then draft the commit + push for the user's
+approval — unless the round asks you not to push. If you cannot resolve confidently, abort
+cleanly and hand it back — never draft a guessed resolution.
+
+This is a bound-action round on the controller's own session (`type: "orchestrated"`), so
+`writeGate` (see `~/.outpost/actions/SHARED-write-drafts.md`) sits at the **top level** of `$OUTPOST_ENVELOPE`,
+not under a `typePayload`.
 
 ## Step 1 — Read the envelope
 
@@ -53,22 +58,43 @@ git merge "$BASE"
   side. After editing, `git add` the resolved files. If the resolution is non-trivial, run
   the project's tests before continuing.
 - **Not confident** (semantics you can't reconcile, or the conflict is outside what this PR
-  touched): abort and report unresolvable (Step 4b).
+  touched): abort and report unresolvable (Step 5b).
 
-## Step 3 — Commit and push (confident resolution only)
+## Step 3 — Draft the commit + push (`writeGate` absent, or `writeGate.phase === "draft"`)
 
-Commit with git's default merge message (no `-m`), then push so the PR picks the merge up
-— unless `boundNote` explicitly says not to:
+Unless `boundNote` explicitly says not to push:
 
-```bash
-git commit --no-edit
-git push
+```
+mcp__outpost__submit_write_draft({
+  jobId: "<$JOB_ID>", stepId: "<$STEP_ID>",
+  summary: "Merge <BASE> into <branch>, resolving conflicts in <files>",
+  evidence: "<which files conflicted and how you reconciled each — plus `git diff --staged` if it's not too large>",
+  calls: [
+    { label: "commit", bash: "git commit --no-edit" },
+    { label: "push", bash: "git push" }
+  ]
+})
 ```
 
-If the push is rejected (branch moved again under you), you may re-run Step 2 once. If it
-still fails, abort and report unresolvable.
+Git's default merge message (no `-m`) is what gets committed — don't compose your own. If
+`boundNote` says not to push, draft only the `commit` call. Then stop. If
+`writeGate.feedback` is non-empty (the user wants a different resolution — every round,
+oldest first), redo the reconciliation as it asks, re-stage, and draft again.
 
-## Step 4a — Report resolved
+If you were not confident enough to resolve at all, skip the draft — go to Step 5b.
+
+## Step 4 — Commit: run the approved calls
+
+`writeGate.phase === "commit"`. Run `writeGate.approvedCalls` **verbatim**, in order.
+
+If the push is rejected (the branch moved again under you), you may re-run the same
+approved `git push` call once — a rejected `git push` releases its own pin (see
+`~/.outpost/actions/SHARED-write-drafts.md`'s note on a call that fails releasing its own
+pin), so retrying it is running the same approved call again, not a new write. If it still
+fails, do not re-merge and try to force a new commit through on the same approval — that would
+be committing content the user never saw. Abort and report unresolvable (Step 5b) instead.
+
+## Step 5a — Report resolved
 
 Load the MCP tools (deferred behind ToolSearch), then report:
 
@@ -94,7 +120,7 @@ mcp__outpost__submit_step_progress({
 Write a one-line summary in chat of what conflicted and how you reconciled it — the user
 reads this in the activity stream.
 
-## Step 4b — Report unresolvable
+## Step 5b — Report unresolvable
 
 Leave the tree clean first, then report:
 
@@ -107,7 +133,7 @@ mcp__outpost__submit_step_progress({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
   phase: "conflict",
-  memo: "conflicts UNRESOLVABLE: <files>, <one-line reason>; merge aborted, tree clean",
+  memo: "conflicts UNRESOLVABLE: <files>, <one-line reason — or 'user declined the draft: <reason>' if that's why>; merge aborted, tree clean",
   next: { kind: "self-round" }
 })
 ```
@@ -115,7 +141,7 @@ mcp__outpost__submit_step_progress({
 Then say in chat which files conflicted and why you couldn't reconcile them, so the user
 can finish by hand.
 
-## Step 5 — Journal one lesson
+## Step 6 — Journal one lesson
 
 ```
 mcp__outpost__submit_journal({
@@ -138,5 +164,7 @@ this action until a human sees it, and this journal is the only place
 - **Envelope missing/unreadable:** exit with a brief error; the orchestrator marks the step
   on the next tick.
 - **`git push` rejected twice:** abort the merge and report unresolvable — don't force-push.
+- **The draft is declined:** `git merge --abort` and report unresolvable (Step 5b) with the
+  user's reason, rather than committing anyway.
 - **Hook server returns 401:** daemon restarted mid-session; print the situation and exit.
-  The orchestrator resets `conflictResolving` at boot and re-surfaces the gate.
+  The orchestrator resets `conflictResolving` at boot and re-surfaces the conflict.
