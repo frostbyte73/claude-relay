@@ -377,6 +377,22 @@ function agentCompletionTileHtml(c) {
   `;
 }
 
+// Divider between an agent's rounds: the parent sent it a message after it had
+// already finished, so everything below this line is the resumed run. The send's
+// own summary is the closest thing we have to "what it was asked for" — the full
+// message body only exists in the parent's transcript.
+function agentResumeTileHtml(entry) {
+  const summary = entry.summary
+    ? `<div class="agent-resume-summary">${escapeHtml(entry.summary)}</div>`
+    : '';
+  return `
+    <div class="agent-resume">
+      <div class="agent-resume-label">Resumed</div>
+      ${summary}
+    </div>
+  `;
+}
+
 function formatDurationMs(ms) {
   if (ms < 1000) return `${ms}ms`;
   const s = Math.round(ms / 1000);
@@ -390,6 +406,10 @@ function formatDurationMs(ms) {
 }
 
 function agentEntryHtml(entry, isLast, ctx, sessionId) {
+  // Markers left by a resume (see subagents.markResumed): the round that had
+  // already finished, then the send that woke the agent back up.
+  if (entry.kind === 'completed-round') return agentCompletionTileHtml(entry.completion);
+  if (entry.kind === 'resumed') return agentResumeTileHtml(entry);
   if (entry.decision === null) {
     // The bucket entry itself doesn't carry `suggestion` (see addSubagentEntry) —
     // but approvals.pending holds the full approval_pending payload (suggestion

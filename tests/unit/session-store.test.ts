@@ -296,6 +296,69 @@ describe('SessionStore', () => {
   });
 });
 
+describe('SessionStore — subagent completions', () => {
+  // One agent, one meta file, and a parent transcript we vary per case.
+  function makeSession(lines: object[]): SessionStore {
+    const root = mkdtempSync(join(tmpdir(), 'sstest-sub-'));
+    const projectDir = join(root, '-test-project');
+    mkdirSync(join(projectDir, 'sess-agent', 'subagents'), { recursive: true });
+    writeFileSync(
+      join(projectDir, 'sess-agent.jsonl'),
+      lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
+    );
+    writeFileSync(
+      join(projectDir, 'sess-agent', 'subagents', 'agent-a1.meta.json'),
+      JSON.stringify({ agentType: 'Explore', description: 'dig' }),
+    );
+    return new SessionStore({ root });
+  }
+
+  const launch = { type: 'user', cwd: tmpdir(), message: { content: 'go' } };
+  const notification = {
+    type: 'user',
+    timestamp: '2026-08-01T00:00:00.000Z',
+    message: { content: '<task-notification><task-id>a1</task-id><status>completed</status><summary>found it</summary></task-notification>' },
+  };
+
+  it('stamps the completion from the task notification', () => {
+    const info = makeSession([launch, notification]).readSubagents('sess-agent');
+    expect(info[0]!.completion?.summary).toBe('found it');
+  });
+
+  it('clears it when a later SendMessage wakes the agent by id', () => {
+    const send = {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'a1', summary: 'dig deeper' } }] },
+    };
+    const info = makeSession([launch, notification, send]).readSubagents('sess-agent');
+    expect(info[0]!.completion).toBeNull();
+  });
+
+  it('clears it for a name-addressed wake via the send result', () => {
+    const send = {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'researcher' } }] },
+    };
+    const result = { type: 'user', toolUseResult: { success: true, resumedAgentId: 'a1' }, message: { content: [] } };
+    const info = makeSession([launch, notification, send, result]).readSubagents('sess-agent');
+    expect(info[0]!.completion).toBeNull();
+  });
+
+  it('re-stamps when the resumed round finishes', () => {
+    const send = {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'a1' } }] },
+    };
+    const second = {
+      type: 'user',
+      timestamp: '2026-08-01T00:05:00.000Z',
+      message: { content: '<task-notification><task-id>a1</task-id><status>completed</status><summary>round two</summary></task-notification>' },
+    };
+    const info = makeSession([launch, notification, send, second]).readSubagents('sess-agent');
+    expect(info[0]!.completion?.summary).toBe('round two');
+  });
+});
+
 describe('SessionStore — registry merge + isGitRepo', () => {
   function makeRoot(): { root: string; registryPath: string } {
     const root = mkdtempSync(join(tmpdir(), 'ss-merge-root-'));

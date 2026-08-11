@@ -309,6 +309,8 @@ function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): T
 }
 
 // Returns agent_id → completion. Handles both async (<task-notification> XML) and sync (toolUseResult sidecar) shapes.
+// Scanned in file order and last-write-wins, so a SendMessage that resumed a finished agent
+// clears its completion — the agent is running again until its next notification lands.
 function readTaskNotifications(parentJsonlPath: string): Map<string, SubagentCompletion> {
   const completions = new Map<string, SubagentCompletion>();
   let content: string;
@@ -321,9 +323,28 @@ function readTaskNotifications(parentJsonlPath: string): Map<string, SubagentCom
   parser.onLine = (obj) => {
     const o = obj as RawSessionRecord & {
       timestamp?: string;
-      toolUseResult?: { status?: string; agentId?: string; content?: unknown };
+      toolUseResult?: { status?: string; agentId?: string; resumedAgentId?: string; content?: unknown };
     };
+
+    // `to` is the raw agent id when the parent wakes a background agent; a teammate
+    // name otherwise, which matches no key and drops out harmlessly.
+    if (o.type === 'assistant') {
+      const blocks = o.message?.content;
+      if (!Array.isArray(blocks)) return;
+      for (const block of blocks) {
+        if (block.type !== 'tool_use' || block.name !== 'SendMessage') continue;
+        const to = (block.input as { to?: unknown } | undefined)?.to;
+        if (typeof to === 'string') completions.delete(to);
+      }
+      return;
+    }
     if (o.type !== 'user') return;
+
+    // A name-addressed send resolves to an agent id only in the result of the send.
+    if (typeof o.toolUseResult?.resumedAgentId === 'string') {
+      completions.delete(o.toolUseResult.resumedAgentId);
+      return;
+    }
     const ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
     const completedAt = Number.isNaN(ts) ? Date.now() : ts;
 

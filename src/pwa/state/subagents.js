@@ -143,6 +143,30 @@ export const subagents = {
     }));
   },
 
+  // A finished agent can be woken again — the parent SendMessages it and the
+  // harness resumes the SAME agentId from its transcript, so no new bucket ever
+  // arrives. `completion` is what every surface reads as "done", so clear it and
+  // fold the finished round into the feed as history; the agent's next
+  // <task-notification> re-stamps a fresh completion. Returns whether a bucket
+  // actually woke, so callers can skip a repaint when it didn't.
+  markResumed(agentId, sessionId, summary) {
+    const sid = sessionId ?? store.get().focusedSessionId;
+    if (!sid) return false;
+    let woke = false;
+    store.set((s) => withSlice(s, sid, (slice) => {
+      const bucket = slice.byId.get(agentId);
+      if (!bucket || !bucket.completion) return slice;
+      const at = Date.now();
+      bucket.entries.push({ kind: 'completed-round', completion: bucket.completion, decision: 'allow' });
+      bucket.entries.push({ kind: 'resumed', summary: summary ?? null, at, decision: 'allow' });
+      bucket.completion = null;
+      bucket.resumedAt = at;
+      woke = true;
+      return { ...slice, byId: new Map(slice.byId) };
+    }));
+    return woke;
+  },
+
   // Store-notifying resolution of pending approval entries. Flips every entry
   // matching approvalId from decision:null to the given decision (entries are
   // mutated in place, as elsewhere) and bumps the touched slices' byId ref so
@@ -382,6 +406,30 @@ export function applyTaskNotification(text) {
     completedAt: Date.now(),
   });
   return true;
+}
+
+// SendMessage is how the parent wakes a finished agent. `to` is the raw agentId
+// for background spawns — the completion result hands the model that id and tells
+// it to send there — so an exact bucket match covers the common case. A teammate
+// name doesn't resolve to a bucket at all (nothing in the hook or transcript
+// stream carries agent names), which is what applyAgentMessageResult is for.
+export function applyAgentMessageUse(input, sessionId) {
+  const sid = sessionId ?? sessions.get().currentSessionId;
+  if (!sid || !input || typeof input.to !== 'string') return false;
+  const summary = typeof input.summary === 'string' ? input.summary : null;
+  return subagents.markResumed(input.to, sid, summary);
+}
+
+// The SendMessage tool_result names the agent it actually woke (`resumedAgentId`,
+// present only when the harness resumed a stopped agent in the background). It's
+// the sole signal that resolves a name-addressed send back to a bucket, and it
+// double-checks the id-addressed case — markResumed is a no-op the second time.
+export function applyAgentMessageResult(text, sessionId) {
+  const m = /"resumedAgentId"\s*:\s*"([^"]+)"/.exec(String(text));
+  if (!m) return false;
+  const sid = sessionId ?? sessions.get().currentSessionId;
+  if (!sid) return false;
+  return subagents.markResumed(m[1], sid, null);
 }
 
 // Bidirectional bind: the parent's assistant stream and the subagent's hook

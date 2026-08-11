@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { subagents } from '../../src/pwa/state/subagents.js';
+import { subagents, applyAgentMessageUse, applyAgentMessageResult } from '../../src/pwa/state/subagents.js';
 
 beforeEach(() => {
   subagents.setFocused('s1');
@@ -61,6 +61,42 @@ describe('subagents store', () => {
     // The rail repaints only off subagents.subscribe — a direct in-place write
     // would leave it frozen on a stale tail, so resolution MUST notify.
     expect(notified).toBe(1);
+  });
+
+  it('a SendMessage to a finished agent takes it out of "done" and keeps the round', () => {
+    subagents.getOrCreateBucket({ sessionId: 's1', agentId: 'a1', agentType: 'Explore', firstSeenAt: 1 });
+    subagents.addEntry('a1', { toolUseId: 'u1', toolName: 'Read', decision: 'allow' }, 's1');
+    subagents.setCompletion('a1', 's1', { status: 'completed', summary: 'found it', completedAt: 10 });
+
+    let notified = 0;
+    const unsub = subagents.subscribe(() => { notified += 1; });
+    expect(applyAgentMessageUse({ to: 'a1', summary: 'dig deeper' }, 's1')).toBe(true);
+    unsub();
+
+    const bucket = subagents.forSession('s1').byId.get('a1')!;
+    expect(bucket.completion).toBeNull();
+    expect(bucket.entries.map((e: { kind?: string }) => e.kind)).toEqual([undefined, 'completed-round', 'resumed']);
+    expect(bucket.entries[1].completion.summary).toBe('found it');
+    expect(notified).toBe(1);
+  });
+
+  it('a second send while the agent is running is not a resume', () => {
+    subagents.getOrCreateBucket({ sessionId: 's1', agentId: 'a1', agentType: 'Explore', firstSeenAt: 1 });
+    subagents.setCompletion('a1', 's1', { status: 'completed', completedAt: 10 });
+    applyAgentMessageUse({ to: 'a1', summary: 'again' }, 's1');
+    expect(applyAgentMessageUse({ to: 'a1', summary: 'and again' }, 's1')).toBe(false);
+    expect(subagents.forSession('s1').byId.get('a1')!.entries).toHaveLength(2);
+  });
+
+  it('a name-addressed send resumes via the result\'s resumedAgentId', () => {
+    subagents.getOrCreateBucket({ sessionId: 's1', agentId: 'a1', agentType: 'Explore', firstSeenAt: 1 });
+    subagents.setCompletion('a1', 's1', { status: 'completed', completedAt: 10 });
+    // `to` was a teammate name, which resolves to no bucket.
+    expect(applyAgentMessageUse({ to: 'researcher', summary: 'dig deeper' }, 's1')).toBe(false);
+    expect(subagents.forSession('s1').byId.get('a1')!.completion).not.toBeNull();
+    const result = JSON.stringify({ data: { success: true, message: 'resumed it', resumedAgentId: 'a1' } });
+    expect(applyAgentMessageResult(result, 's1')).toBe(true);
+    expect(subagents.forSession('s1').byId.get('a1')!.completion).toBeNull();
   });
 
   it('slices for two sessions do not mingle', () => {

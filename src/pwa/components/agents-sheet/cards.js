@@ -50,7 +50,7 @@ function liveTailHtml(bucket, maxLines) {
   // session happens to be open elsewhere in the app.
   const slice = bucket.sessionId ? sessions.getSlice(bucket.sessionId) : null;
   const ctx = { cwd: slice?.cwd ?? null, worktreePath: slice?.spawnCwd ?? null };
-  const resolved = bucket.entries.filter((e) => e.decision !== null);
+  const resolved = bucket.entries.filter((e) => e.decision !== null && e.toolName);
   const lines = [];
   for (let i = resolved.length - 1; i >= 0 && lines.length < maxLines; i -= 1) {
     const html = oneLineMsgHtml({
@@ -75,9 +75,12 @@ export function subagentCardHtml(agentId, bucket, { maxLines = 6 } = {}) {
   const label = bucket.agentType || 'agent';
   const isDone = !!bucket.completion;
   const goal = bucket.description || '';
+  // A resumed agent times its current run from the wake, not from the original
+  // spawn — otherwise the strip reports the hours it spent finished.
+  const lastTool = [...bucket.entries].reverse().find((e) => e.toolName);
   const thinking = !isDone ? `<div class="rail-subagent-thinking">${thinkingStripHtml(
-    (bucket.entries[bucket.entries.length - 1] && TOOL_VERBS[bucket.entries[bucket.entries.length - 1].toolName]) || 'thinking',
-    fmtStripDuration(bucket.firstSeenAt),
+    (lastTool && TOOL_VERBS[lastTool.toolName]) || 'thinking',
+    fmtStripDuration(bucket.resumedAt || bucket.firstSeenAt),
   )}</div>` : '';
   return (
     `<div class="rail-subagent${isDone ? ' is-done' : ''}" data-agent-id="${escapeHtml(agentId)}" role="button" tabindex="0"` +

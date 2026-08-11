@@ -1083,6 +1083,26 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
     }
     .agent-complete-killed .agent-complete-label { color: var(--danger); }
 
+    /* Round divider: the parent woke this agent back up after it had finished.
+       Quieter than the completion footer it follows — this is a seam in the feed,
+       not an outcome. */
+    .agent-resume {
+      margin: 12px 0 4px;
+      padding: 8px 14px 9px;
+      border-left: 2px solid var(--border);
+    }
+    .agent-resume-label {
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-mute);
+    }
+    .agent-resume-summary {
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--text-mute);
+      margin-top: 3px;
+    }
+
     /* Rejected tool tile — Claude wanted to do this and the user said no. Dimmed +
        danger-tinted left bar + a small "rejected" tag in the top-right corner. The
        inner tile keeps all its chrome (label, summary chip, expandable payload) so

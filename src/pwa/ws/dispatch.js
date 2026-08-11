@@ -20,6 +20,8 @@ import {
   applyTaskResult,
   applyTaskNotification,
   recordParentAgentInvocation,
+  applyAgentMessageUse,
+  applyAgentMessageResult,
   addSubagentEntry,
   bringAgentToFront,
 } from '../state/subagents.js';
@@ -125,6 +127,10 @@ const sessionHandlers = {
             subagentType: b.input.subagent_type,
             description: b.input.description,
           });
+        }
+        // a send to a finished agent resumes it — un-stick its bucket from "done"
+        if (b.name === 'SendMessage' && b.input && typeof b.input === 'object') {
+          applyAgentMessageUse(b.input, sid);
         }
         // approval card races content_block_stop; pre-stamp if already rejected
         const preReject = b.id ? approvals.get().rejectionReasons.get(b.id) : undefined;
@@ -249,6 +255,8 @@ const sessionHandlers = {
         : innerBlocks
           ? innerBlocks.filter((x) => x?.type === 'text').map((x) => x.text).join('\n')
           : '';
+      // A name-addressed SendMessage only names the agent it woke here, in its result.
+      if (applyAgentMessageResult(text, sid)) touched = true;
       // stream-JSON has no toolUseResult sidecar; agentId regex is the only completion signal
       const agentMatch = /agentId:\s*([a-f0-9]+)/i.exec(text);
       if (agentMatch) {
