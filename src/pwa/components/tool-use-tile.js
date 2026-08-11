@@ -451,16 +451,21 @@ export function editWriteTileHtml(m, opts = {}) {
       `<span class="editwrite-path">${escapeHtml(path)}</span>` +
       flag + chev +
     `</div>`;
-  let body;
-  if (isWrite) {
-    if (isMarkdownPath(input.file_path) && writeLineCount(input) <= MD_RENDER_MAX_LINES) {
-      body = writeMarkdownBodyHtml(input);
+  // Same lazy rule as toolUseHtml: the diff/content body is display:none while
+  // collapsed, so building it would only cost DOM. A collapsed tile that isn't
+  // expandable at all (no tool_use_id) can never reveal it, so it stays out too.
+  let body = '';
+  if (expanded) {
+    if (isWrite) {
+      if (isMarkdownPath(input.file_path) && writeLineCount(input) <= MD_RENDER_MAX_LINES) {
+        body = writeMarkdownBodyHtml(input);
+      } else {
+        const { rows, overflowRow } = writeContentRowsHtml(input);
+        body = `<div class="tool-write"><div class="write-body">${rows}${overflowRow}</div></div>`;
+      }
     } else {
-      const { rows, overflowRow } = writeContentRowsHtml(input);
-      body = `<div class="tool-write"><div class="write-body">${rows}${overflowRow}</div></div>`;
+      body = `<div class="tool-diff"><div class="diff-body">${editDiffRowsHtml(input)}</div></div>`;
     }
-  } else {
-    body = `<div class="tool-diff"><div class="diff-body">${editDiffRowsHtml(input)}</div></div>`;
   }
   return `<div class="${cls}"${idAttr}>${head}${body}</div>`;
 }
@@ -639,7 +644,13 @@ export function toolUseHtml(m, opts = {}) {
   const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
   // Per-tool expanded views — replace the default pretty-JSON dump with a format matched
   // to how the tool's input is meant to be read. Falls back to JSON for everything else.
-  const expandedBody = hasPayload ? renderToolExpandedBody(m.toolName, m.toolInput, opts.ctx) : '';
+  //
+  // Only built while actually expanded. Collapsing is pure CSS (display:none on
+  // .tool-agent/.tool-json/.tool-bash/…), so emitting it unconditionally put every
+  // payload in the DOM invisibly — and an `Agent` call's payload is its whole subagent
+  // prompt. In a session with ~60 subagents that was half the transcript's markup,
+  // re-parsed and re-laid-out on every repaint.
+  const expandedBody = (expanded && hasPayload) ? renderToolExpandedBody(m.toolName, m.toolInput, opts.ctx) : '';
   // alwaysExpanded tools skip the summary/detail rows: their formatter intentionally
   // returns no body/detail, and the structured payload below carries the same information
   // in a richer form.

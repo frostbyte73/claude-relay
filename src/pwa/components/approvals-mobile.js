@@ -57,7 +57,9 @@ export function approvalCardHtml(a) {
   const cls = `msg tool_use approval-card${expandable ? ' tool_use-expandable' : ''}${expanded ? ' tool_use-expanded' : ''}`;
   const idAttr = expandable ? ` data-tool-id="${escapeHtml(expandId)}"` : '';
   const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
-  const expandedBody = expandable ? renderToolExpandedBody(a.toolName, a.toolInput, ctx) : '';
+  // Built only while expanded — collapsed is display:none, so the markup was
+  // pure DOM weight (see toolUseHtml for the same rule).
+  const expandedBody = expanded ? renderToolExpandedBody(a.toolName, a.toolInput, ctx) : '';
   const summary = f.body
     ? f.bodyKind === 'code'
       ? `<div class="tool-summary tool-summary-code"><code>${escapeHtml(f.body)}</code></div>`

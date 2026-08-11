@@ -45,7 +45,14 @@ function toolTileForApproval(a) {
     toolInput: a.toolInput,
     toolUseId: `approval-${a.approvalId}`,
     text: '',
-  }, { ctx });
+  }, {
+    ctx,
+    // Expand state belongs to the approval's own session — the same resolution
+    // approvals-mobile.js uses. toolUseHtml's fallback is currentSlice(), which
+    // is empty on desktop (nav selection, not currentSessionId), so without this
+    // the tile could never read back the expansion the tap handler just wrote.
+    expandedTools: (a.sessionId ? sessions.getSlice(a.sessionId)?.expandedTools : null) ?? new Set(),
+  });
 }
 
 // `mobile` extras: the countdown chip is mobile-only (mirrors the legacy
