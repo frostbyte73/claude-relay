@@ -6,6 +6,7 @@ import { escapeHtml } from '../../util.js';
 import { emptyState } from '../shell/placeholder.js';
 import { createSwitch } from './switch.js';
 import { isDraftId, draftSessionId, consumeDraftSeed, startScheduleDraft } from './draft.js';
+import { discardScheduleDraft } from '../../net/schedules.js';
 import { renderTriggerCard } from './trigger-card.js';
 import { renderWhatCard } from './what-card.js';
 import { renderRoutingCard } from './routing-card.js';
@@ -62,6 +63,25 @@ function renderHeader(schedule, mount, { onRunNow, onDuplicate, onTogglePause, o
   hdr.querySelector('.sched-delete')?.addEventListener('click', onDelete);
   wireOverflowMenu(hdr);
   return hdr;
+}
+
+// Throw the draft away: forget the local edit state, stop the builder session and
+// drop its proposal (session-bound drafts only), and leave the pane. Nothing here
+// is persisted server-side, so a failed discard call is not worth surfacing —
+// the client is rid of the draft either way.
+function discardDraft(mount, sessionId) {
+  mount.__draft = null;
+  mount.__seededProposal = null;
+  mount.__schedCurrentId = null;
+  if (sessionId) {
+    discardScheduleDraft(sessionId).catch(() => { /* the builder session is dead to us regardless */ });
+    schedulesStore.clearDraft(sessionId);
+  }
+  nav.select('schedules', null);
+}
+
+function discardButtonHtml() {
+  return '<button type="button" class="o-btn o-btn--ghost sched-draft-discard">Discard</button>';
 }
 
 // A not-yet-persisted schedule. Reuses the same three cards as an existing
@@ -134,6 +154,7 @@ function renderDraft(mount, id) {
       <span class="sched-detail-title-slot"></span>
       <div class="sched-detail-state draft">Draft</div>
       <div class="sched-detail-actions">
+        ${discardButtonHtml()}
         <button type="button" class="o-btn o-btn--default sched-draft-save-paused"${valid ? '' : ' disabled'}>Save paused</button>
         <label class="sched-draft-enable"><span class="sched-draft-enable-label">Enable</span><span class="sched-draft-enable-slot"></span></label>
       </div>
@@ -141,6 +162,11 @@ function renderDraft(mount, id) {
     hdr.querySelector('.sched-detail-title-slot').replaceWith(
       nameField(draft.name, { onInput: (v) => { draft.name = v; refreshGate(); } }),
     );
+    hdr.querySelector('.sched-draft-discard').addEventListener('click', () => {
+      const filled = draft.name.trim() || draft.trigger || draft.what;
+      if (filled && !confirm('Discard this draft? It hasn’t been saved.')) return;
+      discardDraft(mount, null);
+    });
     const enableSwitch = createSwitch(false, (on) => { if (on) persist(true); }, 'Enable schedule');
     enableSwitch.disabled = !valid;
     hdr.querySelector('.sched-draft-enable-slot').appendChild(enableSwitch);
@@ -198,8 +224,16 @@ function renderSessionDraft(mount, id, sessionId) {
     mount.__draft = null;
   }
   let persisting = false;
+  let discarding = false;
 
   const onSave = (patch) => { Object.assign(mount.__draft, patch); return Promise.resolve(); };
+
+  // clearDraft notifies before we've navigated away — without the flag the pane
+  // repaints itself back to the "Drafting…" spinner on the way out.
+  function discard() {
+    discarding = true;
+    discardDraft(mount, sessionId);
+  }
 
   async function persist(enabled) {
     if (persisting || !mount.__draft) return;
@@ -242,15 +276,22 @@ function renderSessionDraft(mount, id, sessionId) {
     hdr.className = 'sched-detail-hdr sched-detail-hdr--draft';
 
     if (!proposal) {
+      const failure = schedulesStore.get().draftFailedBySession.get(sessionId) ?? null;
       hdr.innerHTML = `
         <span class="sched-detail-title-slot"></span>
         <div class="sched-detail-state draft">Draft</div>
+        <div class="sched-detail-actions">${discardButtonHtml()}</div>
       `;
       hdr.querySelector('.sched-detail-title-slot').replaceWith(nameField('', {}));
+      // Nothing to lose once the builder has already failed — only confirm while it's
+      // still working, where Discard is what kills the running session.
+      hdr.querySelector('.sched-draft-discard').addEventListener('click', () => {
+        if (!failure && !confirm('Discard this draft? The schedule builder will stop.')) return;
+        discard();
+      });
       mount.appendChild(hdr);
       // A failed builder never delivers a proposal — surface the failure with a way out
       // instead of spinning on "Drafting…" forever.
-      const failure = schedulesStore.get().draftFailedBySession.get(sessionId) ?? null;
       if (failure) {
         const err = document.createElement('div');
         err.className = 'sched-drafting sched-drafting--failed';
@@ -290,6 +331,7 @@ function renderSessionDraft(mount, id, sessionId) {
       <span class="sched-detail-title-slot"></span>
       <div class="sched-detail-state draft">Draft</div>
       <div class="sched-detail-actions">
+        ${discardButtonHtml()}
         <button type="button" class="o-btn o-btn--default sched-draft-save-paused">Save paused</button>
         <label class="sched-draft-enable"><span class="sched-draft-enable-label">Enable</span><span class="sched-draft-enable-slot"></span></label>
       </div>
@@ -297,6 +339,10 @@ function renderSessionDraft(mount, id, sessionId) {
     hdr.querySelector('.sched-detail-title-slot').replaceWith(
       nameField(draft.name, { onInput: (v) => { draft.name = v; } }),
     );
+    hdr.querySelector('.sched-draft-discard').addEventListener('click', () => {
+      if (!confirm('Discard this draft? It hasn’t been saved.')) return;
+      discard();
+    });
     const enableSwitch = createSwitch(false, (on) => { if (on) persist(true); }, 'Enable schedule');
     hdr.querySelector('.sched-draft-enable-slot').appendChild(enableSwitch);
     hdr.querySelector('.sched-draft-save-paused').addEventListener('click', () => persist(false));
@@ -328,7 +374,7 @@ function renderSessionDraft(mount, id, sessionId) {
 
   paint();
   const unsub = schedulesStore.subscribe(() => {
-    if (persisting) return; // save-in-flight: the clearDraft + list reload it fires aren't ours to paint
+    if (persisting || discarding) return; // save/discard in flight: the clearDraft it fires isn't ours to paint
     const proposal = schedulesStore.get().draftBySession.get(sessionId) ?? null;
     // Test-result writes leave the proposal identity unchanged — skip those once cards are up.
     if (proposal && proposal === mount.__seededProposal) return;

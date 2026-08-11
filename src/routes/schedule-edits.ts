@@ -146,6 +146,19 @@ export function registerScheduleEditRoutes(server: Server, deps: ScheduleEditDep
     res.statusCode = 202; res.end();
   });
 
+  // Discard: kill the builder session, drop the pending proposal. Dropping before
+  // close matters — onSessionExit's `schedule_draft_failed` fires off whatever
+  // dropEditForSession returns, and a discarded draft isn't a failure to report.
+  server.route('POST', '/api/schedules/:sessionId/discard', async (req, res) => {
+    const parts = (req.url ?? '').split('?')[0]!.split('/');
+    const sessionId = decodeURIComponent(parts[parts.length - 2] ?? '');
+    if (!sessionId) { res.statusCode = 400; res.end('missing sessionId'); return; }
+    if (edits.delete(sessionId)) {
+      void manager.close(sessionId).catch(() => { /* tolerate */ });
+    }
+    res.statusCode = 204; res.end();
+  });
+
   function dropEditForSession(sessionId: string): ScheduleEdit | undefined {
     const edit = edits.get(sessionId);
     edits.delete(sessionId);

@@ -47,3 +47,8 @@ export function testScript(what) {
 export function redraftSchedule(sessionId, error, currentDraft) {
   return request(`${idPath(sessionId)}/redraft`, { method: 'POST', body: JSON.stringify({ error, currentDraft }) });
 }
+
+// Throws away an unsaved draft: kills the builder session, drops its proposal. 204, no body.
+export function discardScheduleDraft(sessionId) {
+  return request(`${idPath(sessionId)}/discard`, { method: 'POST', body: '{}' });
+}
