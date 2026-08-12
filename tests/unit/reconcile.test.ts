@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { reconcile, validateDispositions } from '../../src/work/reconcile.js';
 import type { ProposedStep, Step } from '../../src/work/work-types.js';
 
-function actionStep(id: string, title = id, cancelled = false): Step {
+// Defaults to `running`: the disposition-bookkeeping cases below are about keep/drop
+// accounting, and a `resolved` step is immutable (see the completed-step describe block), which
+// would reject them for an unrelated reason.
+function actionStep(id: string, title = id, cancelled = false, state: 'running' | 'resolved' | 'failed' | 'declined' = 'running'): Step {
   return {
     id,
     type: 'action',
@@ -11,7 +14,7 @@ function actionStep(id: string, title = id, cancelled = false): Step {
     description: '',
     goal: '',
     workspace: { kind: 'none' },
-    state: 'resolved',
+    state,
     cancelled: cancelled || undefined,
     createdAt: 0,
     updatedAt: 0,
@@ -103,6 +106,51 @@ describe('validateDispositions', () => {
   });
 });
 
+describe('validateDispositions — a completed step is history', () => {
+  const done = (id: string, title = id) => actionStep(id, title, false, 'resolved');
+
+  it('accepts a resolved step restated verbatim', () => {
+    const current = [done('s1')];
+    expect(validateDispositions(current, [proposedAction('s1', 's1')], [])).toEqual({ ok: true });
+  });
+
+  it('accepts a resolved step whose object-valued fields are restated equal', () => {
+    // The planner re-emits `inputs` off fresh JSON every replan, so a reference compare would
+    // read every verbatim restatement as a rewrite and there'd be no way to satisfy the guard.
+    const current = [{ ...done('s1'), inputs: { subject: 'x', depth: 2 } } as Step];
+    const proposed = [{ ...proposedAction('s1', 's1'), inputs: { subject: 'x', depth: 2 } } as ProposedStep];
+    expect(validateDispositions(current, proposed, [])).toEqual({ ok: true });
+  });
+
+  it('rejects a patch that rewords a resolved step', () => {
+    const result = validateDispositions([done('s1', 'Investigate the drop')], [proposedAction('Investigate something else', 's1')], []);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/already completed/);
+    expect(result.error).toMatch(/title/);
+  });
+
+  it('rejects a patch that swaps a resolved step\'s action', () => {
+    const proposed = [{ ...proposedAction('s1', 's1'), action: 'read.linear-issue' } as ProposedStep];
+    const result = validateDispositions([done('s1')], proposed, []);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/already completed.*action/s);
+  });
+
+  it('rejects dropping a resolved step', () => {
+    const result = validateDispositions([done('s1'), actionStep('s2')], [proposedAction('s2', 's2')], ['s1']);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/already completed and cannot be dropped/);
+  });
+
+  it('still allows patching and dropping failed / declined steps', () => {
+    const current = [actionStep('s1', 'flaky', false, 'failed'), actionStep('s2', 'vetoed', false, 'declined')];
+    expect(validateDispositions(current, [proposedAction('retried differently', 's1')], ['s2'])).toEqual({ ok: true });
+  });
+});
+
 describe('reconcile', () => {
   it('splits proposed into kept + added and passes drops through', () => {
     const current = [actionStep('s1', 'old title'), actionStep('s2')];
@@ -112,6 +160,12 @@ describe('reconcile', () => {
     expect(r.added).toHaveLength(1);
     expect(r.added[0]!.title).toBe('brand new');
     expect(r.cancelled).toEqual(['s2']);
+  });
+
+  it('compares object-valued fields structurally, so a verbatim restatement is not a patch', () => {
+    const current = [{ ...actionStep('s1'), inputs: { subject: 'x' } } as Step];
+    const proposed = [{ ...proposedAction('s1', 's1'), inputs: { subject: 'x' } } as ProposedStep];
+    expect(reconcile(current, proposed, []).kept).toEqual([{ stepId: 's1', patch: {} }]);
   });
 
   it('does not silently keep a step by matchKey when keepId is missing', () => {

@@ -275,6 +275,8 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
 
 The daemon rejects any submission where a non-cancelled step is neither kept nor dropped, and any submission with overlap (an id both kept and dropped) or unknown ids. There is no implicit cancellation — omission is a bug. The daemon shows a diff (`✓ ~ + ✗`) and the user approves the reconciliation.
 
+**A step with `state: "resolved"` is history — keep it verbatim.** It already ran: its session's work is done, its output is recorded, its PR exists. So for a resolved step you may ONLY emit `keepId` plus its current fields unchanged. Rewording its `title`/`goal`/`approach`, swapping its `action`, or putting its id in `drops` is rejected — that would rewrite the record of what actually happened, and the user reads the timeline of those steps to judge your amendment. If resolved work needs revisiting, propose a **new** step for the follow-up; the completed one stays as it is. Steps in `failed` or `declined` state carry no such restriction — replanning around those is the point of an amendment, so patch or drop them freely.
+
 One replan shape: **keep** the completed investigation step (with its `keepId`) and append new follow-up PR / `write.*` / `meta.wait` steps its findings unlocked; **drops** stays empty.
 
 Example replan `submit_plan` payload:

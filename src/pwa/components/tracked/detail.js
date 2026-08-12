@@ -6,7 +6,8 @@
 // wrapped above it) — there is no separate mobile job-detail view.
 
 import { work } from '../../state/work.js';
-import { renderPlanSection, toggleReplanComposer, submitReplan } from '../work/plan-section.js';
+import { renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard } from '../work/plan-section.js';
+import { planIsLive } from '../../vm/work-predicates.js';
 import { renderTimelineStep, wireTimelineStep, computeGroupPositions } from '../work/step-card.js';
 import { openAddStepDialog } from '../work/add-step-dialog.js';
 import { openActionPickerDialog } from '../work/action-picker-dialog.js';
@@ -228,7 +229,7 @@ function draftFieldByKey(root, key) {
 }
 
 function snapshotUi(root) {
-  const snap = { details: new Map(), composers: new Map(), trail: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null, draftFields: new Map() };
+  const snap = { details: new Map(), composers: new Map(), trail: new Map(), replan: null, discard: null, launchContext: null, menuOpen: false, focus: null, draftFields: new Map() };
   root.querySelectorAll('details').forEach((d) => snap.details.set(detailsKey(d), d.open));
   // The orchestrated card's trail strip (orchestrated-card.js) is plain buttons, not
   // <details>, so the pass above can't see which artifact the user has open. At most one
@@ -248,6 +249,13 @@ function snapshotUi(root) {
     snap.replan = {
       open: replan.getAttribute('data-open') === 'true',
       value: replan.querySelector('.replan-textarea')?.value ?? '',
+    };
+  }
+  const discard = root.querySelector('.recon-discard-composer');
+  if (discard) {
+    snap.discard = {
+      open: discard.getAttribute('data-open') === 'true',
+      value: discard.querySelector('.recon-discard-textarea')?.value ?? '',
     };
   }
   const launchTa = root.querySelector('.launch-context-textarea');
@@ -271,6 +279,7 @@ function snapshotUi(root) {
       replan: !!ae.closest('.replan-composer'),
       launchContext: !!ae.closest('.launch-context'),
       composer: composer ? composerKey(composer) : null,
+      discard: !!ae.closest('.recon-discard-composer'),
       // A wd-field carries its own stable id; only set when the focused element IS one
       // (distinct from being inside a `.wd-card` generally — the composer branch above
       // already owns the revise/deny textareas, which also live inside a `.wd-card`).
@@ -325,6 +334,16 @@ function restoreUi(root, snap) {
       root.querySelector('[data-job-action="reopen-orchestrator"]')?.setAttribute('aria-expanded', 'true');
     }
   }
+  if (snap.discard && (snap.discard.open || snap.discard.value)) {
+    const composer = root.querySelector('.recon-discard-composer');
+    const ta = composer?.querySelector('.recon-discard-textarea');
+    if (ta) ta.value = snap.discard.value;
+    if (composer && snap.discard.open) {
+      composer.setAttribute('data-open', 'true');
+      composer.setAttribute('aria-hidden', 'false');
+      root.querySelector('[data-job-action="recon-discard"]')?.setAttribute('aria-expanded', 'true');
+    }
+  }
   if (snap.launchContext) {
     const ta = root.querySelector('.launch-context-textarea');
     if (ta) ta.value = snap.launchContext;
@@ -339,6 +358,8 @@ function restoreUi(root, snap) {
     let ta = null;
     if (snap.focus.replan) {
       ta = root.querySelector('.replan-textarea');
+    } else if (snap.focus.discard) {
+      ta = root.querySelector('.recon-discard-textarea');
     } else if (snap.focus.launchContext) {
       ta = root.querySelector('.launch-context-textarea');
     } else if (snap.focus.draftField) {
@@ -375,11 +396,12 @@ export function renderTrackedDetail(root, jobId) {
   const snap = root.querySelector('.tk-shell') ? snapshotUi(root) : null;
   if (root.__tkMenuClose) { document.removeEventListener('click', root.__tkMenuClose); root.__tkMenuClose = null; }
 
-  // During planning/plan review the plan card's compact index is the story;
-  // the timeline takes over once the plan is approved and steps execute. Both
-  // live under the single Plan section now — the timeline is handed to
+  // While the FIRST plan is being drafted or reviewed the plan card's compact index is the
+  // story; the timeline takes over once steps have actually run — including through a later
+  // replan, which flips job state back to planning/plan_pending_review over steps that already
+  // ran (planIsLive). Both live under the single Plan section now — the timeline is handed to
   // renderPlanSection rather than rendered as a separate "Steps" block.
-  const showTimeline = job.state !== 'planning' && job.state !== 'plan_pending_review';
+  const showTimeline = planIsLive(job);
   const editingTimeline = editing && job.state === 'executing';
   const timelineHtml = showTimeline ? renderStepsTimeline(job) : '';
 
@@ -436,7 +458,9 @@ export function renderTrackedDetail(root, jobId) {
       if (el.closest('summary')) { e.preventDefault(); e.stopPropagation(); }
       if (action === 'approve-plan') void work.approve(job.id, { gate: 'plan' });
       else if (action === 'recon-apply') void work.applyReconciliation(job.id);
-      else if (action === 'recon-discard') void work.discardReconciliation(job.id);
+      else if (action === 'recon-discard') toggleDiscardComposer(root, true);
+      else if (action === 'recon-discard-cancel') toggleDiscardComposer(root, false);
+      else if (action === 'recon-discard-submit') void submitDiscard(root, job.id);
       else if (action === 'launch-orchestrator') {
         const ta = root.querySelector('.launch-context-textarea');
         const context = ta?.value.trim() || undefined;

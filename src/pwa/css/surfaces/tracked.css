@@ -1449,6 +1449,29 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 .diff-glyph[data-kind="patch"]  { color: var(--accent); }
 .diff-glyph[data-kind="add"]    { color: var(--accent-2); }
 .diff-glyph[data-kind="cancel"] { color: var(--danger); }
+/* Already ran — not a proposal the user is deciding on, so it recedes. */
+.diff-glyph[data-kind="done"]   { color: var(--ok); }
+.is-reconciling .diff-row:has(.diff-glyph[data-kind="done"]) .step-title { color: var(--text-dim); font-weight: 400; }
+
+/* Inline discard composer on the amendment banner — same collapse mechanics as
+   .replan-composer, but it sits at the foot of the reconciliation card. */
+.recon-discard-composer {
+  border-top: 1px solid var(--line-soft);
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height var(--dur-2) var(--ease), opacity var(--dur-1) var(--ease), padding var(--dur-1) var(--ease);
+  padding: 0 18px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.recon-discard-composer[data-open="true"] {
+  max-height: 320px;
+  opacity: 1;
+  padding: 14px 18px;
+}
+.recon-discard-composer .recon-discard-textarea { min-height: 90px; resize: vertical; width: 100%; }
+.recon-discard-actions { display: flex; gap: 8px; }
+.recon-discard-actions .o-btn { flex: 1; justify-content: center; }
 .is-reconciling .diff-row {
   display: grid; grid-template-columns: 56px minmax(0, max-content) minmax(0, 1fr); gap: 14px;
   padding: 12px 18px; border-top: 1px solid var(--line-soft); align-items: center;

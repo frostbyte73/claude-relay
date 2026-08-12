@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { needsYou, stepNeedsYou, isTerminalStep, isFailureStep } from '../../src/pwa/vm/work-predicates.js';
+import { needsYou, stepNeedsYou, isTerminalStep, isFailureStep, planHasRun, planIsLive } from '../../src/pwa/vm/work-predicates.js';
 
 function step(overrides = {}) {
   return { id: 's1', type: 'action', title: 'Step', state: 'running', cancelled: false, ...overrides };
@@ -87,6 +87,34 @@ describe('isTerminalStep / isFailureStep', () => {
   it('a plain running step is neither', () => {
     expect(isTerminalStep(step({ state: 'running' }))).toBe(false);
     expect(isFailureStep(step({ state: 'running' }))).toBe(false);
+  });
+});
+
+describe('planIsLive', () => {
+  it('false while the first plan is being drafted or reviewed', () => {
+    expect(planIsLive(job({ state: 'planning', steps: [] }))).toBe(false);
+    expect(planIsLive(job({ state: 'plan_pending_review', steps: [step({ sessionId: undefined })] }))).toBe(false);
+  });
+
+  // The regression this exists for: a replan flips an executing job back through planning →
+  // plan_pending_review, and gating the timeline on job state alone hid every completed step's
+  // PR block and output for the whole amendment cycle — exactly what the user needs to see to
+  // judge the amendment.
+  it('true during a replan of a plan whose steps already ran', () => {
+    const ran = [step({ state: 'resolved' }), step({ id: 's2', state: 'running', sessionId: 'sess-2' })];
+    expect(planIsLive(job({ state: 'planning', steps: ran }))).toBe(true);
+    expect(planIsLive(job({ state: 'plan_pending_review', steps: ran }))).toBe(true);
+  });
+
+  it('true for an executing job even between steps', () => {
+    expect(planIsLive(job({ state: 'executing', steps: [] }))).toBe(true);
+  });
+
+  it('planHasRun keys on a spawned session or a terminal state, not job state', () => {
+    expect(planHasRun(job({ steps: [step({ state: 'running' })] }))).toBe(false);
+    expect(planHasRun(job({ steps: [step({ state: 'running', sessionId: 'sess-1' })] }))).toBe(true);
+    expect(planHasRun(job({ steps: [step({ state: 'resolved' })] }))).toBe(true);
+    expect(planHasRun(job({ steps: [step({ failure: { reason: 'boom', at: 1 } })] }))).toBe(true);
   });
 });
 

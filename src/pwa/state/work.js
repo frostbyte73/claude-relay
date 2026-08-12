@@ -124,7 +124,7 @@ export const work = {
   async launchOrchestrator(id, context) { const r = await call(() => workApi.launchOrchestrator(id, context)); await this.loadOne(id); return r; },
   async replan(id, feedback)     { return call(() => workApi.replan(id, feedback)); },
   async applyReconciliation(id)  { return call(() => workApi.applyReconciliation(id)); },
-  async discardReconciliation(id){ return call(() => workApi.discardReconciliation(id)); },
+  async discardReconciliation(id, feedback) { return call(() => workApi.discardReconciliation(id, feedback)); },
   async addStep(id, step)        { return call(() => workApi.addStep(id, step)); },
   async editStep(id, stepId, patch) { return call(() => workApi.editStep(id, stepId, patch)); },
   async cancelStep(id, stepId)   { return call(() => workApi.cancelStep(id, stepId)); },

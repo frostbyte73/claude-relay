@@ -995,19 +995,25 @@ export class WorkEngine {
       const kept = p.keepId ? keptById.get(p.keepId) : undefined;
       if (kept) {
         const cur = byId.get(kept.stepId)!;
+        // validateDispositions refuses a patch or a drop against a completed step, but a
+        // reconciliation proposed before that guard existed can still be sitting on disk.
+        if (cur.state === 'resolved') return cur;
         return { ...cur, ...kept.patch, updatedAt: this.ctx.now() } as Step;
       }
       return this.materialize(p);
     });
 
     const cancelledTail: Step[] = j.steps
-      .filter((s) => cancelledSet.has(s.id))
+      .filter((s) => cancelledSet.has(s.id) && s.state !== 'resolved')
       .map((s) => ({ ...s, cancelled: true, updatedAt: this.ctx.now() } as Step));
+    // A completed step the stale reconciliation dropped survives in place rather than
+    // vanishing from the plan — it is history, and the timeline is the record of it.
+    const strandedResolved: Step[] = j.steps.filter((s) => cancelledSet.has(s.id) && s.state === 'resolved');
 
     // Mark currently-settled non-cancelled steps reviewed (mirrors onOrchestratorContinue)
     // so owesStepReview doesn't spawn a redundant re-review of the step that already
     // triggered this reconciliation.
-    const steps: Step[] = [...proposedOrdered, ...cancelledTail].map((s) =>
+    const steps: Step[] = [...strandedResolved, ...proposedOrdered, ...cancelledTail].map((s) =>
       !s.cancelled && handlerFor(s).isResolved(s) ? ({ ...s, reviewed: true } as Step) : s);
 
     this.mutate(jobId, (jj) => this.appendEvent({
@@ -1019,14 +1025,46 @@ export class WorkEngine {
     void this.tickOne(jobId);
   }
 
-  onReconciliationDiscarded(jobId: string): void {
-    this.mutate(jobId, (j) => ({
-      ...j,
-      pendingReconciliation: undefined,
-      state: 'executing',
-      steps: j.steps.map((s) =>
-        !s.cancelled && handlerFor(s).isResolved(s) ? ({ ...s, reviewed: true } as Step) : s),
-    }));
+  // A bare discard drops the amendment and resumes the plan that was already running. With a
+  // reason, the amendment is recorded as a rejected iteration and handed back to the
+  // orchestrator, so it re-amends against what the user actually objected to instead of
+  // learning nothing — and `rejectedIterations` in the envelope stops it reproposing the same
+  // plan. The record is written before reopenOrchestrator so its envelope carries it.
+  onReconciliationDiscarded(jobId: string, feedback?: string): void {
+    const j = this.opts.queue.get(jobId);
+    if (!j) return;
+    const reason = (feedback ?? '').trim();
+    const iter: PlanIteration | null = reason && j.pendingReconciliation
+      ? {
+        id: this.ctx.newId(),
+        steps: j.pendingReconciliation.proposed,
+        feedback: reason,
+        rejectedAt: this.ctx.now(),
+        ...(j.plan?.findings ? { findings: j.plan.findings } : {}),
+      }
+      : null;
+
+    this.mutate(jobId, (jj) => {
+      const next: JobRecord = {
+        ...jj,
+        pendingReconciliation: undefined,
+        state: 'executing',
+        steps: jj.steps.map((s) =>
+          !s.cancelled && handlerFor(s).isResolved(s) ? ({ ...s, reviewed: true } as Step) : s),
+        ...(iter ? {
+          plan: {
+            postedAt: jj.plan?.postedAt ?? this.ctx.now(),
+            iterationsRejected: [...(jj.plan?.iterationsRejected ?? []), iter],
+            ...(jj.plan?.findings ? { findings: jj.plan.findings } : {}),
+          },
+        } : {}),
+      };
+      return iter ? this.appendEvent(next, { kind: 'plan_rejected', who: 'user', body: reason }) : next;
+    });
+
+    // `iter`, not `reason`: with no amendment on the job there is nothing to reject, and a
+    // double-clicked Discard would otherwise send the same session a second followup.
+    if (iter) this.reopenOrchestrator(jobId, reason);
   }
 
   // Dispatch children are never in job.steps — they live in an orchestrated step's

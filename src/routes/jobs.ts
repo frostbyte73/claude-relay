@@ -313,10 +313,14 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
   });
 
-  server.route('POST', '/api/work/jobs/:id/reconciliation/discard', (req, res) => {
+  // `feedback` is optional: with it, the discarded amendment goes back to the orchestrator as a
+  // rejected iteration; without it, the amendment is simply dropped.
+  server.route('POST', '/api/work/jobs/:id/reconciliation/discard', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reconciliation\/discard$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    engine.onReconciliationDiscarded(m[1]!);
+    const payload = await readJsonBody<{ feedback?: unknown }>(req);
+    const feedback = typeof payload?.feedback === 'string' ? payload.feedback : undefined;
+    engine.onReconciliationDiscarded(m[1]!, feedback);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));

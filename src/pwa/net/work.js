@@ -32,7 +32,7 @@ export const workApi = {
   launchOrchestrator(id, context)  { return request(`${jobPath(id)}/launch-orchestrator`, { method: 'POST', body: JSON.stringify(context ? { context } : {}) }); },
   replan(id, feedback)             { return request(`${jobPath(id)}/replan`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
   applyReconciliation(id)          { return request(`${jobPath(id)}/reconciliation/apply`, { method: 'POST', body: '{}' }); },
-  discardReconciliation(id)        { return request(`${jobPath(id)}/reconciliation/discard`, { method: 'POST', body: '{}' }); },
+  discardReconciliation(id, feedback) { return request(`${jobPath(id)}/reconciliation/discard`, { method: 'POST', body: JSON.stringify(feedback ? { feedback } : {}) }); },
   addStep(id, step)                { return request(`${jobPath(id)}/steps`, { method: 'POST', body: JSON.stringify(step) }); },
   editStep(id, stepId, patch)      { return request(stepPath(id, stepId), { method: 'PATCH', body: JSON.stringify(patch) }); },
   cancelStep(id, stepId)           { return request(`${stepPath(id, stepId)}/cancel`, { method: 'POST', body: '{}' }); },

@@ -56,6 +56,23 @@ export function stepNeedsYou(s) {
     || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null);
 }
 
+// Has any step actually run? Mirrors the `jobInProgress` check in engine.ts — a session was
+// spawned, or the step reached a terminal state on its own merits.
+export function planHasRun(j) {
+  return (j.steps ?? []).some((s) => !!s.sessionId || isTerminalStep(s));
+}
+
+// Whether the job's plan should render as the live timeline rather than the compact review
+// index. Job state alone got this wrong: a replan flips an executing job back through
+// `planning` → `plan_pending_review`, which hid the timeline — and with it every PR block,
+// output and session of the steps that already ran — for the whole amendment cycle, exactly
+// when the user needs to see what's already done to judge the amendment. Shared by
+// tracked/detail.js (which builds the timeline) and plan-section.js (which lays it out) so the
+// two can't disagree about whether one exists.
+export function planIsLive(j) {
+  return planHasRun(j) || (j.state !== 'planning' && j.state !== 'plan_pending_review');
+}
+
 // abandonJob flips job state without rewriting step states, so a terminal job
 // can retain steps that still satisfy stepNeedsYou — guard here so dead jobs
 // never count as waiting on the user.

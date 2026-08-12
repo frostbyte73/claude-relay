@@ -8,6 +8,7 @@
 // toggle/submit helpers.
 
 import { work } from '../../state/work.js';
+import { planIsLive } from '../../vm/work-predicates.js';
 import { renderFinding } from './finding.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
 
@@ -30,6 +31,9 @@ function diffKindFor(p, current) {
   if (!p.keepId) return 'add';
   const prior = current.find((s) => s.id === p.keepId);
   if (!prior) return 'add';
+  // A completed step can't be patched or dropped (validateDispositions refuses both), so it
+  // reads as history rather than as one more reviewable row.
+  if (prior.state === 'resolved') return 'done';
   const fields = ['title', 'description', 'goal', 'parallelGroup', 'action', 'controller', 'forwardOutput'];
   for (const f of fields) {
     const next = p[f];
@@ -47,13 +51,15 @@ export function renderReconciliation(j) {
 
   const proposedRows = recon.proposed.map((p) => {
     const kind = diffKindFor(p, current);
-    const glyph = kind === 'keep' ? '✓ keep' : kind === 'patch' ? '~ patch' : '+ add';
+    const glyph = kind === 'done' ? '✓ done' : kind === 'keep' ? '✓ keep' : kind === 'patch' ? '~ patch' : '+ add';
     const prior = p.keepId ? current.find((s) => s.id === p.keepId) : null;
-    const delta = kind === 'keep'
-      ? 'no change'
-      : kind === 'patch'
-        ? `${prior ? 'patched from existing step' : 'patched'} — title / goal / approach updated`
-        : 'new step, inserted at this position';
+    const delta = kind === 'done'
+      ? 'already ran — kept as-is'
+      : kind === 'keep'
+        ? 'no change'
+        : kind === 'patch'
+          ? `${prior ? 'patched from existing step' : 'patched'} — title / goal / approach updated`
+          : 'new step, inserted at this position';
     const key = p.keepId
       ? String(current.findIndex((s) => s.id === p.keepId) + 1).padStart(2, '0')
       : 'new';
@@ -90,7 +96,7 @@ export function renderReconciliation(j) {
         <span class="label o-microhead">Plan amendment</span>
         ${recon.feedback ? `<span class="feedback">"${escapeHtml(recon.feedback)}"</span>` : ''}
         <span class="spacer"></span>
-        <button class="o-btn o-btn--default" type="button" data-job-action="recon-discard">Discard</button>
+        <button class="o-btn o-btn--default" type="button" data-job-action="recon-discard" aria-expanded="false">Discard</button>
         <button class="o-btn o-btn--primary" type="button" data-job-action="recon-apply">Apply changes</button>
       </div>
       ${renderFinding(j.plan?.findings)}
@@ -98,8 +104,56 @@ export function renderReconciliation(j) {
         ${proposedRows}
         ${cancelledRows}
       </div>
+      ${renderDiscardComposer()}
     </div>
   `;
+}
+
+// Discard opens this rather than firing immediately: an amendment the user refuses silently
+// teaches the orchestrator nothing, and it will happily repropose the same plan. Submitting
+// empty is still a plain discard — the reason is encouraged, not required.
+function renderDiscardComposer() {
+  return `
+    <div class="recon-discard-composer" data-open="false" aria-hidden="true">
+      <div class="field-label">Why doesn't this amendment work? (optional)</div>
+      <textarea class="field-textarea recon-discard-textarea" placeholder="The orchestrator reads this and proposes a different amendment. Leave empty to just drop it."></textarea>
+      <div class="recon-discard-actions">
+        <button class="o-btn o-btn--default" type="button" data-job-action="recon-discard-cancel">Cancel</button>
+        <button class="o-btn o-btn--danger" type="button" data-job-action="recon-discard-submit">Discard plan</button>
+      </div>
+    </div>`;
+}
+
+export function toggleDiscardComposer(root, open) {
+  const composer = root.querySelector('.recon-discard-composer');
+  const trigger = root.querySelector('[data-job-action="recon-discard"]');
+  if (!composer) return;
+  composer.setAttribute('data-open', open ? 'true' : 'false');
+  composer.setAttribute('aria-hidden', open ? 'false' : 'true');
+  if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) setTimeout(() => composer.querySelector('.recon-discard-textarea')?.focus(), 60);
+}
+
+// Empty box → today's silent discard. Non-empty → the orchestrator gets it back as a rejected
+// iteration and re-amends, so the button says what will happen either way.
+export async function submitDiscard(root, jobId) {
+  const composer = root.querySelector('.recon-discard-composer');
+  const ta = composer?.querySelector('.recon-discard-textarea');
+  const submit = composer?.querySelector('[data-job-action="recon-discard-submit"]');
+  if (!composer || !ta || !submit) return;
+  const feedback = ta.value.trim();
+  submit.disabled = true;
+  submit.textContent = feedback ? 'Sending…' : 'Discarding…';
+  try {
+    await work.discardReconciliation(jobId, feedback || undefined);
+    ta.value = '';
+    toggleDiscardComposer(root, false);
+  } catch (e) {
+    alert(`Discard failed: ${e?.message ?? e}`);
+  } finally {
+    submit.disabled = false;
+    submit.textContent = 'Discard plan';
+  }
 }
 
 function planApproveButton(j) {
@@ -133,9 +187,9 @@ function planIndexRow(s, i) {
 // findings (see step-card.js). `editing` drives the "Edit plan" toggle's
 // pressed state; the toggle used to live on the Steps header.
 export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}) {
-  // Phase, not timelineHtml truthiness — an executing job momentarily between
-  // steps still belongs in the live layout, not the review card.
-  const live = j.state !== 'planning' && j.state !== 'plan_pending_review';
+  // Not timelineHtml truthiness — an executing job momentarily between steps still belongs in
+  // the live layout, not the review card. Not job state alone either: see planIsLive.
+  const live = planIsLive(j);
   // A plan amendment (replan) during execution keeps the running timeline in
   // view below the reconciliation banner — the pre-merge Steps block did too.
   if (j.pendingReconciliation) {
