@@ -11,6 +11,7 @@
 // PR is not a recoverable mistake.
 
 import { cssId, fileFieldHtml } from './write-draft-card.js';
+import { renderMarkdown } from '../../markdown.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
@@ -40,6 +41,29 @@ function canonicalReplyPath(bash) {
   return null;
 }
 
+// The older spelling, where the body rides inline in the command instead of in a `files` entry.
+// Drafts raised before the `files` convention are still pending in the wild, and the shell can
+// carry a short body perfectly well, so these are just as readable — the quoting rules are
+// exactly the ones the `push` group's own rules accept, so anything that could actually run is
+// recognised here. What they can't be is EDITED in place: the allowlist has no spelling for a
+// body containing an apostrophe or a newline, so there is no way to put an arbitrary edit back
+// into the command. Read-only is the honest treatment; rewording goes through Propose changes.
+const INLINE_REPLY = [
+  /^gh pr comment \d+ --body '([^'\n]*)'$/,
+  /^gh pr comment \d+ --body "([^"$`\n]*)"$/,
+  /^gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"? -f body='([^'\n]*)'$/,
+  /^gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"? -f body="([^"$`\n]*)"$/,
+];
+
+function inlineReplyBody(bash) {
+  const text = String(bash ?? '').trim();
+  for (const re of INLINE_REPLY) {
+    const m = text.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 // The prose a call will post, and where it sits in the drafted file. `--input` takes the
 // endpoint's JSON body (`{"body": …}`), `--body-file` takes the markdown itself — told apart by
 // the extension the command itself names, not by sniffing the content, so a reply that
@@ -50,24 +74,41 @@ function canonicalReplyPath(bash) {
 // daemon would be showing the user one body while the command posts another.
 export function replyBodyOf(call) {
   const path = canonicalReplyPath(call?.bash);
-  if (!path) return null;
+  if (!path) {
+    const inline = inlineReplyBody(call?.bash);
+    return inline === null ? null : { text: inline, editable: false };
+  }
   const entries = Object.entries(call?.files ?? {});
   if (entries.length !== 1 || entries[0][0] !== path) return null;
   const content = entries[0][1];
-  if (!path.endsWith('.json')) return { path, text: content };
+  if (!path.endsWith('.json')) return { path, text: content, editable: true };
   let parsed;
   try { parsed = JSON.parse(content); } catch { return null; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.body !== 'string') return null;
-  return { path, text: parsed.body, jsonKey: 'body' };
+  return { path, text: parsed.body, jsonKey: 'body', editable: true };
 }
 
-// commentId -> {call, idx}. First label wins: two calls answering one comment would post twice
-// into the same thread, and the second has nowhere of its own to render — pr-block.js surfaces
-// the unclaimed one alongside the threads, as its raw command, rather than dropping it.
-export function replyCallsByComment(draft) {
+// commentId -> {call, idx}, resolved against the ids actually on this PR.
+//
+// The label is asked to BE the comment id, but it is prose written by a model and in practice
+// it decorates: `"issue:IC_kwDO… — reply to milos-lk (merge-timing ack)"`. Requiring equality
+// made every such call unmatched, which dropped all of them out of the threads and into the
+// leftovers block — comment, comment, reply, reply instead of comment, reply, comment, reply.
+// So: find the id the label NAMES rather than demanding it name nothing else. Longest first, so
+// a label mentioning two ids resolves to the more specific one rather than to whichever the
+// caller happened to list first.
+//
+// First call wins per comment: two calls answering one comment would post twice into the same
+// thread, and the second has nowhere of its own to render — pr-block.js surfaces the unclaimed
+// one alongside the threads rather than dropping it.
+export function replyCallsByComment(draft, commentIds = []) {
+  const ids = [...commentIds].filter(Boolean).sort((a, b) => b.length - a.length);
   const map = new Map();
   (draft?.calls ?? []).forEach((call, idx) => {
-    if (typeof call.label === 'string' && call.label && !map.has(call.label)) map.set(call.label, { call, idx });
+    const label = typeof call.label === 'string' ? call.label : '';
+    if (!label) return;
+    const id = ids.find((c) => label.includes(c));
+    if (id && !map.has(id)) map.set(id, { call, idx });
   });
   return map;
 }
@@ -114,17 +155,23 @@ export function renderReplyCallHtml(draft, call, idx, { label } = {}) {
         ${skipFieldHtml(draft.id, idx)}
       </fieldset>`;
   }
+  // An inline body can be read but not rewritten — see INLINE_REPLY. Rendered rather than shown
+  // as source, since there is no editing to do: this is what the comment will look like.
+  const field = body.editable
+    ? fileFieldHtml(draft.id, idx, body.path, call.files[body.path], {
+      label: head,
+      labelClass: 'o-sr-only',
+      className: 'thread-reply-input',
+      value: body.text,
+      jsonKey: body.jsonKey,
+    })
+    : `<div class="thread-reply-text markdown">${renderMarkdown(body.text)}</div>
+       <div class="thread-reply-note">Drafted inline — use Propose changes to reword it.</div>`;
   return `
     <fieldset class="wd-call thread-reply" data-call-idx="${idx}" data-call-kind="bash">
       <legend class="o-sr-only">${escapeHtml(head)}</legend>
       ${label ? `<div class="thread-reply-head o-microhead" aria-hidden="true">${escapeHtml(head)}</div>` : ''}
-      ${fileFieldHtml(draft.id, idx, body.path, call.files[body.path], {
-    label: head,
-    labelClass: 'o-sr-only',
-    className: 'thread-reply-input',
-    value: body.text,
-    jsonKey: body.jsonKey,
-  })}
+      ${field}
       ${skipFieldHtml(draft.id, idx)}
     </fieldset>`;
 }

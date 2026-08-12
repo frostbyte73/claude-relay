@@ -415,6 +415,12 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 }
 .thread-reply-head { color: var(--warn); }
 .thread-reply-input { min-height: 96px; font-size: 14px; line-height: 1.55; }
+/* A body the command carries inline: readable, not editable. Rendered like a posted message,
+   because that is exactly what it will be. */
+.thread-reply-text { font-size: 14px; line-height: 1.55; color: var(--text); overflow-wrap: anywhere; }
+.thread-reply-text > :first-child { margin-top: 0; }
+.thread-reply-text > :last-child { margin-bottom: 0; }
+.thread-reply-note { font-size: 11px; color: var(--text-dim); }
 .thread-reply-cmd-text {
   margin: 6px 0 0;
   font-family: var(--font-mono);
@@ -431,6 +437,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   border-left-color: var(--line);
 }
 .thread-reply:has([data-kind="skip"]:checked) .thread-reply-input,
+.thread-reply:has([data-kind="skip"]:checked) .thread-reply-text,
 .thread-reply:has([data-kind="skip"]:checked) .thread-reply-cmd-text {
   opacity: 0.45;
 }

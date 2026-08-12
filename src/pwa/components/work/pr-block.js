@@ -109,7 +109,9 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   // it by `data-draft-id` wherever it lives, and collectCalls reads the edited replies back off
   // the `.wd-call` fieldsets nested in the thread cards.
   const pendingReplies = isReplyDraft(replyDraft) ? replyDraft : null;
-  const replyCalls = pendingReplies ? replyCallsByComment(pendingReplies) : new Map();
+  const replyCalls = pendingReplies
+    ? replyCallsByComment(pendingReplies, comments.map((c) => c.id))
+    : new Map();
   const claimed = new Set();
   const hasReply = (chain) => chain.some((c) => replyCalls.has(c.id));
   // Keyed on the individual comment, not the thread: a reply belongs directly under the message

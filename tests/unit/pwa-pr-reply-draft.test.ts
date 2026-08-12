@@ -38,7 +38,7 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
   // Handing the user the raw `{"body": …}` is what this whole path exists to avoid.
   it('unwraps a .json file to its `body` string', () => {
     expect(replyBodyOf(jsonCall())).toEqual({
-      path: '/tmp/outpost-reply-1.json', text: 'renamed in `abc123`', jsonKey: 'body',
+      path: '/tmp/outpost-reply-1.json', text: 'renamed in `abc123`', jsonKey: 'body', editable: true,
     });
   });
 
@@ -46,7 +46,7 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
   // reply that opens with `{` is ordinary prose, not a payload to parse.
   it('takes a .md file as the reply itself, with no jsonKey', () => {
     const call = { bash: 'gh pr comment 7 --body-file /tmp/outpost-reply-2.md', files: { '/tmp/outpost-reply-2.md': '{not json}' } };
-    expect(replyBodyOf(call)).toEqual({ path: '/tmp/outpost-reply-2.md', text: '{not json}' });
+    expect(replyBodyOf(call)).toEqual({ path: '/tmp/outpost-reply-2.md', text: '{not json}', editable: true });
   });
 
   it('accepts the quoting and --method/-X spellings of the same command', () => {
@@ -54,8 +54,7 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
     expect(replyBodyOf({ bash: 'gh api -X POST repos/{owner}/{repo}/pulls/comments/9/replies --input "/tmp/outpost-reply-1.json"', files })?.text).toBe('ok');
   });
 
-  it('returns null for a shape it cannot read — inline body, two files, non-{body} json', () => {
-    expect(replyBodyOf({ bash: 'gh pr comment 7 --body "hi"' })).toBeNull();
+  it('returns null for a shape it cannot read — two files, non-{body} json', () => {
     expect(replyBodyOf({ bash: 'gh pr comment 7 --body-file /tmp/a.md', files: { '/tmp/a.md': 'a', '/tmp/b.md': 'b' } })).toBeNull();
     expect(replyBodyOf({ ...jsonCall(), files: { '/tmp/outpost-reply-1.json': '{"text": "wrong key"}' } })).toBeNull();
     expect(replyBodyOf({ ...jsonCall(), files: { '/tmp/outpost-reply-1.json': 'not json at all' } })).toBeNull();
@@ -78,6 +77,16 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
       files: { '/tmp/outpost-reply-9.md': 'a different body' },
     })).toBeNull();
   });
+
+  // Drafts raised before the `files` convention carry the body in the command. It reads fine;
+  // it just can't be edited back in, since the allowlist has no spelling for a body with an
+  // apostrophe or a newline.
+  it('reads an inline body, and marks it not editable', () => {
+    expect(replyBodyOf({ bash: "gh pr comment 16434 --body 'Ack — holding the merge.'" }))
+      .toEqual({ text: 'Ack — holding the merge.', editable: false });
+    expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" -f body="done"' }))
+      .toEqual({ text: 'done', editable: false });
+  });
 });
 
 describe('isReplyDraft', () => {
@@ -92,10 +101,30 @@ describe('isReplyDraft', () => {
 describe('replyCallsByComment', () => {
   it('keys calls by their label and keeps the first of a duplicate', () => {
     const d = draft({ calls: [jsonCall(), jsonCall({ label: 'issue:12' }), jsonCall({ files: { '/tmp/outpost-reply-3.json': '{"body":"second"}' } })] });
-    const map = replyCallsByComment(d);
+    const map = replyCallsByComment(d, ['review:ABC', 'issue:12']);
     expect(map.get('review:ABC').idx).toBe(0);
     expect(map.get('issue:12').idx).toBe(1);
     expect(map.size).toBe(2);
+  });
+
+  // The label is prose written by a model and it decorates in practice. Demanding equality made
+  // every real draft unmatched, which is what pushed all the replies out of the threads and
+  // into the leftovers block.
+  it('resolves a label that names the comment id alongside other text', () => {
+    const d = draft({ calls: [jsonCall({ label: 'issue:IC_kwDO123 — reply to milos-lk (merge-timing ack)' })] });
+    expect(replyCallsByComment(d, ['issue:IC_kwDO123']).get('issue:IC_kwDO123')?.idx).toBe(0);
+  });
+
+  it('prefers the longer id when a label could name either', () => {
+    const d = draft({ calls: [jsonCall({ label: 'review:PRRC_abc123 needs an answer' })] });
+    const map = replyCallsByComment(d, ['review:PRRC_abc', 'review:PRRC_abc123']);
+    expect(map.has('review:PRRC_abc123')).toBe(true);
+    expect(map.has('review:PRRC_abc')).toBe(false);
+  });
+
+  it('matches nothing when the label names no comment on this PR', () => {
+    const d = draft({ calls: [jsonCall({ label: 'review:GONE' })] });
+    expect(replyCallsByComment(d, ['review:ABC']).size).toBe(0);
   });
 });
 
@@ -131,11 +160,34 @@ describe('renderPrBlockHtml — a pending reply draft renders in the threads', (
     expect(clean).not.toContain('thread-reply--raw');
 
     const odd = renderPrBlockHtml({}, step(), {
-      replyDraft: draft({ calls: [jsonCall({ bash: 'gh pr comment 7 --body "inline"', files: undefined })] }),
+      replyDraft: draft({ calls: [jsonCall({ bash: 'gh pr comment 7 --body "hi" && git push --force', files: undefined })] }),
     });
     expect(odd).toContain('thread-reply--raw');
-    expect(odd).toContain('gh pr comment 7 --body &quot;inline&quot;');
+    expect(odd).toContain('git push --force');
     expect(odd).toContain('data-kind="skip"');
+  });
+
+  // The exact shape of the draft that was pending when this was reported: decorated labels and
+  // inline bodies, one reply per root comment. It rendered as comment, comment, reply, reply.
+  it('interleaves a legacy draft — decorated labels, inline bodies — with its comments', () => {
+    const html = renderPrBlockHtml({}, step({
+      comments: [
+        comment({ id: 'issue:IC_kwDO1', author: 'milos-lk', body: 'when does this merge?', file: undefined }),
+        comment({ id: 'review:PRR_kwDO2', author: 'shawnfeldman', body: 'why both flags?', file: undefined, createdAt: 1100 }),
+      ],
+    }), {
+      replyDraft: draft({
+        calls: [
+          { label: 'issue:IC_kwDO1 — reply to milos-lk (merge-timing ack)', bash: "gh pr comment 16434 --body 'Holding until Aug 12.'" },
+          { label: 'review:PRR_kwDO2 — reply to shawnfeldman (why both flags)', bash: "gh pr comment 16434 --body 'They flip as a set.'" },
+        ],
+      }),
+    });
+    expect(html).not.toContain('pr-reply-unclaimed');
+    const order = ['when does this merge?', 'Holding until Aug 12.', 'why both flags?', 'They flip as a set.']
+      .map((s) => html.indexOf(s));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
   // Directly under the message it answers, not trailing the whole card — and each reply under
