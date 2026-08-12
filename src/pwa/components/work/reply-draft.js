@@ -11,7 +11,6 @@
 // PR is not a recoverable mistake.
 
 import { cssId, fileFieldHtml } from './write-draft-card.js';
-import { renderMarkdown } from '../../markdown.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
@@ -42,26 +41,38 @@ function canonicalReplyPath(bash) {
 }
 
 // The older spelling, where the body rides inline in the command instead of in a `files` entry.
-// Drafts raised before the `files` convention are still pending in the wild, and the shell can
-// carry a short body perfectly well, so these are just as readable — the quoting rules are
-// exactly the ones the `push` group's own rules accept, so anything that could actually run is
-// recognised here. What they can't be is EDITED in place: the allowlist has no spelling for a
-// body containing an apostrophe or a newline, so there is no way to put an arbitrary edit back
-// into the command. Read-only is the honest treatment; rewording goes through Propose changes.
+// Drafts raised before the `files` convention are still pending in the wild. The quoting rules
+// here are exactly the ones the `push` group accepts, so anything that could actually run is
+// recognised.
+//
+// Editing one can't be done by re-quoting: the allowlist has no spelling for `--body` holding
+// an apostrophe or a newline, so an arbitrary edit has nowhere to go in this command shape.
+// What it CAN do is move to the shape that was built for arbitrary bodies — the command keeps
+// its prefix (which is what says where the reply goes) and swaps the inline flag for the
+// file-referencing one. That form is allowlisted, the daemon writes and digests the approved
+// bytes itself, and the session runs the pinned command verbatim exactly as it would any other.
+// `group 1` is that prefix; `group 2` the body it carries.
 const INLINE_REPLY = [
-  /^gh pr comment \d+ --body '([^'\n]*)'$/,
-  /^gh pr comment \d+ --body "([^"$`\n]*)"$/,
-  /^gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"? -f body='([^'\n]*)'$/,
-  /^gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"? -f body="([^"$`\n]*)"$/,
+  { re: /^(gh pr comment \d+) --body '([^'\n]*)'$/, ext: 'md' },
+  { re: /^(gh pr comment \d+) --body "([^"$`\n]*)"$/, ext: 'md' },
+  { re: /^(gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"?) -f body='([^'\n]*)'$/, ext: 'json' },
+  { re: /^(gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"?) -f body="([^"$`\n]*)"$/, ext: 'json' },
 ];
 
-function inlineReplyBody(bash) {
+function inlineReply(bash) {
   const text = String(bash ?? '').trim();
-  for (const re of INLINE_REPLY) {
+  for (const { re, ext } of INLINE_REPLY) {
     const m = text.match(re);
-    if (m) return m[1];
+    if (m) return { prefix: m[1], text: m[2], ext };
   }
   return null;
+}
+
+// Where an edited inline body goes, and the command that then reads it. One path per call, so
+// two replies in a draft can never collide on it.
+export function rewriteTargetFor(draftId, idx, ext) {
+  const path = `/tmp/outpost-reply-${cssId(draftId)}-${idx}.${ext}`;
+  return { path, flag: ext === 'json' ? '--input' : '--body-file', jsonKey: ext === 'json' ? 'body' : undefined };
 }
 
 // The prose a call will post, and where it sits in the drafted file. `--input` takes the
@@ -75,17 +86,17 @@ function inlineReplyBody(bash) {
 export function replyBodyOf(call) {
   const path = canonicalReplyPath(call?.bash);
   if (!path) {
-    const inline = inlineReplyBody(call?.bash);
-    return inline === null ? null : { text: inline, editable: false };
+    const inline = inlineReply(call?.bash);
+    return inline === null ? null : { text: inline.text, rewrite: { prefix: inline.prefix, ext: inline.ext } };
   }
   const entries = Object.entries(call?.files ?? {});
   if (entries.length !== 1 || entries[0][0] !== path) return null;
   const content = entries[0][1];
-  if (!path.endsWith('.json')) return { path, text: content, editable: true };
+  if (!path.endsWith('.json')) return { path, text: content };
   let parsed;
   try { parsed = JSON.parse(content); } catch { return null; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.body !== 'string') return null;
-  return { path, text: parsed.body, jsonKey: 'body', editable: true };
+  return { path, text: parsed.body, jsonKey: 'body' };
 }
 
 // commentId -> {call, idx}, resolved against the ids actually on this PR.
@@ -127,6 +138,28 @@ function skipFieldHtml(draftId, idx) {
     </label>`;
 }
 
+// An inline body, made editable by carrying the command it would become. `data-rewrite-original`
+// is what collectCalls compares against: leave the text alone and the call is pinned exactly as
+// the action drafted it, inline flag and all. Only an actual edit swaps in `data-rewrite-bash`
+// and a `files` entry, because only an actual edit needs somewhere else to live.
+//
+// Everything else about the field matches fileFieldHtml's contract — the `wd-f-` id and
+// `data-arg-key` are what carry an in-progress edit across a repaint (detail.js).
+function rewriteFieldHtml(draftId, idx, body, label) {
+  const { path, flag, jsonKey } = rewriteTargetFor(draftId, idx, body.rewrite.ext);
+  const id = `wd-f-${cssId(draftId)}-${idx}-file-${cssId(path)}`;
+  const bash = `${body.rewrite.prefix} ${flag} ${path}`;
+  return `
+    <div class="wd-field">
+      <label class="o-sr-only" for="${id}">${escapeHtml(label)}</label>
+      <textarea class="field-textarea wd-file-body thread-reply-input" id="${id}"
+        data-call-idx="${idx}" data-arg-key="${escapeHtml(path)}" data-kind="rewrite"
+        ${jsonKey ? `data-file-json-key="${jsonKey}"` : ''}
+        data-rewrite-bash="${escapeHtml(bash)}"
+        data-rewrite-original="${escapeHtml(body.text)}">${escapeHtml(body.text)}</textarea>
+    </div>`;
+}
+
 // One reply, sitting in the conversation directly under the comment it answers. When the call
 // is canonical (see CANONICAL_REPLY) the whole thing is just the text — the command carries no
 // information the thread it's nested in doesn't already give — plus the skip box, which is the
@@ -155,18 +188,15 @@ export function renderReplyCallHtml(draft, call, idx, { label } = {}) {
         ${skipFieldHtml(draft.id, idx)}
       </fieldset>`;
   }
-  // An inline body can be read but not rewritten — see INLINE_REPLY. Rendered rather than shown
-  // as source, since there is no editing to do: this is what the comment will look like.
-  const field = body.editable
-    ? fileFieldHtml(draft.id, idx, body.path, call.files[body.path], {
+  const field = body.rewrite
+    ? rewriteFieldHtml(draft.id, idx, body, head)
+    : fileFieldHtml(draft.id, idx, body.path, call.files[body.path], {
       label: head,
       labelClass: 'o-sr-only',
       className: 'thread-reply-input',
       value: body.text,
       jsonKey: body.jsonKey,
-    })
-    : `<div class="thread-reply-text markdown">${renderMarkdown(body.text)}</div>
-       <div class="thread-reply-note">Drafted inline — use Propose changes to reword it.</div>`;
+    });
   return `
     <fieldset class="wd-call thread-reply" data-call-idx="${idx}" data-call-kind="bash">
       <legend class="o-sr-only">${escapeHtml(head)}</legend>

@@ -408,3 +408,22 @@ describe('the push group grants an append-only push and nothing that rewrites hi
     ]) expect(allowsMcp(t), t).toBe(true);
   });
 });
+
+// The PWA rewrites an inline-body reply to the file-referencing form when the user edits it in
+// place (reply-draft.js's rewriteFieldHtml — `--body '…'` has no allowlisted spelling that can
+// hold an apostrophe or a newline). That rewrite is only sound if what it produces still passes
+// this group: a command the hook denies would fail at commit time, after the user approved it,
+// with the reply silently never posted. The paths below are the exact shape it generates —
+// `/tmp/outpost-reply-<draftId>-<idx>.<ext>` with a real uuid draft id.
+describe('the reply rewrite the approval UI performs stays inside the group', () => {
+  const draftId = '5c45dd18-f5a9-4cce-9a15-633bdce503a9';
+  it('allows the rewritten command for both reply shapes', () => {
+    for (const c of [
+      `gh pr comment 16434 --body-file /tmp/outpost-reply-${draftId}-0.md`,
+      `gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-${draftId}-1.json`,
+      // The prefix is preserved verbatim, so every spelling the inline form accepted has to
+      // survive the swap too.
+      `gh api -X POST repos/{owner}/{repo}/pulls/comments/9/replies --input /tmp/outpost-reply-${draftId}-2.json`,
+    ]) expect(allows(c), c).toBe(true);
+  });
+});

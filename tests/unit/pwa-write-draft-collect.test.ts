@@ -101,6 +101,69 @@ describe('collectCalls — a reply edited as prose, pinned as the file it lives 
     expect(root.querySelector<HTMLElement>('[data-wd-error]')!.hidden).toBe(true);
   });
 
+  // An inline body has no allowlisted spelling that can hold an arbitrary edit, so editing one
+  // moves it to the form built for arbitrary bodies. Untouched, it stays exactly as drafted —
+  // approving a reply you didn't change shouldn't run a different command than the action wrote.
+  describe('an inline-body reply, made editable by rewriting the call', () => {
+    const inline = {
+      label: 'issue:IC_1',
+      bash: "gh pr comment 16434 --body 'Holding until Aug 12.'",
+    };
+    const inlineDraft = { ...draft, calls: [inline] };
+    const mount = () => {
+      const root = document.createElement('div');
+      root.innerHTML = `<div class="wd-card" data-draft-id="d1">${renderReplyCallHtml(inlineDraft, inline, 0)}
+        <div class="wd-error work-error" data-wd-error hidden></div>
+        <div class="step-actions"><button data-wd-action="accept">Accept</button></div></div>`;
+      wireWriteDraft(root, { jobId: 'j1', stepId: 's1', draft: inlineDraft });
+      return root;
+    };
+
+    it('pins the drafted command untouched when the text is not changed', () => {
+      const root = mount();
+      root.querySelector<HTMLButtonElement>('[data-wd-action="accept"]')!.click();
+      const [, , , calls] = acceptDraft.mock.calls[0] as unknown as [string, string, string, any[]];
+      expect(calls[0]).toEqual({ label: 'issue:IC_1', bash: inline.bash });
+    });
+
+    it('moves an edited body to the file-referencing form, keeping the command prefix', () => {
+      const root = mount();
+      // An apostrophe and a newline: exactly what `--body '…'` has no legal spelling for.
+      root.querySelector<HTMLTextAreaElement>('[data-kind="rewrite"]')!.value = "Won't merge yet.\nSecond line.";
+      root.querySelector<HTMLButtonElement>('[data-wd-action="accept"]')!.click();
+      const [, , , calls] = acceptDraft.mock.calls[0] as unknown as [string, string, string, any[]];
+      expect(calls[0].bash).toBe('gh pr comment 16434 --body-file /tmp/outpost-reply-d1-0.md');
+      expect(calls[0].files).toEqual({ '/tmp/outpost-reply-d1-0.md': "Won't merge yet.\nSecond line." });
+    });
+
+    it('wraps an edited threaded reply as the endpoint\'s JSON body', () => {
+      const api = {
+        label: 'review:PRRC_1',
+        bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" -f body=\'ok\'',
+      };
+      const d = { ...draft, calls: [api] };
+      const root = document.createElement('div');
+      root.innerHTML = `<div class="wd-card" data-draft-id="d1">${renderReplyCallHtml(d, api, 0)}
+        <div class="wd-error work-error" data-wd-error hidden></div>
+        <div class="step-actions"><button data-wd-action="accept">Accept</button></div></div>`;
+      wireWriteDraft(root, { jobId: 'j1', stepId: 's1', draft: d });
+      root.querySelector<HTMLTextAreaElement>('[data-kind="rewrite"]')!.value = "Won't do it that way.";
+      root.querySelector<HTMLButtonElement>('[data-wd-action="accept"]')!.click();
+      const [, , , calls] = acceptDraft.mock.calls[0] as unknown as [string, string, string, any[]];
+      expect(calls[0].bash).toBe('gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-d1-0.json');
+      expect(JSON.parse(calls[0].files['/tmp/outpost-reply-d1-0.json'])).toEqual({ body: "Won't do it that way." });
+    });
+
+    it('still honours the skip verdict over any rewrite', () => {
+      const root = mount();
+      root.querySelector<HTMLTextAreaElement>('[data-kind="rewrite"]')!.value = 'edited';
+      root.querySelector<HTMLInputElement>('[data-kind="skip"]')!.checked = true;
+      root.querySelector<HTMLButtonElement>('[data-wd-action="accept"]')!.click();
+      const [, , , calls] = acceptDraft.mock.calls[0] as unknown as [string, string, string, any[]];
+      expect(calls[0]).toEqual({ label: 'issue:IC_1', bash: inline.bash, skip: true });
+    });
+  });
+
   it('leaves a plain (non-json-keyed) files field as raw bytes', () => {
     const md = {
       ...draft,

@@ -38,7 +38,7 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
   // Handing the user the raw `{"body": …}` is what this whole path exists to avoid.
   it('unwraps a .json file to its `body` string', () => {
     expect(replyBodyOf(jsonCall())).toEqual({
-      path: '/tmp/outpost-reply-1.json', text: 'renamed in `abc123`', jsonKey: 'body', editable: true,
+      path: '/tmp/outpost-reply-1.json', text: 'renamed in `abc123`', jsonKey: 'body',
     });
   });
 
@@ -46,7 +46,7 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
   // reply that opens with `{` is ordinary prose, not a payload to parse.
   it('takes a .md file as the reply itself, with no jsonKey', () => {
     const call = { bash: 'gh pr comment 7 --body-file /tmp/outpost-reply-2.md', files: { '/tmp/outpost-reply-2.md': '{not json}' } };
-    expect(replyBodyOf(call)).toEqual({ path: '/tmp/outpost-reply-2.md', text: '{not json}', editable: true });
+    expect(replyBodyOf(call)).toEqual({ path: '/tmp/outpost-reply-2.md', text: '{not json}' });
   });
 
   it('accepts the quoting and --method/-X spellings of the same command', () => {
@@ -78,14 +78,17 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
     })).toBeNull();
   });
 
-  // Drafts raised before the `files` convention carry the body in the command. It reads fine;
-  // it just can't be edited back in, since the allowlist has no spelling for a body with an
-  // apostrophe or a newline.
-  it('reads an inline body, and marks it not editable', () => {
+  // Drafts raised before the `files` convention carry the body in the command. Editing one means
+  // moving it to the file-referencing form, so the prefix (which says where the reply goes) is
+  // kept and the inline flag is what gets swapped.
+  it('reads an inline body and keeps the command prefix it would be rebuilt from', () => {
     expect(replyBodyOf({ bash: "gh pr comment 16434 --body 'Ack — holding the merge.'" }))
-      .toEqual({ text: 'Ack — holding the merge.', editable: false });
+      .toEqual({ text: 'Ack — holding the merge.', rewrite: { prefix: 'gh pr comment 16434', ext: 'md' } });
     expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" -f body="done"' }))
-      .toEqual({ text: 'done', editable: false });
+      .toEqual({
+        text: 'done',
+        rewrite: { prefix: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies"', ext: 'json' },
+      });
   });
 });
 

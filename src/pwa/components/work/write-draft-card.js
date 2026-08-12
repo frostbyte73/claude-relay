@@ -231,9 +231,23 @@ function collectCalls(card, draft) {
     if (fieldset?.querySelector('[data-kind="skip"]')?.checked) {
       return withLabel({ ...(call.bash !== undefined ? { bash: call.bash } : { tool: call.tool }), skip: true });
     }
+    // A body the drafted command carries inline can't be re-quoted back into that command for
+    // arbitrary text (no allowlisted spelling holds an apostrophe or a newline), so the field
+    // brings the command it would become instead. Untouched, the call is pinned exactly as
+    // drafted; edited, it moves to the file-referencing form the field names. See
+    // reply-draft.js's rewriteFieldHtml.
+    const rewrite = fieldset?.querySelector('[data-kind="rewrite"]');
+    if (rewrite) {
+      if (rewrite.value === (rewrite.dataset.rewriteOriginal ?? '')) return withLabel({ bash: call.bash });
+      const key = rewrite.dataset.fileJsonKey;
+      return withLabel({
+        bash: rewrite.dataset.rewriteBash,
+        files: { [rewrite.dataset.argKey]: key ? JSON.stringify({ [key]: rewrite.value }) : rewrite.value },
+      });
+    }
     if (call.bash !== undefined) {
       // No bash textarea at all means the layout chose not to offer the command for editing
-      // (reply-draft.js shows it read-only) — fall back to the drafted text rather than
+      // (reply-draft.js renders it as prose) — fall back to the drafted text rather than
       // sending an empty command.
       const ta = fieldset?.querySelector('[data-kind="bash"]');
       const bash = ta ? ta.value : call.bash;
