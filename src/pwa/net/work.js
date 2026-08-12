@@ -38,7 +38,7 @@ export const workApi = {
   cancelStep(id, stepId)           { return request(`${stepPath(id, stepId)}/cancel`, { method: 'POST', body: '{}' }); },
   reorderSteps(id, ids)            { return request(`${jobPath(id)}/steps/reorder`, { method: 'POST', body: JSON.stringify({ ids }) }); },
   resolveStep(id, stepId, payload) { return request(`${stepPath(id, stepId)}/resolve`, { method: 'POST', body: JSON.stringify(payload ?? {}) }); },
-  retryStep(id, stepId)            { return request(`${stepPath(id, stepId)}/retry`, { method: 'POST', body: '{}' }); },
+  retryStep(id, stepId, note)      { return request(`${stepPath(id, stepId)}/retry`, { method: 'POST', body: JSON.stringify(note ? { note } : {}) }); },
   tickNow(id)                      { return request(`${jobPath(id)}/tick`, { method: 'POST', body: '{}' }); },
   rerunLatest(id)                  { return request(`${jobPath(id)}/rerun-latest`, { method: 'POST', body: '{}' }); },
   resetJob(id)                     { return request(`${jobPath(id)}/reset`, { method: 'POST', body: '{}' }); },

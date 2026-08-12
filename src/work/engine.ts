@@ -17,6 +17,7 @@ import type {
   PrFacts,
   ProposedStep,
   Step,
+  StepAttempt,
   StepEvent,
   StepEventKind,
   WorkspaceRef,
@@ -102,6 +103,18 @@ export function actionNameForStep(s: Step): string {
 // rewrite, so it stays locked.
 function stepAcceptsEdits(s: Step): boolean {
   return !s.sessionId || !!s.failure;
+}
+
+// Appended to the `/action` spawn prompt on a retry, and only then. A retried step cold-spawns
+// (see onStepRetry) with no transcript, so the envelope's previousAttempts is the sole record
+// that the work has been tried before — and no SKILL.md tells its action to look for a field
+// that is absent on every first run. Without this line the field is invisible.
+function retryPreamble(s: Step): string {
+  const n = s.attempts?.length ?? 0;
+  if (!n) return '';
+  const corrected = s.attempts!.some((a) => a.note);
+  return `\n\nAttempt ${n + 1}: ${n === 1 ? 'the previous attempt' : `all ${n} previous attempts`} at this step failed.`
+    + ` Read \`previousAttempts\` in your envelope before you start — it has what each one failed at${corrected ? " and the user's correction" : ''}.`;
 }
 
 function sameWorkspace(a: WorkspaceRef | undefined, b: WorkspaceRef | undefined): boolean {
@@ -2037,17 +2050,30 @@ export class WorkEngine {
     });
   }
 
-  onStepRetry(jobId: string, stepId: string): void {
+  // `note` is the user's correction — why the last attempt was wrong. It survives the retry
+  // on `attempts` and reaches the respawned session through the envelope's previousAttempts;
+  // see the StepAttempt doc comment for why nothing else could carry it.
+  onStepRetry(jobId: string, stepId: string, note?: string): void {
     // Retrying re-provisions the same ref, so a step whose workspace can't provision would
     // burn a retry and fail instantly again, forever. Refuse (400 at the route) and say what
     // to fix — editing the step's workspace is the repair, and it re-runs on its own.
     const cur = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     const wsErr = cur ? workspaceError(cur.workspace) : null;
     if (wsErr) throw new Error(`${wsErr}. Edit the step's workspace to repair it — that re-runs it.`);
+    const trimmed = note?.trim() || undefined;
     this.mutateStep(jobId, stepId, (s) => {
       const h = handlerFor(s);
+      // Recorded even for a retry with no note, and even for one off a step whose failure the
+      // daemon never set (rerunLatest picks the tail when nothing failed) — the count itself is
+      // what tells the next session it is not the first to try.
+      const attempt: StepAttempt = {
+        at: this.ctx.now(),
+        failure: s.failure?.reason ?? 'no failure recorded',
+        ...(trimmed ? { note: trimmed } : {}),
+      };
       return {
         ...s, failure: undefined, sessionId: undefined, state: h.initialState,
+        attempts: [...(s.attempts ?? []), attempt],
         reviewed: undefined, drafts: undefined, updatedAt: this.ctx.now(),
         // A retried orchestrated step always cold-respawns bound to `s.controller` (see
         // spawnStepSession), never to a persisted `boundAction` — the same reasoning as
@@ -2071,7 +2097,8 @@ export class WorkEngine {
       reviewingStepId: undefined,
       linearStateMarked: { ...j.linearStateMarked, done: false },
     }, {
-      kind: 'step_retried', who: 'user', stepId, body: this.stepLabel(jobId, stepId),
+      kind: 'step_retried', who: 'user', stepId,
+      body: trimmed ? `${this.stepLabel(jobId, stepId)} — ${trimmed}` : this.stepLabel(jobId, stepId),
     }));
     void this.tickOne(jobId);
   }
@@ -2463,7 +2490,7 @@ export class WorkEngine {
         }));
         this.opts.sessionManager.send(sessionId, {
           type: 'user',
-          message: { role: 'user', content: `/${actionName}` },
+          message: { role: 'user', content: `/${actionName}${retryPreamble(cur)}` },
         });
         return true;
       },

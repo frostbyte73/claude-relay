@@ -421,10 +421,16 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
   });
 
-  server.route('POST', '/api/work/jobs/:id/steps/:stepId/retry', (req, res) => {
+  // `note` is optional — the user's account of why the last attempt was wrong, carried to the
+  // respawned session (which is a cold spawn and knows nothing else about the attempt it
+  // replaces). A bare `{}` is still a plain retry.
+  server.route('POST', '/api/work/jobs/:id/steps/:stepId/retry', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/retry$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    try { engine.onStepRetry(m[1]!, m[2]!); }
+    const payload = await readJsonObject<{ note?: unknown }>(req, res, { allowEmpty: true });
+    if (!payload) return;
+    if (payload.note !== undefined && typeof payload.note !== 'string') { res.statusCode = 400; res.end('note must be a string'); return; }
+    try { engine.onStepRetry(m[1]!, m[2]!, payload.note as string | undefined); }
     catch (e) { res.statusCode = 400; res.end((e as Error).message); return; }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');

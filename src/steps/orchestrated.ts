@@ -95,6 +95,7 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
         externalRef: job.externalRef,
       },
       previousSteps: previousFindings(job, s.id),
+      ...(s.attempts?.length ? { previousAttempts: s.attempts } : {}),
       workspace: s.workspace,
     };
   },

@@ -78,6 +78,7 @@ export const actionHandler: StepHandler<ActionStep> = {
         externalRef: job.externalRef,
       },
       previousSteps: previousOutputs(job, s.id),
+      ...(s.attempts?.length ? { previousAttempts: s.attempts } : {}),
       workspace: s.workspace,
       typePayload: { ...(writeGate ? { writeGate } : {}) },
     };

@@ -71,8 +71,39 @@ function descriptionFor(s) {
   return text;
 }
 
+// A failed step's Retry is a note box, not a bare button. A retry never resumes — it clears
+// `sessionId` and cold-spawns against a freshly built envelope (onStepRetry in work/engine.ts),
+// so the next attempt has no transcript and no memory of the one you're correcting. What you
+// type here, and the failure it replaces, are the only things that cross that boundary. The
+// button stays live with the box empty: a bare retry is still one click.
+function retryComposerHtml() {
+  return `
+    <div class="thread-composer retry-compose" data-composer="step-retry">
+      <textarea class="thread-compose-input" rows="1" data-autogrow
+        placeholder="What went wrong? The retry reads this (optional)."></textarea>
+      <div class="thread-composer-row">
+        <button class="o-btn o-btn--danger" data-step-action="retry">Retry</button>
+      </div>
+    </div>`;
+}
+
+// Every earlier attempt, so you write this correction with the last one in view — the failure
+// text alone doesn't say whether you already told it this once.
+function attemptsHtml(s) {
+  const attempts = s.attempts ?? [];
+  if (!attempts.length) return '';
+  const rows = attempts.map((a, i) => `
+    <div class="tl-attempt">
+      <div class="tl-attempt-hd"><span class="o-microhead">Attempt ${i + 1}</span><span class="tl-attempt-time">${escapeHtml(timeAgo(a.at))}</span></div>
+      <div class="tl-attempt-fail">${escapeHtml(a.failure)}</div>
+      ${a.note ? `<div class="tl-attempt-note">${escapeHtml(a.note)}</div>` : ''}
+    </div>`).join('');
+  const label = attempts.length === 1 ? '1 earlier attempt' : `${attempts.length} earlier attempts`;
+  return `<details class="tl-attempts"><summary class="tl-attempts-sum">${label}</summary>${rows}</details>`;
+}
+
 function actionFor(s) {
-  if (s.failure) return `<button class="o-btn o-btn--danger" data-step-action="retry">Retry</button>`;
+  if (s.failure) return retryComposerHtml();
   if (s.cancelled) return '';
   // An orchestrated step's affordances (gate, message, mark-resolved) all live in its
   // own card, which owns the wiring too.
@@ -265,6 +296,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
         ${orchestrated ? '' : identRowHtml(s)}
         ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
+        ${attemptsHtml(s)}
         ${waitBlockHtml(s)}
         ${draftsHtml(s)}
         ${launchRowHtml(job, s)}
@@ -294,7 +326,11 @@ export function wireTimelineStep(el, job, s) {
       if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
       else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
-      else if (kind === 'retry') void work.retryStep(job.id, s.id).catch((err) => alert(`Retry failed: ${err?.message ?? err}`));
+      else if (kind === 'retry') {
+        const ta = el.querySelector('[data-composer="step-retry"] textarea');
+        void work.retryStep(job.id, s.id, (ta?.value ?? '').trim() || undefined)
+          .catch((err) => alert(`Retry failed: ${err?.message ?? err}`));
+      }
     });
   });
   if (s.type === 'action' && !isTerminalStep(s)) {

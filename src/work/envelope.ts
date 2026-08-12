@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Dispatch, InboxItem, JobRecord, PlanIteration, PrFacts, Step, WorkspaceRef } from './work-types.js';
+import type { Dispatch, InboxItem, JobRecord, PlanIteration, PrFacts, Step, StepAttempt, WorkspaceRef } from './work-types.js';
 import type { JournalEntry } from '../storage/journal-store.js';
 import type { ActionRegistry } from '../actions/registry.js';
 import type { WriteGatePayload } from './write-draft.js';
@@ -121,6 +121,10 @@ export interface StepEnvelopeBase {
   job: { source: JobRecord['source']; title: string; description: string; externalRef?: JobRecord['externalRef'] };
   previousSteps: Array<{ id: string; title: string; action?: string; output?: string }>;
   recentLessons?: JournalEntry[];
+  // Every earlier attempt at THIS step, oldest first — what it failed at, and what the user
+  // said when they retried it. Present only on a retry. The session reading this is a cold
+  // spawn (a retry clears sessionId), so nothing else tells it the work has been tried before.
+  previousAttempts?: StepAttempt[];
 }
 
 export interface ActionEnvelope extends StepEnvelopeBase {

@@ -76,6 +76,16 @@ export interface StepEvent {
   body?: string;
 }
 
+export interface StepAttempt {
+  at: number;
+  failure: string;
+  // What the user said when they hit Retry. Absent for a bare retry and for the ones the daemon
+  // fires itself (rerunLatest, a workspace edit re-running its own failed step). A daemon-restart
+  // re-run records no attempt at all — reconcileInterruptedSteps drops the session directly
+  // rather than through onStepRetry, and a restart is not an attempt that failed on its merits.
+  note?: string;
+}
+
 interface StepBase {
   id: string;
   title: string;
@@ -87,6 +97,11 @@ interface StepBase {
   // be parked simultaneously; at most one is ever unresolved for an action step.
   drafts?: WriteDraft[];
   failure?: { reason: string; at: number };
+  // One entry per failed attempt, appended by onStepRetry as it clears `failure`. A retry
+  // never resumes — it clears `sessionId` and cold-spawns against a freshly built envelope,
+  // so the new session has no transcript and no memory of what already didn't work. This is
+  // the only thing that crosses that boundary.
+  attempts?: StepAttempt[];
   cancelled?: boolean;
   // Set true once a submit_continue step-review has covered this settled step, so
   // the engine doesn't re-review the same group. New steps start unreviewed.

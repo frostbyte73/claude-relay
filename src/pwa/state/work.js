@@ -130,7 +130,7 @@ export const work = {
   async cancelStep(id, stepId)   { return call(() => workApi.cancelStep(id, stepId)); },
   async reorderSteps(id, ids)    { return call(() => workApi.reorderSteps(id, ids)); },
   async resolveStep(id, stepId, payload) { return call(() => workApi.resolveStep(id, stepId, payload)); },
-  async retryStep(id, stepId)    { return call(() => workApi.retryStep(id, stepId)); },
+  async retryStep(id, stepId, note) { return call(() => workApi.retryStep(id, stepId, note)); },
   async rerunLatest(id)          { return call(() => workApi.rerunLatest(id)); },
   async resetJob(id)             { return call(() => workApi.resetJob(id)); },
   // Launch a queued step now: force-fires its parked launch. No job/step payload comes

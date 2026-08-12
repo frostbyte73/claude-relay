@@ -247,6 +247,61 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   overflow-wrap: anywhere;
 }
 
+/* Earlier attempts at a step (step-card.js's attemptsHtml). Collapsed by default — the live
+   failure above is the one you're acting on; these are what you check before repeating a
+   correction you already sent. Quiet-toned on purpose: they are history, not the alarm. */
+.tl-attempts { margin: 0 0 8px; }
+.tl-attempts-sum {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-mute);
+  list-style: none;
+  padding: 2px 0;
+}
+.tl-attempts-sum::-webkit-details-marker { display: none; }
+.tl-attempts-sum::before { content: '▸ '; }
+.tl-attempts[open] .tl-attempts-sum::before { content: '▾ '; }
+.tl-attempts-sum:hover { color: var(--text); }
+.tl-attempt {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+.tl-attempt-hd { display: flex; align-items: baseline; gap: 8px; }
+.tl-attempt-time { font-size: 11px; color: var(--text-dim); }
+.tl-attempt-fail {
+  margin-top: 2px;
+  font-size: 12px; line-height: 1.5;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The user's own correction, distinguished from the failure it answers. */
+.tl-attempt-note {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--accent);
+  font-size: 12px; line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Retry note box. Unlike .orc-msg the button row is always visible — a bare retry must stay
+   one click, so the box can't be what reveals it. */
+.thread-composer.retry-compose {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.retry-compose .thread-compose-input {
+  min-height: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  resize: none;
+  overflow-y: hidden;
+}
+
 .tl-wait {
   margin: 2px 0 8px;
   padding: 8px 12px;
