@@ -32,6 +32,27 @@ describe('sessionGroups', () => {
     expect(groups.recent).toEqual([]);
   });
 
+  // The regression: opening a job files every finished step's session under Running.
+  // mountInlineSession calls ensureSlice for every step it draws, so a slice exists for
+  // sessions whose subprocess died long ago. The slice must not out-vote the daemon's own
+  // row unless it actually knows something — an untouched slice carries runState `null`,
+  // and the server row decides.
+  it('defers to the daemon row for a slice that has no liveness evidence of its own', () => {
+    const rendered = new Map<string, any>([
+      ['running', { runState: null }],
+      ['idle', { runState: null }],
+      ['action', { runState: null }],
+    ]);
+    const rows = projects();
+    // What GET /api/sessions says: one alive, the rest reaped.
+    const serverRunState: Record<string, string> = { running: 'background', idle: 'idle', action: 'idle' };
+    rows[0]!.sessions = rows[0]!.sessions.map((s) => ({ ...s, runState: serverRunState[s.id] })) as any;
+
+    const groups = sessionGroups({ projects: rows, sessionsById: rendered });
+    expect(groups.running.map((s: any) => s.id)).toEqual(['running']);
+    expect(groups.idle.map((s: any) => s.id).sort()).toEqual(['action', 'idle']);
+  });
+
   it('reveals archived sessions into "recent" when showArchived is set', () => {
     const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById(), showArchived: true });
     expect(groups.recent.map((s: any) => s.id)).toEqual(['archived']);

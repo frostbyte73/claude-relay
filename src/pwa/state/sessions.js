@@ -28,9 +28,20 @@ function loadMaxTranscriptLines() {
 // `maxTranscriptLines` so this doesn't grow without limit.
 //
 // `runState` is derived from `mountedCount` + subprocess-alive signals:
+//   null       = unknown — this tab has no evidence either way, so defer to the
+//                daemon's own row (vm/sessions.js's `runtime?.runState ?? ...`)
 //   foreground = at least one mounted view is showing this session
 //   background = subprocess alive, no view mounted
 //   inactive   = subprocess exited
+//
+// The default MUST stay `null`, not 'background'. A slice gets created by anything that
+// merely wants to render a session — most of all the job timeline's inline feed, which
+// calls ensureSlice for every step it draws. 'background' is a positive claim that the
+// subprocess is alive, so opening a job with twenty finished steps used to file all twenty
+// under Running (sessions list, sidebar count, cockpit In-flight) even though the guard in
+// inline-session.js correctly kept them from being resumed — they sat there doing nothing
+// until the next GET /api/sessions let seedRunStates (app.js) notice the daemon had said
+// 'idle' all along. `null` says "ask the daemon", and the daemon actually knows.
 function emptySlice(id, meta = {}) {
   return {
     id,
@@ -41,7 +52,7 @@ function emptySlice(id, meta = {}) {
     worktreePath:       meta.worktreePath ?? null,
     worktreeBranch:     meta.worktreeBranch ?? null,
     approvalMode:       meta.approvalMode ?? 'ask',
-    runState:           'background',
+    runState:           null,
     mountedCount:       0,
     transcript:         [],
     todos:              new Map(),

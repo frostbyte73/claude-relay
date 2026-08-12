@@ -203,7 +203,17 @@ function seedRunStates(projects) {
       const slice = sessions.getSlice(s.id);
       if (serverRunning) {
         sessions.upsertSlice(s.id, { cwd: p.cwd, spawnCwd: s.worktreePath ?? p.cwd });
-        if (slice?.runState === 'inactive') sessions.setRunState(s.id, 'background');
+        // Promote unless a mounted view already owns the lifecycle. Was `=== 'inactive'`,
+        // which relied on a fresh slice defaulting to 'background' to cover the never-opened
+        // case; slices now start `null`, and the consumers that read the slice directly
+        // (sidebar count, cockpit In-flight, mobile tab badge) have no server row to fall
+        // back to the way vm/sessions.js does.
+        // Promote unless a mounted view already owns the lifecycle. Was `=== 'inactive'`,
+        // which relied on a fresh slice defaulting to 'background' to cover the never-opened
+        // case; slices now start `null`, and the consumers that read the slice directly
+        // (sidebar count, cockpit In-flight, mobile tab badge) have no server row to fall
+        // back to the way vm/sessions.js does.
+        if (slice?.runState !== 'foreground') sessions.setRunState(s.id, 'background');
       } else if (s.runState === 'idle' && slice?.runState === 'background') {
         sessions.setRunState(s.id, 'inactive');
       }
