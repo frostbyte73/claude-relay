@@ -13,9 +13,9 @@ import { renderActivityStream } from '../work/activity-stream.js';
 import { workApi } from '../../net/work.js';
 import { emptyState } from '../shell/placeholder.js';
 import { openSession } from '../../app-bridge.js';
+import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
-function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
 function ago(epochMs) {
   if (!epochMs) return '';
   const s = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));

@@ -174,21 +174,47 @@ describe('orchestratedRows', () => {
     state: 'running', dispatches: [], inbox: [], ...o,
   });
 
-  it('labels a known phase and tones a merged one as done', () => {
-    expect(orchestratedRows(step({ phase: 'implement' })).phaseChip).toEqual({ label: 'Implement', tone: '' });
-    expect(orchestratedRows(step({ phase: 'merged', state: 'resolved' })).phaseChip)
-      .toEqual({ label: 'Merged', tone: 'ok' });
-  });
-
-  it('humanizes a phase the controller coined itself', () => {
-    expect(orchestratedRows(step({ phase: 'awaiting_qa' })).phaseChip)
-      .toEqual({ label: 'Awaiting qa', tone: '' });
+  it('falls back to the phase label, known or controller-coined, when nothing else applies', () => {
+    expect(orchestratedRows(step({ phase: 'implement' })).statusLine)
+      .toEqual({ glyph: '', text: 'Implement' });
+    expect(orchestratedRows(step({ phase: 'merged', state: 'resolved' })).statusLine)
+      .toEqual({ glyph: '', text: 'Merged' });
+    expect(orchestratedRows(step({ phase: 'awaiting_qa' })).statusLine)
+      .toEqual({ glyph: '', text: 'Awaiting qa' });
   });
 
   it('surfaces the wait reason only while waiting', () => {
     const waiting = { waitingOn: { reason: 'Watching CI' } };
-    expect(orchestratedRows(step({ state: 'waiting', ...waiting })).waitingReason).toBe('Watching CI');
-    expect(orchestratedRows(step({ state: 'running', ...waiting })).waitingReason).toBeNull();
+    expect(orchestratedRows(step({ state: 'waiting', ...waiting })).statusLine)
+      .toEqual({ glyph: '⏸', text: 'Watching CI' });
+    // No phase either, so nothing is left to say.
+    expect(orchestratedRows(step({ state: 'running', ...waiting })).statusLine).toBeNull();
+  });
+
+  it('falls back to the running dispatch brief for the status line', () => {
+    const dispatches = [
+      { id: 'd1', action: 'code.spec', brief: 'done that', status: 'done' },
+      { id: 'd2', action: 'code.implement', brief: 'rewriting the reply path', status: 'running' },
+    ];
+    expect(orchestratedRows(step({ state: 'running', dispatches })).statusLine)
+      .toEqual({ glyph: '', text: 'rewriting the reply path' });
+    // A wait outranks it: what the step is parked ON is the truer answer to "what now".
+    expect(orchestratedRows(step({ state: 'waiting', waitingOn: { reason: 'CI' }, dispatches })).statusLine)
+      .toEqual({ glyph: '⏸', text: 'CI' });
+    // ...and both outrank the phase, which is why "PR open" no longer restates the PR block.
+    expect(orchestratedRows(step({ state: 'running', phase: 'pr_open', dispatches })).statusLine)
+      .toEqual({ glyph: '', text: 'rewriting the reply path' });
+    expect(orchestratedRows(step({ state: 'running' })).statusLine).toBeNull();
+  });
+
+  it('marks the newest artifact only while the step is still moving', () => {
+    const artifacts = { spec: '# S', implPlan: '# P' };
+    expect(orchestratedRows(step({ memo: 'm', artifacts })).artifactRows.map((a: any) => a.latest))
+      .toEqual([false, false, true]);
+    for (const settled of [{ state: 'resolved' }, { state: 'failed' }, { cancelled: true }]) {
+      expect(orchestratedRows(step({ memo: 'm', artifacts, ...settled })).artifactRows.map((a: any) => a.latest))
+        .toEqual([false, false, false]);
+    }
   });
 
   it('tones dispatch rows by status and carries the child session', () => {
@@ -204,7 +230,7 @@ describe('orchestratedRows', () => {
   it('puts the memo ahead of the artifacts and labels the known keys', () => {
     const rows = orchestratedRows(step({ memo: 'where I am', artifacts: { spec: '# S', implPlan: '# P', notes: 'n' } }));
     expect(rows.artifactRows.map((a: any) => [a.key, a.label]))
-      .toEqual([['memo', 'Memo'], ['spec', 'Spec'], ['implPlan', 'Implementation plan'], ['notes', 'Notes']]);
+      .toEqual([['memo', 'Memo'], ['spec', 'Spec'], ['implPlan', 'Plan'], ['notes', 'Notes']]);
   });
 
   it('drops empty artifacts rather than rendering a blank disclosure', () => {

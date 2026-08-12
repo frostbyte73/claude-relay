@@ -44,6 +44,8 @@ function seedJob(repoCwd: string, branch: string) {
         inputs: { approach: 'Add a component and wire it into the layout.' },
         phase: 'pr_open',
         state: 'gate_pending_approval',
+        memo: 'Widget is wired in; waiting on review.',
+        artifacts: { spec: '# The spec\n\nWhat we agreed.\n', implPlan: '# The plan\n\nHow it lands.\n' },
         gate: {
           draft: DRAFT,
           question: QUESTION,
@@ -103,12 +105,21 @@ seededTest('renders the controller, phase, dispatches and the gate draft as sepa
   const card = step.locator('.orc-card');
   await expect(card).toBeVisible();
 
-  // Row 1: the controller as a category-colored action chip + the phase chip — never
-  // crammed onto the step's header line, and never printed twice (the header's
-  // `.tl-skill` slot stays empty for an orchestrated step).
-  await expect(card.locator('.orc-chips .type-mono')).toHaveText('orchestrate-pr');
-  await expect(card.locator('.orc-chips .o-pill')).toHaveText('PR open');
-  await expect(step.locator('.tl-skill')).toHaveCount(0);
+  // Row 1 is identity only — the controller as a category-colored action chip plus the repo,
+  // on the same `.tl-ident` row an action step uses (step-card.js). Never crammed onto the
+  // step's header line, which carries the title and the time and nothing else.
+  const ident = card.locator('.tl-ident').first();
+  await expect(ident.locator('.type-mono')).toHaveText('orchestrate-pr');
+  await expect(ident.locator('.tl-ident-repo')).toContainText('outpost-e2e-orcgate-');
+  await expect(step.locator('.tl-hdr > *')).toHaveCount(2); // .tl-name + .tl-time, nothing else
+
+  // The phase is state, not identity: it reads on the status line below, and only because
+  // this step has no wait reason and no running dispatch to report instead. It is NOT a pill
+  // beside the controller restating the PR block one row down.
+  await expect(card.locator('.orc-status-text')).toHaveText('PR open');
+  await expect(ident.locator('.o-pill')).toHaveCount(0);
+  // Named exactly once in the whole step — the header used to print it a second time.
+  await expect(step.locator('.type-mono', { hasText: /^orchestrate-pr$/ })).toHaveCount(1);
 
   // Dispatch list, with the child action's own name and status.
   const dispatch = card.locator('.orc-dispatch');
@@ -121,6 +132,41 @@ seededTest('renders the controller, phase, dispatches and the gate draft as sepa
   await expect(card.locator('.tl-gate-head')).toContainText(QUESTION);
   await expect(card.locator('.tl-gate-body')).toContainText('Merge plan');
   await expect(card.locator('.tl-gate-body strong')).toHaveText('PR #12');
+});
+
+// The trail strip is plain buttons, not <details>, so detail.js's repaint-survival snapshot
+// can't pick it up generically — the open chip is carried across repaints by an explicit
+// pass (snapshotUi/restoreUi's `trail` map). The drill-in rebuilds via innerHTML on every
+// work-store event, several times a minute on a live job, so a break here silently slams
+// the artifact shut mid-read.
+seededTest('the trail opens one artifact at a time and survives a repaint', async ({ outpostPage }) => {
+  await openJob(outpostPage);
+  const card = outpostPage.locator(`.tl-step[data-step-id="${STEP_ID}"] .orc-card`);
+  const trail = card.locator('.orc-trail');
+
+  await expect(trail.locator('.orc-trail-chip')).toHaveText(['Memo', 'Spec', 'Plan']);
+  // The newest artifact is marked while the step is still moving.
+  await expect(trail.locator('.orc-trail-chip', { has: outpostPage.locator('.orc-trail-dot') }))
+    .toHaveText('Plan');
+  await expect(trail.locator('.orc-trail-body:not([hidden])')).toHaveCount(0);
+
+  await trail.locator('[data-trail-chip="spec"]').click();
+  await expect(trail.locator('[data-trail-body="spec"]')).toContainText('What we agreed');
+  await expect(trail.locator('.orc-trail-body:not([hidden])')).toHaveCount(1);
+
+  await trail.locator('[data-trail-chip="implplan"]').click();
+  await expect(trail.locator('[data-trail-body="implplan"]')).toContainText('How it lands');
+  await expect(trail.locator('.orc-trail-body:not([hidden])')).toHaveCount(1);
+
+  // Rebuild the drill-in through a real app path: Sync flips `syncingJobId`, which is part
+  // of detail.js's paint key, so the surface re-renders from scratch (twice — on and off).
+  await outpostPage.locator('[data-action="sync-job"]').click();
+  await expect(trail.locator('[data-trail-chip="implplan"]')).toHaveClass(/is-open/);
+  await expect(trail.locator('[data-trail-body="implplan"]')).toBeVisible();
+
+  // Re-clicking the open chip closes it.
+  await trail.locator('[data-trail-chip="implplan"]').click();
+  await expect(trail.locator('.orc-trail-body:not([hidden])')).toHaveCount(0);
 });
 
 seededTest('Approve clears the gate, records the verdict, and resumes the controller', async ({ outpostPage, daemon }) => {

@@ -13,9 +13,10 @@ import { openActionPickerDialog } from '../work/action-picker-dialog.js';
 import { jobTone, ago, STATE_LABEL, launchPillClass } from '../work/ticket-row.js';
 import { jobLaunchBadge } from '../../vm/tracked.js';
 import { syncInlineMounts, teardownAllExcept } from './session-mounts.js';
+import { wireAutogrow } from '../../utils/autogrow.js';
+import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
-function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
 
 // Per-job "edit plan" toggle, module-local: it's UI mode, not job state, so it
 // must survive store-driven repaints without a round-trip.
@@ -227,8 +228,15 @@ function draftFieldByKey(root, key) {
 }
 
 function snapshotUi(root) {
-  const snap = { details: new Map(), composers: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null, draftFields: new Map() };
+  const snap = { details: new Map(), composers: new Map(), trail: new Map(), replan: null, launchContext: null, menuOpen: false, focus: null, draftFields: new Map() };
   root.querySelectorAll('details').forEach((d) => snap.details.set(detailsKey(d), d.open));
+  // The orchestrated card's trail strip (orchestrated-card.js) is plain buttons, not
+  // <details>, so the pass above can't see which artifact the user has open. At most one
+  // chip per step is open, so the step id is the whole key.
+  root.querySelectorAll('.orc-trail-chip.is-open').forEach((chip) => {
+    const step = chip.closest('[data-step-id]');
+    if (step) snap.trail.set(step.getAttribute('data-step-id'), chip.getAttribute('data-trail-chip'));
+  });
   root.querySelectorAll('[data-composer]').forEach((c) => {
     snap.composers.set(composerKey(c), {
       value: c.querySelector('textarea')?.value ?? '',
@@ -281,6 +289,11 @@ function restoreUi(root, snap) {
     const k = detailsKey(d);
     if (snap.details.has(k)) d.open = snap.details.get(k);
   });
+  // A repainted trail always starts fully closed, so re-clicking the chip through its own
+  // handler restores it — no second code path that could drift from openTrail's semantics.
+  for (const [stepId, slug] of snap.trail) {
+    root.querySelector(`.tl-step[data-step-id="${CSS.escape(stepId)}"] .orc-trail-chip[data-trail-chip="${CSS.escape(slug)}"]`)?.click();
+  }
   // Composers repaint empty and (for the toggled ones) closed. Carry the text back and
   // re-open anything the user had open — a dispatch transition or a pr-watcher event
   // bumps job.updatedAt every few seconds while they're mid-sentence.
@@ -386,6 +399,11 @@ export function renderTrackedDetail(root, jobId) {
     const step = (job.steps ?? []).find((s) => s.id === stepId);
     if (step) wireTimelineStep(el, job, step);
   });
+
+  // Every `data-autogrow` composer in the tree at once — the step's message box, its gate
+  // note, and both write-draft boxes. Must run before restoreUi, which replays an `input`
+  // event to carry half-typed text back in and relies on these listeners already being up.
+  wireAutogrow(root);
 
   const menuBtn = root.querySelector('[data-action="toggle-menu"]');
   const menuBody = root.querySelector('.tk-menu-body');

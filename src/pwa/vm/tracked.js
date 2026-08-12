@@ -165,10 +165,15 @@ const PHASE_LABEL = {
 // written by the bound rounds it dispatches into. "Review" alone reads as ambiguous inside a
 // card whose whole subject is reviewing a PR — "Draft review" vs "Posted review" disambiguates
 // the synthesized-but-unposted comment set from what actually landed on GitHub.
+// `implPlan` is "Plan", not "Implementation plan": the labels render as chips sitting side
+// by side on one strip, where "Implementation plan" and "Implementation" differ by a single
+// trailing word and read as the same chip at a glance. The step's own status line already
+// says Plan/Implement, so the short form loses nothing.
 const ARTIFACT_LABEL = {
   memo: 'Memo',
   spec: 'Spec',
-  implPlan: 'Implementation plan',
+  implPlan: 'Plan',
+  implementation: 'Implementation',
   lenses: 'Review lenses',
   review: 'Draft review',
   postedReview: 'Posted review',
@@ -201,13 +206,9 @@ function slugOf(k, taken) {
   return slug;
 }
 
-function phaseChipOf(s) {
-  if (!s.phase) return null;
-  const tone = s.state === 'failed' || s.phase === 'failed' ? 'danger'
-    : s.state === 'resolved' || s.phase === 'merged' ? 'ok'
-    : s.state === 'gate_pending_approval' ? 'warn'
-    : '';
-  return { label: PHASE_LABEL[s.phase] ?? humanizeKey(s.phase), tone };
+function phaseLabelOf(s) {
+  if (!s.phase) return '';
+  return PHASE_LABEL[s.phase] ?? humanizeKey(s.phase);
 }
 
 // "Mark resolved" is one button doing three different jobs, so it reads as an undifferentiated
@@ -237,6 +238,27 @@ function markResolvedInfo(s) {
   return { label: 'Mark resolved', hint: '' };
 }
 
+// The one sentence saying what the controller is doing right now: what it's parked on, what
+// the dispatch it's currently running is off doing, or — with nothing more specific to say —
+// the phase it's in. Neither is a hold on the USER — that's `gate` — so the card renders this
+// as a plain line rather than the railed callout a meta.wait soak earns (DESIGN §6: a rail
+// means a state).
+//
+// The phase is LAST on purpose. It used to be a pill on the identity row, where it sat next
+// to the controller's name restating what the PR block says one row below — "PR open" above
+// a block whose whole existence says the PR is open, with the CI/review/conflict badges
+// alongside. Demoted here it disappears in exactly that case (a live step almost always has
+// a wait reason or a running dispatch to report instead) and survives for the cases nothing
+// else covers: the pre-PR spec/plan phases, and code.orchestrate-review's own ladder
+// (triage → lenses → synthesis → watching), which the PR block says nothing about.
+function statusLineOf(s) {
+  if (s.state === 'waiting') return { glyph: '⏸', text: s.waitingOn?.reason ?? 'Waiting' };
+  const running = (s.dispatches ?? []).find((d) => d.status === 'running');
+  if (running?.brief) return { glyph: '', text: running.brief };
+  const phase = phaseLabelOf(s);
+  return phase ? { glyph: '', text: phase } : null;
+}
+
 export function orchestratedRows(step) {
   const s = step ?? {};
   const artifacts = s.artifacts ?? {};
@@ -246,7 +268,12 @@ export function orchestratedRows(step) {
     ...Object.entries(artifacts)
       .filter(([, body]) => typeof body === 'string' && body.trim())
       .map(([key, body]) => ({ key, slug: slugOf(key, takenSlugs), label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
-  ];
+  ].map((a) => ({ ...a, latest: false }));
+  // The artifacts render as one strip of chips, in the order the controller produced them,
+  // and the last one is what it just wrote — worth a mark while the step is still moving.
+  // On a settled step "most recent" is only trivia, so the mark comes off.
+  const settled = !!s.cancelled || s.state === 'resolved' || s.state === 'failed';
+  if (!settled && artifactRows.length) artifactRows[artifactRows.length - 1].latest = true;
 
   const drafts = s.drafts ?? [];
   // isTerminalStep guard is defense-in-depth, not the primary line: settleOrchestratedStep
@@ -260,8 +287,7 @@ export function orchestratedRows(step) {
     && (raisedByKind !== 'dispatch' || d.raisedBy.dispatchId === dispatchId)) ?? null);
 
   return {
-    phaseChip: phaseChipOf(s),
-    waitingReason: s.state === 'waiting' ? (s.waitingOn?.reason ?? 'Waiting') : null,
+    statusLine: statusLineOf(s),
     dispatchRows: (s.dispatches ?? []).map((d) => ({
       id: d.id,
       action: d.action,

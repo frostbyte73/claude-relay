@@ -10,9 +10,9 @@ import {
 import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml } from './write-draft-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { discardAll } from '../../state/git.js';
+import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
-function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
 
 function ciBadge(s) {
   if (!s.ciState) return '';
@@ -148,14 +148,15 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   // breakdown still lives in the expandable Checks disclosure.
   const badges = isMerged ? [] : [mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
 
-  // The two always-visible rows — repo/title/badges + branch/merged. When merged
-  // these become the collapsed summary; otherwise they head the open block.
+  // The two always-visible rows — repo/badges + branch/merged. When merged these become the
+  // collapsed summary; otherwise they head the open block. No title row: `PrFacts` carries
+  // no title of its own, so this printed `s.title` — the STEP's title, already the
+  // `.tl-name` heading a few rows up. One string, rendered twice, in two typographies.
   const header = `
     <div class="pr-hdr">
       ${s.prUrl
         ? `<a class="pr-num" href="${escapeHtml(s.prUrl)}" target="_blank" rel="noopener">${escapeHtml(prRepo)}${prNum ? ` #${escapeHtml(prNum)}` : ''} ↗</a>`
         : `<span class="pr-num">${escapeHtml(repoName)}</span>`}
-      <span class="prb-title">${escapeHtml(s.title)}</span>
       ${badges.length ? `<div class="pr-badges">${badges.join('')}</div>` : ''}
     </div>
     <div class="pr-stats">

@@ -2,21 +2,15 @@ import { work } from '../../state/work.js';
 import { sessions } from '../../state/sessions.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { orchestratedHasPrBlock, renderOrchestratedCard, wireOrchestratedCard } from './orchestrated-card.js';
+import { actionCategory, actionDisplayName } from './action-icon.js';
 import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
 import { renderMarkdown } from '../../markdown.js';
 import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
 import { isTerminalStep, hasUnapprovedDraft } from '../../vm/work-predicates.js';
+import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
-function shortName(cwd) { const p = String(cwd ?? '').split('/').filter(Boolean); return p.slice(-2).join('/'); }
-// An orchestrated step names its controller on the card's own category-colored action
-// chip (orchestrated-card.js), so this slot stays empty rather than repeating the name
-// as plain accent text right next to it.
-function stepLabel(s) {
-  if (s.type === 'orchestrated') return '';
-  return s.action ? `ACTION · ${s.action.toUpperCase()}` : 'ACTION';
-}
 
 function stateLabel(s) {
   if (s.failure) return 'failed';
@@ -47,10 +41,29 @@ function stateTone(s) {
   return 'active';
 }
 
-function metaAction(s) {
-  if (s.workspace?.kind === 'readonly') return `<span class="muted">${escapeHtml(shortName(s.workspace.repoCwd))}</span>`;
-  if (s.workspace?.kind === 'writable') return `<span class="branch">${escapeHtml(s.workspace.branch)}</span>`;
-  return '';
+// Identity row for an `action` step: which action it is, and the workspace it runs in.
+// Sits directly under the description, mirroring `.tl-ident` in the orchestrated card
+// (orchestrated-card.js) — the two step types used to disagree about where a step says what
+// it is. An action step crammed its name onto the header line as an `--accent` chip reading
+// `action.write.run-github-workflow` (uppercased and then lowercased straight back, with the
+// `·` separator swapped for a dot that fabricated a namespace segment, on a prefix every
+// action step carries) while its workspace sat on its own row near the bottom, below the
+// session tail. The chip is now the same `type-mono[data-cat]` the plan index and the
+// orchestrated card already use, so all three sites read from the one category taxonomy
+// instead of the timeline re-mapping the color to accent locally (DESIGN §7.2).
+function identRowHtml(s) {
+  const bits = [];
+  if (s.action) {
+    bits.push(`<span class="type-mono" data-cat="${escapeHtml(actionCategory(s.action))}">${escapeHtml(actionDisplayName(s.action))}</span>`);
+  }
+  if (s.workspace?.kind === 'writable' && s.workspace.branch) {
+    bits.push(`<span class="o-pill code">${escapeHtml(s.workspace.branch)}</span>`);
+  } else if (s.workspace?.kind === 'readonly') {
+    // A read-only checkout is context, not something the step owns — it stays quiet text
+    // rather than taking the ref chip the branch gets.
+    bits.push(`<span class="tl-ident-repo">${escapeHtml(shortName(s.workspace.repoCwd))}</span>`);
+  }
+  return bits.length ? `<div class="tl-ident">${bits.join('')}</div>` : '';
 }
 
 function descriptionFor(s) {
@@ -225,7 +238,6 @@ function refsHtml(refs) {
 export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   const tone = dotTone(s);
   const title = s.title || s.type;
-  const skill = stepLabel(s).toLowerCase().replace(/\s*·\s*/, '.');
   const desc = descriptionFor(s);
   const output = (s.type === 'action' && s.output) ? renderMarkdown(s.output) : '';
   // Findings are the long tail of a step — collapse them once the step is done so
@@ -234,6 +246,8 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   // <details>; open state survives repaints via detail.js's snapshotUi.
   const findingsOpen = s.state !== 'resolved';
   const groupAttr = groupPos ? ` data-group-pos="${groupPos}"` : '';
+  // An orchestrated step's session mount is rendered by the card itself, so its composer can
+  // sit directly under the transcript tail — see orchestrated-card.js's own header comment.
   const orchestrated = s.type === 'orchestrated';
   // The PR block (mounted inside the orchestrated card) carries its own diff-review
   // button and PR link, so suppress the standalone refs alongside it. The transcript is
@@ -246,16 +260,16 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
       <div class="tl-content">
         <div class="tl-hdr">
           <span class="tl-name">${escapeHtml(title)}</span>
-          ${skill ? `<span class="tl-skill">${escapeHtml(skill)}</span>` : ''}
           <span class="tl-time">${escapeHtml(timeAgo(s.updatedAt))}${escapeHtml(durationLabel(s))}</span>
         </div>
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
+        ${orchestrated ? '' : identRowHtml(s)}
         ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
         ${waitBlockHtml(s)}
         ${draftsHtml(s)}
         ${launchRowHtml(job, s)}
-        ${s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
-        ${orchestrated ? renderOrchestratedCard(s, { job }) : (metaAction(s) ? `<div class="tl-meta">${metaAction(s)}</div>` : '')}
+        ${!orchestrated && s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
+        ${orchestrated ? renderOrchestratedCard(s, { job }) : ''}
         ${refsHtml(refs)}
         ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
         ${action ? `<div class="step-actions">${action}</div>` : ''}

@@ -98,4 +98,11 @@ function fmtNumber(n) {
   return Number(n || 0).toLocaleString('en-US');
 }
 
-export { relPast, relFuture, formatDuration, fmtCtxSize, fmtResetAt, fmtRemaining, fmtNumber };
+// The last two path segments of a working directory — how a repo names itself in a row
+// ("frostbyte73/outpost"). Had been copy-pasted identically into step-card.js, pr-block.js,
+// tracked/detail.js and tracked/focus-rail.js.
+function shortName(cwd) {
+  return String(cwd ?? '').split('/').filter(Boolean).slice(-2).join('/');
+}
+
+export { relPast, relFuture, formatDuration, fmtCtxSize, fmtResetAt, fmtRemaining, fmtNumber, shortName };

@@ -171,12 +171,12 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .plan-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 16px;
+  gap: 8px;
+  padding: 8px 16px;
   min-width: 0;
 }
 @supports (grid-template-columns: subgrid) {
-  .plan-index { display: grid; grid-template-columns: auto auto minmax(0, 1fr); column-gap: 10px; }
+  .plan-index { display: grid; grid-template-columns: auto auto minmax(0, 1fr); column-gap: 8px; }
   /* The empty-state children (launch composer, orchestrator mount) span it too. */
   .plan-index > * { grid-column: 1 / -1; }
   .plan-row { display: grid; grid-template-columns: subgrid; }
@@ -205,8 +205,8 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .tl-step {
   position: relative;
   display: flex;
-  gap: 14px;
-  padding: 0 0 22px 4px;
+  gap: 12px;
+  padding: 0 0 24px 4px;
   margin-left: 8px;
   border-left: 2px solid var(--line);
 }
@@ -264,17 +264,6 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   margin-top: 4px;
   color: var(--text);
   overflow-wrap: anywhere;
-}
-/* Neutral variant: an orchestrated step's hold is on CI, a review or a dispatch —
-   nothing the user can release — so it drops the --warn rail the meta.wait soak earns. */
-.tl-wait--neutral {
-  background: var(--bg-elev-2);
-  border-left-color: var(--line);
-}
-.tl-wait--neutral .tl-wait-reason {
-  margin-top: 0;
-  font-size: 12px;
-  color: var(--text-mute);
 }
 .tl-wait-preview {
   margin: 6px 0 0;
@@ -475,7 +464,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .tl-hdr {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 4px;
 }
 /* Edit-plan mode injects .step-edit-tools (defined in this file) as a sibling
@@ -490,14 +479,6 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   font-weight: 500;
   font-size: 14px;
   color: var(--text);
-}
-.tl-skill {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  padding: 1px 6px;
-  border-radius: var(--r-control);
 }
 .tl-time {
   margin-left: auto;
@@ -530,24 +511,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 }
 .tl-ref:hover { text-decoration: underline; }
 
-.tl-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-mute);
-  letter-spacing: 0.02em;
-  margin: 2px 0 8px;
-}
-.tl-meta .branch     { color: var(--accent); }
-.tl-meta .ci-ok       { color: var(--ok); }
-.tl-meta .ci-fail     { color: var(--danger); }
-.tl-meta .review-ok   { color: var(--ok); }
-.tl-meta .unresolved  { color: var(--accent); }
-.tl-meta .muted       { color: var(--text-dim); word-break: break-all; }
-
-/* Per-step token-launch-queue status — own row, same rhythm as .tl-meta. */
+/* Per-step token-launch-queue status — own row, same rhythm as .tl-ident. */
 .tl-launch {
   display: flex;
   align-items: center;
@@ -556,21 +520,53 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 }
 
 /* ── Orchestrated step card ───────────────────────────────────────────────
-   The body of a controller-owned step. Every part is its own stacked row —
-   chips, wait reason, dispatches, artifacts, PR block, gate, composer — so the
-   header line above stays name/skill/time and nothing else. */
+   The body of a controller-owned step, in two tiers (see orchestrated-card.js).
+   Live tier: identity → status line → hold → transcript tail → composer. Record
+   tier (`.orc-record`, below one hairline): PR block, dispatches, trail strip.
+   Every part is its own stacked row — the header line above stays name/time. */
 .orc-card { display: flex; flex-direction: column; gap: 8px; }
-.orc-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.orc-dispatches { display: flex; flex-direction: column; gap: 6px; }
+
+/* Identity, shared by both step types: which action this step is, the workspace it runs in,
+   and (orchestrated only) the phase pill plus the step's own ⋯ pushed right. Directly under
+   the description in both cases — see identRowHtml in step-card.js for what the action
+   step's version replaced. The margin applies only there: the orchestrated card nests this
+   inside `.orc-card`, whose own flex gap already spaces it. */
+.tl-ident { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tl-content > .tl-ident { margin: 0 0 8px; }
+.tl-ident-spacer { flex: 1 1 auto; }
+.tl-ident-repo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+}
+
+/* What the controller is doing right now. A plain line by design: this is a hold
+   on CI or a dispatch, never on the user, so it takes no rail and no fill —
+   those belong to .tl-gate below, which IS the user's move. */
+.orc-status {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-mute);
+  overflow-wrap: anywhere;
+}
+.orc-status-glyph { color: var(--text-dim); flex: none; }
+
+.orc-dispatches { display: flex; flex-direction: column; gap: 8px; }
 .orc-dispatch {
   display: grid;
   grid-template-columns: auto auto auto 1fr;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 8px 12px;
   background: var(--bg-elev);
   border: 1px solid var(--line);
-  border-radius: var(--r-control);
+  /* A container, not a control: it holds a chip, a pill, a button, a brief, and
+     sometimes an entire .wd-card. DESIGN §5 puts those on --r-container. */
+  border-radius: var(--r-container);
 }
 .orc-dispatch-icon { display: inline-flex; width: 16px; height: 16px; color: var(--cat-fg, var(--text-dim)); }
 .orc-dispatch-icon svg { width: 100%; height: 100%; }
@@ -588,7 +584,98 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
    this it auto-places into the grid's first (auto-sized) column and renders crushed. */
 .orc-dispatch .wd-card { grid-column: 1 / -1; }
 
-.orc-msg { margin-top: 0; }
+/* ── "Message the controller" ─────────────────────────────────────────────
+   One line at rest — utils/autogrow.js grows it, and the Send row only appears
+   once there's something to send. It was a permanently-open 76px box plus a
+   button row on every live orchestrated step, and it sat at the very bottom of
+   the card; it now follows the transcript tail it answers. */
+/* Doubled up on `.thread-composer` deliberately: the base rule is ~700 lines further down
+   this sheet, so a lone `.orc-msg` ties on specificity and loses on source order — which is
+   why the pre-existing `.orc-msg { margin-top: 0 }` never actually did anything. */
+.thread-composer.orc-msg {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+  gap: 8px;
+}
+.orc-msg .thread-compose-input {
+  min-height: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  resize: none;
+  overflow-y: hidden;
+}
+.orc-msg .thread-composer-row { display: none; }
+.orc-msg:focus-within .thread-composer-row,
+.orc-msg.is-open .thread-composer-row { display: flex; }
+
+/* ── Record tier ──────────────────────────────────────────────────────────
+   Everything that accumulates rather than changes: the PR, settled dispatches,
+   the paper trail. One hairline separates it from the live tier above. */
+.orc-record {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.orc-record > .pr-block:first-child { margin-top: 0; }
+
+/* ── The trail strip ──────────────────────────────────────────────────────
+   The controller's memo and every artifact it has reported, as one row of chips
+   in production order, opening one body at a time. This replaced six sibling
+   <details> — six label rows and six carets, ~190px before anything was read.
+   The open body is a flex item forced onto its own line below every chip. */
+.orc-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.orc-trail-caret {
+  font-size: 10px;
+  color: var(--text-dim);
+  flex: none;
+  transition: transform var(--dur-2) var(--ease);
+}
+.orc-trail.is-open .orc-trail-caret { transform: rotate(90deg); }
+.orc-trail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  background: var(--bg-elev-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.orc-trail-chip:hover { color: var(--text); }
+.orc-trail-chip.is-open {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.orc-trail-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* The most recent artifact — what the controller just wrote. Dropped once the
+   step settles, where "most recent" stops meaning anything (vm/tracked.js). */
+.orc-trail-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  flex: none;
+}
+.orc-trail-body {
+  flex: 0 0 100%;
+  order: 1;
+  min-width: 0;
+  padding: 4px 0 0;
+}
+.orc-trail-body[hidden] { display: none; }
 
 /* ── Inline PR block ──────────────────────────────────────────────────── */
 .pr-block {
@@ -601,7 +688,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .pr-hdr {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 4px;
 }
 .pr-num {
@@ -615,25 +702,16 @@ a.pr-num {
   font-weight: 500;
 }
 a.pr-num:hover { text-decoration: underline; }
-.prb-title {
-  font-weight: 500;
-  font-size: 13px;
-  color: var(--text);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .pr-badges {
   margin-left: auto;
   display: flex;
-  gap: 5px;
+  gap: 4px;
   flex: none;
 }
 .pr-stats {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-size: 12px;
   color: var(--text-mute);
   margin-bottom: 8px;
@@ -1223,7 +1301,7 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   margin-top: 12px;
   padding: 12px 0 0;
   border-top: 1px dashed var(--line-soft);
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 8px;
   background: transparent;
 }
 .thread-composer[hidden] { display: none; }

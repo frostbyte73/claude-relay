@@ -1,12 +1,23 @@
 // The body of an `orchestrated` timeline step — a controller action that owns the step
 // and picks one move per turn. step-card.js mounts this inside the step's `.tl-content`
-// (both layouts; mobile arranges the same renderer), so the title/time header, failure
-// callout and inline session tail stay with the timeline and are not repeated here.
+// (both layouts; mobile arranges the same renderer), so the title/description/time header
+// and the failure callout stay with the timeline and are not repeated here.
 //
-// Everything is stacked as its own row: phase, wait reason, dispatches, artifacts, PR block,
-// gate, composer, overflow. Never one crammed eyebrow line. The order is the controller's own
-// chronology — it specs and plans before it has a branch to push, so the spec and impl plan
-// read above the PR they produced, not below it.
+// Two tiers, separated by one hairline.
+//
+// The LIVE tier, in the order you need it: who the controller is and which repo it's in →
+// the one sentence saying what it's doing right now → anything holding for your approval →
+// its own transcript tail → the box you answer it in. The card owns the session mount
+// itself (step-card.js renders it only for non-orchestrated steps) precisely so the
+// composer can sit directly under the feed: the two halves of one conversation used to be
+// separated by every artifact and the whole PR block, with the reply at the very bottom.
+//
+// The RECORD tier: the PR and the controller's paper trail. Six artifacts used to stack as
+// six sibling disclosures, each with its own label row and caret, ABOVE the PR block — the
+// archive outranking the live surface, at ~190px before a single one was opened. They're
+// now one strip of chips that opens one body at a time.
+//
+// Everything is still its own stacked row. Never one crammed eyebrow line.
 
 import { work } from '../../state/work.js';
 import { orchestratedRows } from '../../vm/tracked.js';
@@ -17,14 +28,18 @@ import { isReplyDraft } from './reply-draft.js';
 import { renderMarkdown } from '../../markdown.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
 import { openSession } from '../../app-bridge.js';
+import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+// The trail's chips carry DOM ids so they can point `aria-controls` at their bodies, and a
+// step id is only guaranteed to be a string. Same defence as vm/tracked.js's slugOf.
+function domId(s) { return String(s ?? '').replace(/[^A-Za-z0-9_-]+/g, '_'); }
 
 // pr-block.js reads the flat shape the deleted `open-pr` step had: PR facts at the top
 // level and the old state vocabulary. The facts are unchanged — only where they hang —
 // so adapt here rather than fork the block. Only the two phases pr-block still branches
 // on are mapped; every other phase stays blank. Spec/implPlan deliberately do NOT get
-// mapped: the card renders every artifact once, below, via artifactsHtml.
+// mapped: the card renders every artifact once, in the trail strip.
 const PR_BLOCK_STATE = { merged: 'merged', implement: 'implementing' };
 const PRE_PR_PHASES = new Set(['spec', 'plan']);
 
@@ -45,28 +60,72 @@ export function orchestratedHasPrBlock(s) {
   return hasPrBlock(prView(s));
 }
 
-// The controller is named here, as a category-colored action chip — the same treatment
-// every other action gets. step-card.js leaves its `.tl-skill` slot empty for an
-// orchestrated step so the name isn't printed twice, adjacent, in two typographies.
-function chipsRowHtml(s, vm) {
+// Row 1 of the live tier: identity — which controller, which repo — on the `.tl-ident` row
+// an `action` step also renders (step-card.js), same position and same category-colored
+// chip, so the two step types agree about where a step says what it is. Identity only: state
+// belongs to the status line below it and to the PR block. This used to render BELOW the
+// transcript tail, so you read what the controller was saying before you knew which
+// controller was saying it.
+//
+// The step's own overflow (Mark resolved) rides on the right of this row rather than as a
+// full-width button under the whole card: `.tl-hdr` can't take it — it already reserves
+// 110px for the plan editor's ▲▼✎× toolbar. On desktop `.o-menu` is `display: contents`
+// (primitives.css), so this is a flat right-aligned ghost button there and a real ⋯
+// dropdown on mobile.
+function metaRowHtml(s, vm) {
   const bits = [];
   if (s.controller) {
     bits.push(`<span class="type-mono" data-cat="${escapeHtml(actionCategory(s.controller))}">${escapeHtml(actionDisplayName(s.controller))}</span>`);
   }
-  if (vm.phaseChip) bits.push(`<span class="o-pill ${escapeHtml(vm.phaseChip.tone)}">${escapeHtml(vm.phaseChip.label)}</span>`);
+  // The repo, same as an action step names it. This slot used to hold the phase pill, which
+  // restated the PR block one row below — see statusLineOf in vm/tracked.js for where the
+  // phase went and why it's still reachable.
+  if (s.workspace?.repoCwd) {
+    bits.push(`<span class="tl-ident-repo">${escapeHtml(shortName(s.workspace.repoCwd))}</span>`);
+  }
   // The PR block carries the branch in its own stats row; only name it here when there
   // isn't one yet (spec/plan phases), so the workspace is never invisible.
   if (!orchestratedHasPrBlock(s) && s.workspace?.branch) {
     bits.push(`<span class="o-pill code">${escapeHtml(s.workspace.branch)}</span>`);
   }
-  return bits.length ? `<div class="orc-chips">${bits.join('')}</div>` : '';
+  const menu = overflowHtml(vm);
+  if (!bits.length && !menu) return '';
+  return `<div class="tl-ident">${bits.join('')}<span class="tl-ident-spacer"></span>${menu}</div>`;
 }
 
-// Same callout the timeline uses for a parked meta.wait, in its neutral variant: this
-// hold is on CI/review/a dispatch, not on the user, so it carries no --warn accent.
-function waitRowHtml(vm) {
-  if (!vm.waitingReason) return '';
-  return `<div class="tl-wait tl-wait--neutral"><div class="tl-wait-reason">⏸ ${escapeHtml(vm.waitingReason)}</div></div>`;
+function overflowHtml(vm) {
+  if (!vm.canMarkResolved) return '';
+  const { label, hint } = vm.markResolved;
+  return `
+    <div class="o-menu">
+      <button type="button" class="o-btn o-btn--ghost sm o-menu-toggle" data-menu-toggle aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
+      <div class="o-menu-body" hidden>
+        <button class="o-btn o-btn--ghost sm" data-orc-action="mark-resolved"${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(label)}</button>
+      </div>
+    </div>`;
+}
+
+// Row 2: what it's doing right now, as one plain line. This used to be a filled box with a
+// left rail (`.tl-wait--neutral`) — callout chrome spent on a routine "watching CI", which
+// is exactly the state DESIGN §6 says a rail should NOT be claiming. The rail is still
+// there for a real hold: the gate below.
+function statusHtml(vm) {
+  if (!vm.statusLine) return '';
+  const { glyph, text } = vm.statusLine;
+  return `
+    <div class="orc-status">
+      ${glyph ? `<span class="orc-status-glyph" aria-hidden="true">${escapeHtml(glyph)}</span>` : ''}
+      <span class="orc-status-text">${escapeHtml(text)}</span>
+    </div>`;
+}
+
+// The controller's own transcript tail. Rendered here rather than by step-card.js (which
+// still owns it for every other step type) so the composer can follow immediately after it.
+// syncInlineMounts keys purely on sessionId across the whole rendered tree, so the mount
+// works identically wherever in the step it lands — it just has to appear exactly once.
+function feedMountHtml(s) {
+  if (!s.sessionId) return '';
+  return `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>`;
 }
 
 function dispatchRowHtml(d) {
@@ -94,18 +153,12 @@ function dispatchesHtml(vm) {
     </div>`;
 }
 
-// Memo and artifacts are the controller's own paper trail — long, and only read on
-// demand — so each folds into the same disclosure the step's findings use. Open state
-// survives repaints via detail.js's snapshotUi, keyed on the artifact class.
-function artifactsHtml(vm) {
-  return vm.artifactRows.map((a) => `
-    <details class="plan-findings tl-findings orc-artifact-${a.slug}">
-      <summary class="tl-findings-sum">
-        <span class="plan-findings-label o-microhead">${escapeHtml(a.label)}</span>
-        <span class="tl-findings-caret" aria-hidden="true">▾</span>
-      </summary>
-      <div class="step-findings md-body">${renderMarkdown(a.body)}</div>
-    </details>`).join('');
+// A dispatch that raised its own write draft is parked on YOU, but the draft renders inside
+// the dispatch's row (never hoisted to the controller's gate — see vm/tracked.js). So when
+// one is pending, the whole dispatch list moves up into the hold band with the gate; the
+// rest of the time it reads as process record and sits below the feed.
+function dispatchesAreHolding(vm) {
+  return vm.dispatchRows.some((d) => !!d.draft);
 }
 
 // The controller parked its move behind an approval: the exact payload it will run
@@ -125,16 +178,16 @@ function gateHtml(vm) {
     </div>`;
 }
 
-function actionsHtml(s, vm) {
-  const bits = [];
-  if (vm.gate) {
-    // The verdict is picked at SUBMIT, never inferred from which box you typed in. The composer
-    // used to have one Submit that always sent `approved: false`, so it was the only way to
-    // answer a gate in words at all — a user typing "go ahead and run it" into it recorded a
-    // decline, and the controller had to guess which half to believe (it guessed right, then
-    // journalled the contradiction). Two submits, one textarea: an approval with a note is now
-    // sayable, and a decline can't be typed by accident.
-    bits.push(`
+function gateActionsHtml(vm) {
+  if (!vm.gate) return '';
+  // The verdict is picked at SUBMIT, never inferred from which box you typed in. The composer
+  // used to have one Submit that always sent `approved: false`, so it was the only way to
+  // answer a gate in words at all — a user typing "go ahead and run it" into it recorded a
+  // decline, and the controller had to guess which half to believe (it guessed right, then
+  // journalled the contradiction). Two submits, one textarea: an approval with a note is now
+  // sayable, and a decline can't be typed by accident.
+  return `
+    <div class="step-actions">
       <button class="o-btn o-btn--primary" data-orc-action="approve-gate">Approve</button>
       <button class="o-btn o-btn--default" data-orc-action="toggle-gate-feedback">Respond…</button>
       <div class="thread-composer" data-composer="orc-gate-feedback" hidden>
@@ -143,32 +196,53 @@ function actionsHtml(s, vm) {
           <button class="o-btn o-btn--primary" data-orc-action="approve-gate-note" disabled>Approve with this note</button>
           <button class="o-btn o-btn--default" data-orc-action="submit-gate-feedback" disabled>Request changes</button>
         </div>
-      </div>`);
-  }
-  if (vm.canMarkResolved) {
-    const { label, hint } = vm.markResolved;
-    bits.push(`
-      <div class="o-menu">
-        <button type="button" class="o-btn o-btn--ghost o-menu-toggle" data-menu-toggle aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
-        <div class="o-menu-body" hidden>
-          <button class="o-btn o-btn--ghost" data-orc-action="mark-resolved"${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(label)}</button>
-        </div>
-      </div>`);
-  }
-  return bits.length ? `<div class="step-actions">${bits.join('')}</div>` : '';
+      </div>
+    </div>`;
 }
 
 // Steering a live controller: the message lands in its inbox and wakes it on the next
 // tick, so it's the lever for a step that's waiting rather than gated. A settled step
 // has nothing to wake.
+//
+// One line tall at rest, growing with what's typed (utils/autogrow.js), and the Send row
+// only appears once there's something to send. The box was previously a permanently-open
+// 76px textarea plus a button row on every live orchestrated step in the timeline.
 function composerHtml(s) {
   if (s.cancelled || s.state === 'resolved' || s.state === 'failed') return '';
   return `
     <div class="thread-composer orc-msg" data-composer="orc-message">
-      <textarea class="thread-compose-input" data-autogrow placeholder="Message the controller…"></textarea>
+      <textarea class="thread-compose-input" rows="1" data-autogrow placeholder="Message the controller…"></textarea>
       <div class="thread-composer-row">
         <button class="o-btn o-btn--default" data-orc-action="send-message">Send</button>
       </div>
+    </div>`;
+}
+
+// The record tier's signature: the controller's memo and every artifact it has reported, as
+// one strip of chips in the order they were produced, with one body open at a time. Reading
+// two artifacts side by side was never possible anyway (they're full-width prose), so
+// exclusivity costs nothing and buys back the five stacked label rows.
+//
+// Plain buttons rather than <details>: an exclusive native accordion needs `<details name>`,
+// and detail.js's repaint-survival snapshot only knows about `<details>` and `[data-composer]`
+// — the open chip is carried across repaints explicitly instead (snapshotUi/restoreUi).
+function trailHtml(step, vm) {
+  if (!vm.artifactRows.length) return '';
+  const base = `orc-trail-${domId(step.id)}`;
+  const chips = vm.artifactRows.map((a) => `
+    <button type="button" class="orc-trail-chip" data-trail-chip="${escapeHtml(a.slug)}"
+            aria-expanded="false" aria-controls="${base}-${escapeHtml(a.slug)}">
+      ${escapeHtml(a.label)}${a.latest ? '<span class="orc-trail-dot" aria-hidden="true"></span>' : ''}
+    </button>`).join('');
+  const bodies = vm.artifactRows.map((a) => `
+    <div class="orc-trail-body" id="${base}-${escapeHtml(a.slug)}" data-trail-body="${escapeHtml(a.slug)}" hidden>
+      <div class="step-findings md-body">${renderMarkdown(a.body)}</div>
+    </div>`).join('');
+  return `
+    <div class="orc-trail" data-trail>
+      <span class="orc-trail-caret" aria-hidden="true">▸</span>
+      ${chips}
+      ${bodies}
     </div>`;
 }
 
@@ -183,18 +257,50 @@ function replyDraftFor(step, vm) {
 export function renderOrchestratedCard(step, { job } = {}) {
   const vm = orchestratedRows(step);
   const replyDraft = replyDraftFor(step, vm);
+  const dispatches = dispatchesHtml(vm);
+  const holding = dispatchesAreHolding(vm);
+  const record = `
+    ${orchestratedHasPrBlock(step) ? renderPrBlockHtml(job, prView(step), { replyDraft }) : ''}
+    ${holding ? '' : dispatches}
+    ${trailHtml(step, vm)}`;
   return `
     <div class="orc-card">
-      ${chipsRowHtml(step, vm)}
-      ${waitRowHtml(vm)}
-      ${dispatchesHtml(vm)}
-      ${artifactsHtml(vm)}
-      ${orchestratedHasPrBlock(step) ? renderPrBlockHtml(job, prView(step), { replyDraft }) : ''}
+      ${metaRowHtml(step, vm)}
+      ${statusHtml(vm)}
       ${gateHtml(vm)}
+      ${gateActionsHtml(vm)}
       ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}
-      ${actionsHtml(step, vm)}
+      ${holding ? dispatches : ''}
+      ${feedMountHtml(step)}
       ${composerHtml(step)}
+      ${record.trim() ? `<div class="orc-record">${record}</div>` : ''}
     </div>`;
+}
+
+// One artifact body open at a time. `slug` of null closes everything (re-clicking the open
+// chip), which is also the state every repaint starts in — restoreUi re-clicks the chip the
+// user had open.
+function openTrail(trail, slug) {
+  trail.querySelectorAll('[data-trail-chip]').forEach((c) => {
+    const on = c.getAttribute('data-trail-chip') === slug;
+    c.classList.toggle('is-open', on);
+    c.setAttribute('aria-expanded', String(on));
+  });
+  trail.querySelectorAll('[data-trail-body]').forEach((b) => {
+    b.toggleAttribute('hidden', b.getAttribute('data-trail-body') !== slug);
+  });
+  trail.classList.toggle('is-open', slug != null);
+}
+
+function wireTrail(card) {
+  const trail = card.querySelector('[data-trail]');
+  if (!trail) return;
+  trail.querySelectorAll('[data-trail-chip]').forEach((chip) => {
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openTrail(trail, chip.classList.contains('is-open') ? null : chip.getAttribute('data-trail-chip'));
+    });
+  });
 }
 
 export function wireOrchestratedCard(el, step, { job } = {}) {
@@ -205,6 +311,7 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
     wirePrBlockActions(card, job, prView(step), { replyDraft: replyDraftFor(step, vm) });
   }
   wireOverflowMenu(card);
+  wireTrail(card);
 
   // The controller's own draft and each dispatch's are self-contained cards (their own
   // Accept/Propose changes/Deny) — wireWriteDraft finds its own markup by draft id inside
@@ -241,12 +348,23 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
         const body = (ta?.value ?? '').trim();
         if (!body) { ta?.focus(); return; }
         ta.value = '';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
         void work.messageStep(job.id, step.id, body);
       } else if (kind === 'mark-resolved') {
         void work.markStepResolved(job.id, step.id);
       }
     });
   });
+
+  // The message composer's Send row is revealed by `:focus-within` while you're in the box;
+  // `is-open` is what keeps it reachable once focus leaves with text still in there.
+  const msg = card.querySelector('[data-composer="orc-message"]');
+  const msgInput = msg?.querySelector('textarea');
+  if (msg && msgInput) {
+    const sync = () => msg.classList.toggle('is-open', !!msgInput.value.trim());
+    msgInput.addEventListener('input', sync);
+    sync();
+  }
 
   // Both gate verdicts need a note, so neither is clickable until there is one — same rule the
   // write-draft card's revise/deny composers use.
