@@ -113,11 +113,29 @@ seededTest('renders the controller, phase, dispatches and the gate draft as sepa
   await expect(ident.locator('.tl-ident-repo')).toContainText('outpost-e2e-orcgate-');
   await expect(step.locator('.tl-hdr > *')).toHaveCount(2); // .tl-name + .tl-time, nothing else
 
-  // The phase is state, not identity: it reads on the status line below, and only because
-  // this step has no wait reason and no running dispatch to report instead. It is NOT a pill
-  // beside the controller restating the PR block one row down.
-  await expect(card.locator('.orc-status-text')).toHaveText('PR open');
+  // The phase is state, not identity — no pill beside the controller restating the PR block
+  // one row down. It reads in the feed instead, as the idle chip: this controller's session
+  // is not in job.live.sessionIds, so the feed states its status where a finished action step
+  // would say "✓ Finished in 10m37s" rather than leaving a stale transcript tail up.
   await expect(ident.locator('.o-pill')).toHaveCount(0);
+  const idleChip = step.locator('.inline-session-chip[data-variant="idle"]');
+  await expect(idleChip).toHaveText('⏸ PR open');
+
+  // A controller writes its own status text, so it can be any length. The chip is the whole
+  // message (unlike .inline-line, a truncated preview of a transcript that continues
+  // elsewhere), so it has to wrap inside the feed rather than run out under the Open pill.
+  const fits = await idleChip.evaluate((el) => {
+    el.querySelector('.inline-session-chip-text')!.textContent =
+      '⏸ Waiting on CI: 4 of 9 checks still running, and the reviewer has not looked at the '
+      + 'second commit yet, so there is nothing to do until one of those moves';
+    const feed = el.closest('.step-inline-session')!;
+    return {
+      overflowsFeed: el.getBoundingClientRect().right > feed.getBoundingClientRect().right,
+      clipped: el.scrollWidth > el.clientWidth + 1,
+      wrapped: el.getBoundingClientRect().height > 24,
+    };
+  });
+  expect(fits).toEqual({ overflowsFeed: false, clipped: false, wrapped: true });
   // Named exactly once in the whole step — the header used to print it a second time.
   await expect(step.locator('.type-mono', { hasText: /^orchestrate-pr$/ })).toHaveCount(1);
 

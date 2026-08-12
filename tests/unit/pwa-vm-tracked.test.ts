@@ -175,18 +175,14 @@ describe('orchestratedRows', () => {
   });
 
   it('falls back to the phase label, known or controller-coined, when nothing else applies', () => {
-    expect(orchestratedRows(step({ phase: 'implement' })).statusLine)
-      .toEqual({ glyph: '', text: 'Implement' });
-    expect(orchestratedRows(step({ phase: 'merged', state: 'resolved' })).statusLine)
-      .toEqual({ glyph: '', text: 'Merged' });
-    expect(orchestratedRows(step({ phase: 'awaiting_qa' })).statusLine)
-      .toEqual({ glyph: '', text: 'Awaiting qa' });
+    expect(orchestratedRows(step({ phase: 'implement' })).statusLine).toBe('Implement');
+    expect(orchestratedRows(step({ phase: 'merged', state: 'resolved' })).statusLine).toBe('Merged');
+    expect(orchestratedRows(step({ phase: 'awaiting_qa' })).statusLine).toBe('Awaiting qa');
   });
 
   it('surfaces the wait reason only while waiting', () => {
     const waiting = { waitingOn: { reason: 'Watching CI' } };
-    expect(orchestratedRows(step({ state: 'waiting', ...waiting })).statusLine)
-      .toEqual({ glyph: '⏸', text: 'Watching CI' });
+    expect(orchestratedRows(step({ state: 'waiting', ...waiting })).statusLine).toBe('Watching CI');
     // No phase either, so nothing is left to say.
     expect(orchestratedRows(step({ state: 'running', ...waiting })).statusLine).toBeNull();
   });
@@ -197,13 +193,13 @@ describe('orchestratedRows', () => {
       { id: 'd2', action: 'code.implement', brief: 'rewriting the reply path', status: 'running' },
     ];
     expect(orchestratedRows(step({ state: 'running', dispatches })).statusLine)
-      .toEqual({ glyph: '', text: 'rewriting the reply path' });
+      .toBe('rewriting the reply path');
     // A wait outranks it: what the step is parked ON is the truer answer to "what now".
     expect(orchestratedRows(step({ state: 'waiting', waitingOn: { reason: 'CI' }, dispatches })).statusLine)
-      .toEqual({ glyph: '⏸', text: 'CI' });
+      .toBe('CI');
     // ...and both outrank the phase, which is why "PR open" no longer restates the PR block.
     expect(orchestratedRows(step({ state: 'running', phase: 'pr_open', dispatches })).statusLine)
-      .toEqual({ glyph: '', text: 'rewriting the reply path' });
+      .toBe('rewriting the reply path');
     expect(orchestratedRows(step({ state: 'running' })).statusLine).toBeNull();
   });
 

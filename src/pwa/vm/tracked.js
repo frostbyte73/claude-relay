@@ -240,23 +240,24 @@ function markResolvedInfo(s) {
 
 // The one sentence saying what the controller is doing right now: what it's parked on, what
 // the dispatch it's currently running is off doing, or — with nothing more specific to say —
-// the phase it's in. Neither is a hold on the USER — that's `gate` — so the card renders this
-// as a plain line rather than the railed callout a meta.wait soak earns (DESIGN §6: a rail
-// means a state).
+// the phase it's in. Null when there's nothing to report.
 //
-// The phase is LAST on purpose. It used to be a pill on the identity row, where it sat next
-// to the controller's name restating what the PR block says one row below — "PR open" above
-// a block whose whole existence says the PR is open, with the CI/review/conflict badges
-// alongside. Demoted here it disappears in exactly that case (a live step almost always has
-// a wait reason or a running dispatch to report instead) and survives for the cases nothing
+// This is what the inline feed shows in place of a transcript tail once the controller's own
+// session goes quiet, in the same slot a finished action step shows "✓ Finished in 10m37s"
+// (components/work/session-terminal-chip.js). It had its own row above the feed, which meant
+// a parked controller stated its status twice — once as prose, once as two lines of stale
+// transcript that were the last thing it said before parking.
+//
+// The phase is LAST on purpose. It used to be a pill on the identity row, restating what the
+// PR block says a row below — "PR open" above a block whose whole existence says the PR is
+// open. Down here it loses to anything more specific and survives only for the cases nothing
 // else covers: the pre-PR spec/plan phases, and code.orchestrate-review's own ladder
 // (triage → lenses → synthesis → watching), which the PR block says nothing about.
 function statusLineOf(s) {
-  if (s.state === 'waiting') return { glyph: '⏸', text: s.waitingOn?.reason ?? 'Waiting' };
+  if (s.state === 'waiting') return s.waitingOn?.reason ?? 'Waiting';
   const running = (s.dispatches ?? []).find((d) => d.status === 'running');
-  if (running?.brief) return { glyph: '', text: running.brief };
-  const phase = phaseLabelOf(s);
-  return phase ? { glyph: '', text: phase } : null;
+  if (running?.brief) return running.brief;
+  return phaseLabelOf(s) || null;
 }
 
 export function orchestratedRows(step) {

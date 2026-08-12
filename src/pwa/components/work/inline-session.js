@@ -13,7 +13,7 @@ import {
   bindAskCardHandlers,
   buildAskAnswerWire,
 } from '../ask-card.js';
-import { renderTerminalChipHtml, terminalChipVariant } from './session-terminal-chip.js';
+import { renderIdleChipHtml, renderTerminalChipHtml, terminalChipVariant } from './session-terminal-chip.js';
 import { decideApproval, openSession } from '../../app-bridge.js';
 
 function isTerminal(step) { return step ? terminalChipVariant(step) !== null : false; }
@@ -78,13 +78,18 @@ function buildSkeleton(mount) {
   };
 }
 
-export function mountInlineSession(mount, sessionId, { jobId, step = null }) {
+// `live` is destructured under another name: the WS-attach flag below is also called `live`,
+// and they are different questions — "is the subprocess alive" vs "have we attached to it".
+export function mountInlineSession(mount, sessionId, { jobId, step = null, live: sessionLive = true }) {
   if (!sessionId) return { unmount() {}, updateStep() {} };
 
   sessions.ensureSlice(sessionId);
 
   const dom = buildSkeleton(mount);
   let currentStep = step;
+  // Whether THIS session's subprocess is alive, straight from the job's own liveness
+  // (job.live.sessionIds — see src/work/job-liveness.ts for why it can't be derived here).
+  let currentLive = sessionLive;
 
   // A terminal step renders a static chip from persisted timing and never needs a
   // live view, so we attach nothing for it:
@@ -125,6 +130,18 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null }) {
       setHtmlIfChanged(dom.body, renderTerminalChipHtml(currentStep));
       return;
     }
+    // A controller that has parked (on CI, on a dispatch, on an approval) states its status
+    // here rather than leaving the last two lines it said before parking on screen looking
+    // like live work. Same slot, same shape as the terminal chip above.
+    if (!currentLive) {
+      const idle = renderIdleChipHtml(currentStep);
+      if (idle) {
+        stopMetaTicker();
+        setHtmlIfChanged(dom.thinking, '');
+        setHtmlIfChanged(dom.body, idle);
+        return;
+      }
+    }
     const slice = sessions.getSlice(sessionId);
     const hasActivity = !!slice?.thinking || (slice?.transcript?.length ?? 0) > 0;
     if (!hasActivity) {
@@ -159,7 +176,12 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null }) {
   paint();
 
   return {
-    updateStep(nextStep) { currentStep = nextStep; syncLive(); paint(); },
+    updateStep(nextStep, nextLive = true) {
+      currentStep = nextStep;
+      currentLive = nextLive;
+      syncLive();
+      paint();
+    },
     unmount() {
       unsubSlice();
       unsubApprovals();

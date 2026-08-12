@@ -521,9 +521,10 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 
 /* ── Orchestrated step card ───────────────────────────────────────────────
    The body of a controller-owned step, in two tiers (see orchestrated-card.js).
-   Live tier: identity → status line → hold → transcript tail → composer. Record
-   tier (`.orc-record`, below one hairline): PR block, dispatches, trail strip.
-   Every part is its own stacked row — the header line above stays name/time. */
+   Live tier: identity → hold → feed (transcript tail, or the status chip once
+   the controller parks) → composer. Record tier (`.orc-record`, below one
+   hairline): PR block, dispatches, trail strip. Every part is its own stacked
+   row — the header line above stays name/time. */
 .orc-card { display: flex; flex-direction: column; gap: 8px; }
 
 /* Identity, shared by both step types: which action this step is, the workspace it runs in,
@@ -540,20 +541,6 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   color: var(--text-dim);
   letter-spacing: 0.02em;
 }
-
-/* What the controller is doing right now. A plain line by design: this is a hold
-   on CI or a dispatch, never on the user, so it takes no rail and no fill —
-   those belong to .tl-gate below, which IS the user's move. */
-.orc-status {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-mute);
-  overflow-wrap: anywhere;
-}
-.orc-status-glyph { color: var(--text-dim); flex: none; }
 
 .orc-dispatches { display: flex; flex-direction: column; gap: 8px; }
 .orc-dispatch {

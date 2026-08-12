@@ -85,19 +85,25 @@ function stepForSession(job, sessionId) {
 export function syncInlineMounts(root, job) {
   const existing = mountsByJob.get(job.id) ?? new Map();
   const seen = new Set();
+  // Per-session liveness, re-read on every sync. A job serialized without `live` at all
+  // (nothing does today, but the field is derived rather than persisted) falls back to
+  // "everything is live", which is the pre-existing behaviour: show the transcript tail.
+  const liveIds = job.live ? new Set(job.live.sessionIds ?? []) : null;
+  const isLive = (id) => (liveIds ? liveIds.has(id) : true);
 
   root.querySelectorAll('[data-session-id]').forEach((el) => {
     const sessionId = el.getAttribute('data-session-id');
     if (!sessionId) return;
     seen.add(sessionId);
     const step = stepForSession(job, sessionId);
+    const live = isLive(sessionId);
     const prior = existing.get(sessionId);
     if (prior && prior.el === el) {
-      prior.handle.updateStep?.(step);
+      prior.handle.updateStep?.(step, live);
       return;
     }
     if (prior) prior.handle.unmount();
-    const handle = mountInlineSession(el, sessionId, { jobId: job.id, step });
+    const handle = mountInlineSession(el, sessionId, { jobId: job.id, step, live });
     existing.set(sessionId, { el, handle });
   });
 

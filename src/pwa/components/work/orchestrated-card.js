@@ -6,8 +6,8 @@
 // Two tiers, separated by one hairline.
 //
 // The LIVE tier, in the order you need it: who the controller is and which repo it's in →
-// the one sentence saying what it's doing right now → anything holding for your approval →
-// its own transcript tail → the box you answer it in. The card owns the session mount
+// anything holding for your approval → its own feed, which streams while it's working and
+// states its status once it parks → the box you answer it in. The card owns the session mount
 // itself (step-card.js renders it only for non-orchestrated steps) precisely so the
 // composer can sit directly under the feed: the two halves of one conversation used to be
 // separated by every artifact and the whole PR block, with the reply at the very bottom.
@@ -105,21 +105,13 @@ function overflowHtml(vm) {
     </div>`;
 }
 
-// Row 2: what it's doing right now, as one plain line. This used to be a filled box with a
-// left rail (`.tl-wait--neutral`) — callout chrome spent on a routine "watching CI", which
-// is exactly the state DESIGN §6 says a rail should NOT be claiming. The rail is still
-// there for a real hold: the gate below.
-function statusHtml(vm) {
-  if (!vm.statusLine) return '';
-  const { glyph, text } = vm.statusLine;
-  return `
-    <div class="orc-status">
-      ${glyph ? `<span class="orc-status-glyph" aria-hidden="true">${escapeHtml(glyph)}</span>` : ''}
-      <span class="orc-status-text">${escapeHtml(text)}</span>
-    </div>`;
-}
-
-// The controller's own transcript tail. Rendered here rather than by step-card.js (which
+// The controller's own transcript tail — and, once its session goes quiet, its status
+// instead, as a chip in the same slot a finished action step uses for "✓ Finished in 10m37s"
+// (session-terminal-chip.js). The status used to be a row of its own right here, above the
+// feed, which meant a parked controller said it twice: once as prose, and once as the two
+// lines of transcript it happened to end on.
+//
+// Rendered here rather than by step-card.js (which
 // still owns it for every other step type) so the composer can follow immediately after it.
 // syncInlineMounts keys purely on sessionId across the whole rendered tree, so the mount
 // works identically wherever in the step it lands — it just has to appear exactly once.
@@ -266,7 +258,6 @@ export function renderOrchestratedCard(step, { job } = {}) {
   return `
     <div class="orc-card">
       ${metaRowHtml(step, vm)}
-      ${statusHtml(vm)}
       ${gateHtml(vm)}
       ${gateActionsHtml(vm)}
       ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}

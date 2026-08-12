@@ -1,4 +1,10 @@
+// What the inline feed shows instead of a transcript tail — the two states where a tail is
+// either impossible or stale. A settled step gets the terminal chip ("✓ Finished in 10m37s");
+// an orchestrated step whose controller session has gone quiet gets the idle chip carrying
+// its status ("⏸ Watching CI"), in the same slot and the same shape.
+
 import { escapeHtml } from '../../util.js';
+import { orchestratedRows } from '../../vm/tracked.js';
 
 const TERMINAL_END_KINDS = new Set(['resolved', 'failed', 'cancelled', 'merged']);
 
@@ -56,15 +62,31 @@ export function terminalChipVariant(step) {
 const GLYPH = { finished: '✓', failed: '✗', cancelled: '⊘', declined: '⊘' };
 const LABEL = { finished: 'Finished', failed: 'Failed', cancelled: 'Cancelled', declined: 'Declined' };
 
-export function renderTerminalChipHtml(step) {
-  const variant = terminalChipVariant(step);
-  if (!variant) return '';
-  const duration = stepDurationText(step);
-  const suffix = duration && variant !== 'cancelled' ? ` in ${duration}` : '';
-  const text = `${GLYPH[variant]} ${LABEL[variant]}${suffix}`;
+function chipHtml(variant, text) {
   return (
     `<div class="inline-session-chip" data-variant="${escapeHtml(variant)}">` +
       `<span class="inline-session-chip-text">${escapeHtml(text)}</span>` +
     `</div>`
   );
+}
+
+export function renderTerminalChipHtml(step) {
+  const variant = terminalChipVariant(step);
+  if (!variant) return '';
+  const duration = stepDurationText(step);
+  const suffix = duration && variant !== 'cancelled' ? ` in ${duration}` : '';
+  return chipHtml(variant, `${GLYPH[variant]} ${LABEL[variant]}${suffix}`);
+}
+
+// A live-but-quiet controller: parked on CI, on a dispatch it fanned out, or on you. Its own
+// last two transcript lines are whatever it said before parking, which reads as activity that
+// isn't happening — so the feed states the status instead. Only orchestrated steps have one;
+// an action step's session going quiet means it's about to settle and take the terminal chip.
+//
+// `⏸` unconditionally rather than per-status: the glyph is answering "is this session
+// running", which is already false by the time this renders.
+export function renderIdleChipHtml(step) {
+  if (!step || step.type !== 'orchestrated') return '';
+  const status = orchestratedRows(step).statusLine;
+  return status ? chipHtml('idle', `⏸ ${status}`) : '';
 }

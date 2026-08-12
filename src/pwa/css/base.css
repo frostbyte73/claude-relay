@@ -578,6 +578,9 @@ html[data-density="roomy"] {
 .step-inline-session:has(.inline-session-chip[data-variant="finished"])  { box-shadow: inset 2px 0 0 var(--ok, var(--accent-2)); }
 .step-inline-session:has(.inline-session-chip[data-variant="failed"])    { box-shadow: inset 2px 0 0 var(--danger); }
 .step-inline-session:has(.inline-session-chip[data-variant="cancelled"]) { box-shadow: inset 2px 0 0 var(--line); }
+/* Parked, not running — the default rail above is --accent-2, which would claim a
+   liveness that isn't true (DESIGN §10). Inert until the controller wakes. */
+.step-inline-session:has(.inline-session-chip[data-variant="idle"])      { box-shadow: inset 2px 0 0 var(--line); }
 
 /* Live rail — a pulsing accent-coloured bar that sits precisely over the
    static rail while the thinking strip is present. Confined to the
@@ -706,8 +709,16 @@ html[data-density="roomy"] {
 }
 
 /* Terminal chip becomes a flush-left status line — no floating pill, no
-   border. Colour carries the state; the glyph (✓ ✗ ⊘) from the JS keeps
-   its shape without needing an outlined container. */
+   border. Colour carries the state; the glyph (✓ ✗ ⊘ ⏸) from the JS keeps
+   its shape without needing an outlined container.
+
+   `max-content` alone sizes to the UNWRAPPED text, which was fine while the
+   only content was "✓ Finished in 10m37s" but overflows the feed now that the
+   idle chip carries a controller's own status sentence. Capped at the
+   container so it still shrink-wraps short text but wraps long text instead of
+   running out under the Open pill and getting clipped. Unlike .inline-line
+   above — a truncated preview of a transcript that continues elsewhere — this
+   chip is the whole message, so it wraps rather than ellipsing. */
 .inline-session-chip {
   display: inline-flex;
   align-items: baseline;
@@ -717,12 +728,20 @@ html[data-density="roomy"] {
   border-radius: 0;
   background: transparent;
   font-size: 12px;
+  line-height: 1.5;
   font-family: var(--font-body);
   letter-spacing: 0.02em;
   color: var(--text-mute);
   width: max-content;
+  max-width: 100%;
 }
-.inline-session-chip-text { font-variant-numeric: tabular-nums; }
+.inline-session-chip-text {
+  font-variant-numeric: tabular-nums;
+  /* Lets the flex item shrink below its own max-content width so the text can
+     actually wrap; `anywhere` covers a status with no spaces to break on. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .inline-session-chip[data-variant="finished"]  { color: var(--ok, var(--accent-2)); }
 .inline-session-chip[data-variant="failed"]    { color: var(--danger); }
 .inline-session-chip[data-variant="cancelled"] { color: var(--text-dim); }
