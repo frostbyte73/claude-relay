@@ -24,12 +24,28 @@ function sessionsById() {
   ]);
 }
 
+const ids = (groups: any) =>
+  [...groups.sessions, ...groups.actions, ...groups.idle, ...groups.recent].map((s: any) => s.id).sort();
+
 describe('sessionGroups', () => {
-  it('buckets by running state, excludes archived by default', () => {
+  it('splits the running set into sessions vs actions, excludes archived by default', () => {
     const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById() });
-    expect(groups.running.map((s: any) => s.id).sort()).toEqual(['action', 'running']);
+    expect(groups.sessions.map((s: any) => s.id)).toEqual(['running']);
+    expect(groups.actions.map((s: any) => s.id)).toEqual(['action']);
     expect(groups.idle.map((s: any) => s.id)).toEqual(['idle']);
     expect(groups.recent).toEqual([]);
+  });
+
+  it('files a running edit-kind session under actions, and an idle action under idle', () => {
+    const rows = projects();
+    rows[0]!.sessions.push({ id: 'edit', title: 'Edit action: oncall', lastModified: 500, archived: false, kind: 'action-edit' } as any);
+    const live = sessionsById();
+    live.set('edit', { runState: 'background' } as any);
+    live.set('action', { runState: 'inactive' } as any);
+
+    const groups = sessionGroups({ projects: rows, sessionsById: live });
+    expect(groups.actions.map((s: any) => s.id)).toEqual(['edit']);
+    expect(groups.idle.map((s: any) => s.id)).toEqual(['idle', 'action']);
   });
 
   // The regression: opening a job files every finished step's session under Running.
@@ -49,7 +65,8 @@ describe('sessionGroups', () => {
     rows[0]!.sessions = rows[0]!.sessions.map((s) => ({ ...s, runState: serverRunState[s.id] })) as any;
 
     const groups = sessionGroups({ projects: rows, sessionsById: rendered });
-    expect(groups.running.map((s: any) => s.id)).toEqual(['running']);
+    expect(groups.sessions.map((s: any) => s.id)).toEqual(['running']);
+    expect(groups.actions).toEqual([]);
     expect(groups.idle.map((s: any) => s.id).sort()).toEqual(['action', 'idle']);
   });
 
@@ -60,28 +77,24 @@ describe('sessionGroups', () => {
 
   it('tab=active keeps only running/background sessions', () => {
     const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById(), tab: 'active' });
-    const all = [...groups.running, ...groups.idle, ...groups.recent].map((s: any) => s.id).sort();
-    expect(all).toEqual(['action', 'running']);
+    expect(ids(groups)).toEqual(['action', 'running']);
   });
 
   it('tab=action keeps only action sessions (sessionClass or edit kinds)', () => {
     const withEdit = projects();
     withEdit[0]!.sessions.push({ id: 'edit', title: 'Edit action: oncall', lastModified: 500, archived: false, kind: 'action-edit' } as any);
     const groups = sessionGroups({ projects: withEdit, sessionsById: sessionsById(), tab: 'action' });
-    const all = [...groups.running, ...groups.idle, ...groups.recent].map((s: any) => s.id).sort();
-    expect(all).toEqual(['action', 'edit']);
+    expect(ids(groups)).toEqual(['action', 'edit']);
   });
 
   it('tab=session excludes action sessions', () => {
     const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById(), tab: 'session' });
-    const all = [...groups.running, ...groups.idle, ...groups.recent].map((s: any) => s.id).sort();
-    expect(all).toEqual(['idle', 'running']);
+    expect(ids(groups)).toEqual(['idle', 'running']);
   });
 
   it('filter matches by title substring, case-insensitively', () => {
     const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById(), filter: 'BUG' });
-    const all = [...groups.running, ...groups.idle, ...groups.recent].map((s: any) => s.id);
-    expect(all).toEqual(['running']);
+    expect(ids(groups)).toEqual(['running']);
   });
 
   it('sorts each group by lastModified, newest first', () => {

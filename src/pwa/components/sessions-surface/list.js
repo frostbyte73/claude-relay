@@ -1,8 +1,8 @@
 // Sessions list column: header · filter (shell.focusFilter, via the shared
-// .o-list-filter class the global keymap already targets) · tabs · Running/Idle/Recent
-// groups · rich cards. Replaces the per-project accordion of the legacy
-// shell/list-sessions.js with the state-grouped list the redesign calls for
-// (sessions-list.html is authoritative).
+// .o-list-filter class the global keymap already targets) · tabs ·
+// Sessions/Actions/Idle/Recent groups · rich cards. Replaces the per-project
+// accordion of the legacy shell/list-sessions.js with the state-grouped list the
+// redesign calls for (sessions-list.html is authoritative).
 //
 // Known limitation (documented, not silently papered over): the 2-line
 // last-turn preview is only derivable for sessions that already have a live
@@ -33,6 +33,14 @@ const TABS = [
 
 const TAB_KEY = 'op:sessions:tab';
 const TAB_KEYS = new Set(TABS.map((t) => t.key));
+
+// Section order, top to bottom; `group` keys into sessionGroups()'s return.
+const SECTIONS = [
+  { label: 'Sessions', group: 'sessions' },
+  { label: 'Actions', group: 'actions' },
+  { label: 'Idle', group: 'idle' },
+  { label: 'Recent', group: 'recent' },
+];
 
 function idleFor(lastModified) {
   const ms = Date.now() - (lastModified ?? Date.now());
@@ -241,9 +249,8 @@ export function renderList(mount) {
   // Section skeletons (label + row group) exist for the life of the mount and
   // are hidden when empty, so a card never has to be re-created just because a
   // neighbouring section appeared or vanished.
-  const SECTIONS = ['Running', 'Idle', 'Recent'];
   const sectionDom = new Map();
-  for (const label of SECTIONS) {
+  for (const { label } of SECTIONS) {
     const labelEl = document.createElement('div');
     labelEl.className = 'sess-group-label o-microhead';
     const groupEl = document.createElement('div');
@@ -294,7 +301,7 @@ export function renderList(mount) {
     // (background/idle sessions still need their clock ticking even while a
     // tab/filter hides them from the visible list).
     const full = sessionGroups({ ...common, tab: 'all', filter: '', showArchived: true });
-    const allItems = [...full.running, ...full.idle, ...full.recent];
+    const allItems = SECTIONS.flatMap((s) => full[s.group]);
     itemsById.clear();
     const now = Date.now();
     for (const item of allItems) {
@@ -303,17 +310,16 @@ export function renderList(mount) {
       if (running && !runningSince.has(item.id)) runningSince.set(item.id, now);
       if (!running && runningSince.has(item.id)) runningSince.delete(item.id);
     }
-    countEl.textContent = `${full.running.length} running · ${allItems.length} total`;
+    countEl.textContent = `${full.sessions.length + full.actions.length} running · ${allItems.length} total`;
 
     const groups = sessionGroups({ ...common, tab, filter, showArchived: false });
     const selected = nav.get().selectionBySurface.sessions ?? null;
-    paintSection('Running', groups.running, selected);
-    paintSection('Idle', groups.idle, selected);
-    paintSection('Recent', groups.recent, selected);
-    emptyEl.hidden = groups.running.length + groups.idle.length + groups.recent.length > 0;
+    for (const { label, group } of SECTIONS) paintSection(label, groups[group], selected);
+    const shown = SECTIONS.flatMap((s) => groups[s.group]);
+    emptyEl.hidden = shown.length > 0;
     // Drop cards for sessions that left the list entirely, so the map can't grow
     // for the life of the tab.
-    const live = new Set([...groups.running, ...groups.idle, ...groups.recent].map((i) => i.id));
+    const live = new Set(shown.map((i) => i.id));
     for (const id of cards.keys()) if (!live.has(id)) cards.delete(id);
   }
 

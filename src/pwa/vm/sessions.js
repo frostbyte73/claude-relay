@@ -1,9 +1,12 @@
 // Sessions-list view-model: flattens the per-project session records into the
-// flat Running/Idle/Recent grouping the redesign's list column needs, layered on
-// top of session-filter.js's archived-handling (not a replacement for it).
+// flat Sessions/Actions/Idle/Recent grouping the redesign's list column needs,
+// layered on top of session-filter.js's archived-handling (not a replacement
+// for it).
 //
-// "Recent" here means the archived tail revealed by the show-archived toggle —
-// distinct from "Idle" (non-archived, currently not running).
+// The two live groups are the running set split by who is driving it — a person
+// ("Sessions") or Outpost running an action on their behalf ("Actions"). "Idle"
+// is non-archived and not running, either class; "Recent" is the archived tail
+// revealed by the show-archived toggle.
 
 import { partitionSessions } from '../session-filter.js';
 import { formatDuration } from '../utils/formatting.js';
@@ -31,8 +34,8 @@ function matchesFilter(item, filter) {
 
 function bucketOf(item) {
   if (item.archived) return 'recent';
-  if (item.runState === 'foreground' || item.runState === 'background') return 'running';
-  return 'idle';
+  if (item.runState !== 'foreground' && item.runState !== 'background') return 'idle';
+  return isActionSession(item) ? 'actions' : 'sessions';
 }
 
 const byRecency = (a, b) => (b.lastModified ?? 0) - (a.lastModified ?? 0);
@@ -78,18 +81,10 @@ export function sessionGroups({
 
   const filtered = flat.filter((item) => matchesTab(item, tab) && matchesFilter(item, filter));
 
-  const running = [];
-  const idle = [];
-  const recent = [];
-  for (const item of filtered) {
-    const bucket = bucketOf(item);
-    (bucket === 'running' ? running : bucket === 'idle' ? idle : recent).push(item);
-  }
-  running.sort(byRecency);
-  idle.sort(byRecency);
-  recent.sort(byRecency);
-
-  return { running, idle, recent };
+  const groups = { sessions: [], actions: [], idle: [], recent: [] };
+  for (const item of filtered) groups[bucketOf(item)].push(item);
+  for (const group of Object.values(groups)) group.sort(byRecency);
+  return groups;
 }
 
 // First user turn's slash command, if any (e.g. "/oncall"). The sessions-list
