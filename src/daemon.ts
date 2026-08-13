@@ -294,7 +294,16 @@ async function main() {
     eventLogMaxEvents,
     eventLogMaxAgeMs,
     worktreeManager,
-    onTurnStart: (sessionId) => stopTracker.recordTurnStart(sessionId),
+    // The mirror of the Stop hook's own rebroadcast below: a session starting a turn is a
+    // liveness change no job mutation reports. A step resume writes its step BEFORE it
+    // sends the prompt (resumeControllerRound's `run()`), so the broadcast that mutation
+    // triggers still says the session is idle — and nothing follows it until the session
+    // reports progress, which can be a whole turn later. Without this edge the PWA's inline
+    // feed shows a woken controller as parked for that entire window.
+    onTurnStart: (sessionId) => {
+      stopTracker.recordTurnStart(sessionId);
+      rebroadcastJobLiveness(sessionId);
+    },
     onSessionRegistered: () => {
       // Trailing debounce: a burst of spawns (e.g. work orchestrator kicking off
       // multiple child sessions) coalesces into a single PWA refresh.

@@ -385,11 +385,20 @@ export function renderTrackedDetail(root, jobId) {
   }
 
   // Skip no-op repaints: work-store events for *other* jobs fire subscribers
-  // too, and rebuilding would churn inline session mounts for nothing. launchStatus
-  // and highPriority are folded in explicitly — they change on a work_launch_changed
-  // refetch without bumping the job's own `updatedAt`.
+  // too, and rebuilding would churn inline session mounts for nothing. launchStatus,
+  // highPriority and `live` are folded in explicitly — each changes without bumping the
+  // job's own `updatedAt`.
+  //
+  // `live` matters most: it's derived per broadcast, never persisted, and the daemon
+  // re-sends an otherwise identical job purely to flip it (rebroadcastJobLiveness in
+  // daemon.ts) — which the work store keeps on purpose (mergeOne's strict `>`). It is also
+  // the ONLY thing the inline feed has to tell a streaming session from a parked one
+  // (syncInlineMounts → mountInlineSession's `live`). Left out of this key, a controller
+  // woken by a message from the diff view keeps rendering its parked status chip ("⏸
+  // Implement") for the whole turn — reading as "nothing is happening" — until some
+  // unrelated mutation bumps updatedAt, or the user leaves the detail and comes back.
   const editing = isEditingPlan(job.id);
-  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}`;
+  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}:${JSON.stringify(job.live ?? null)}`;
   if (root.__tkPaintKey === paintKey && root.querySelector('.tk-shell')) return;
   root.__tkPaintKey = paintKey;
 
