@@ -41,7 +41,7 @@ function stateTone(s) {
   return 'active';
 }
 
-// Identity row for an `action` step: which action it is, and the workspace it runs in.
+// Identity row for a step: which action it is, and the workspace it runs in.
 // Sits directly under the description, mirroring `.tl-ident` in the orchestrated card
 // (orchestrated-card.js) — the two step types used to disagree about where a step says what
 // it is. An action step crammed its name onto the header line as an `--accent` chip reading
@@ -51,10 +51,16 @@ function stateTone(s) {
 // session tail. The chip is now the same `type-mono[data-cat]` the plan index and the
 // orchestrated card already use, so all three sites read from the one category taxonomy
 // instead of the timeline re-mapping the color to accent locally (DESIGN §7.2).
-function identRowHtml(s) {
+//
+// An orchestrated step renders its own richer version inside the card (metaRowHtml), so this
+// one is only built for it when the step is foldable — folded, the card is hidden and this is
+// the third of the three lines that survive. `folded` marks it so CSS can drop it again once
+// the card comes back.
+function identRowHtml(s, { folded = false } = {}) {
   const bits = [];
-  if (s.action) {
-    bits.push(`<span class="type-mono" data-cat="${escapeHtml(actionCategory(s.action))}">${escapeHtml(actionDisplayName(s.action))}</span>`);
+  const name = s.type === 'orchestrated' ? s.controller : s.action;
+  if (name) {
+    bits.push(`<span class="type-mono" data-cat="${escapeHtml(actionCategory(name))}">${escapeHtml(actionDisplayName(name))}</span>`);
   }
   if (s.workspace?.kind === 'writable' && s.workspace.branch) {
     bits.push(`<span class="o-pill code">${escapeHtml(s.workspace.branch)}</span>`);
@@ -63,7 +69,8 @@ function identRowHtml(s) {
     // rather than taking the ref chip the branch gets.
     bits.push(`<span class="tl-ident-repo">${escapeHtml(shortName(s.workspace.repoCwd))}</span>`);
   }
-  return bits.length ? `<div class="tl-ident">${bits.join('')}</div>` : '';
+  if (!bits.length) return '';
+  return `<div class="tl-ident${folded ? ' tl-ident--folded' : ''}">${bits.join('')}</div>`;
 }
 
 function descriptionFor(s) {
@@ -266,6 +273,43 @@ function refsHtml(refs) {
   ).join('')}</div>`;
 }
 
+// ── Finished-step fold ──────────────────────────────────────────────────
+// A step that is over is history, and history is the bulk of a long job: its transcript
+// chip, findings, PR block and paper trail push the live step — and the planner's feed
+// above it — off screen, so reading a running plan means scrolling past everything that
+// already ran. A finished step therefore keeps only the three lines that identify it
+// (name, description, action) until you open it. A FAILED step is excluded: its reason
+// and retry composer are the whole point of the card.
+//
+// Which steps the user has opened is UI mode, not job state, so it lives here and survives
+// the store-driven repaints of tracked/detail.js. The fold itself is an attribute flip on
+// the rendered element, not a repaint — the body stays in the DOM, so toggling never churns
+// the step's inline session mount (syncInlineMounts keys on the mount element's identity).
+const expandedSteps = new Set();
+
+export function stepIsFoldable(s) {
+  return isTerminalStep(s) && !s.failure;
+}
+
+function setFolded(el, stepId, folded) {
+  el.setAttribute('data-collapsed', folded ? 'true' : 'false');
+  el.querySelector('[data-step-action="toggle-fold"]')?.setAttribute('aria-expanded', folded ? 'false' : 'true');
+  if (folded) expandedSteps.delete(stepId); else expandedSteps.add(stepId);
+}
+
+function headerHtml(s, { title, foldable, folded }) {
+  const inner = `
+          <span class="tl-name">${escapeHtml(title)}</span>
+          <span class="tl-time">${escapeHtml(timeAgo(s.updatedAt))}${escapeHtml(durationLabel(s))}</span>
+          ${foldable ? '<span class="tl-fold-caret" aria-hidden="true">▾</span>' : ''}`;
+  // The caret rides at the END of the row rather than in front of the name: a disclosure
+  // triangle on the left would indent every finished step's title out of line with the
+  // running ones.
+  return foldable
+    ? `<button type="button" class="tl-hdr tl-hdr--fold" data-step-action="toggle-fold" aria-expanded="${!folded}">${inner}</button>`
+    : `<div class="tl-hdr">${inner}</div>`;
+}
+
 export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   const tone = dotTone(s);
   const title = s.title || s.type;
@@ -285,26 +329,27 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   // never a link — its inline feed carries an "Open ↗" affordance.
   const refs = orchestrated && orchestratedHasPrBlock(s) ? [] : stepRefs(job, s);
   const action = actionFor(s);
+  const foldable = stepIsFoldable(s);
+  const folded = foldable && !expandedSteps.has(s.id);
   return `
-    <div class="tl-step" data-step-id="${escapeHtml(s.id)}" data-cancelled="${!!s.cancelled}"${groupAttr}>
+    <div class="tl-step" data-step-id="${escapeHtml(s.id)}" data-cancelled="${!!s.cancelled}" data-collapsed="${folded}"${groupAttr}>
       <div class="tl-dot" data-tone="${tone}">${dotGlyph(tone)}</div>
       <div class="tl-content">
-        <div class="tl-hdr">
-          <span class="tl-name">${escapeHtml(title)}</span>
-          <span class="tl-time">${escapeHtml(timeAgo(s.updatedAt))}${escapeHtml(durationLabel(s))}</span>
-        </div>
+        ${headerHtml(s, { title, foldable, folded })}
         ${desc ? `<div class="tl-summary">${escapeHtml(desc)}</div>` : ''}
-        ${orchestrated ? '' : identRowHtml(s)}
-        ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
-        ${attemptsHtml(s)}
-        ${waitBlockHtml(s)}
-        ${draftsHtml(s)}
-        ${launchRowHtml(job, s)}
-        ${!orchestrated && s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
-        ${orchestrated ? renderOrchestratedCard(s, { job }) : ''}
-        ${refsHtml(refs)}
-        ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
-        ${action ? `<div class="step-actions">${action}</div>` : ''}
+        ${orchestrated ? (foldable ? identRowHtml(s, { folded: true }) : '') : identRowHtml(s)}
+        <div class="tl-body">
+          ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
+          ${attemptsHtml(s)}
+          ${waitBlockHtml(s)}
+          ${draftsHtml(s)}
+          ${launchRowHtml(job, s)}
+          ${!orchestrated && s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
+          ${orchestrated ? renderOrchestratedCard(s, { job }) : ''}
+          ${refsHtml(refs)}
+          ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
+          ${action ? `<div class="step-actions">${action}</div>` : ''}
+        </div>
       </div>
       ${opts.editTools ?? ''}
     </div>
@@ -323,7 +368,8 @@ export function wireTimelineStep(el, job, s) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const kind = btn.getAttribute('data-step-action');
-      if (kind === 'resolve') void work.resolveStep(job.id, s.id);
+      if (kind === 'toggle-fold') setFolded(el, s.id, el.getAttribute('data-collapsed') !== 'true');
+      else if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
       else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
       else if (kind === 'retry') {

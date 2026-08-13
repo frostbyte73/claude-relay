@@ -548,6 +548,47 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   line-height: 1.5;
   margin: 2px 0 8px;
 }
+
+/* ── Finished-step fold ──────────────────────────────────────────────────
+   A step that is over collapses to the three lines that identify it — name,
+   description, action — so a long job's history stops burying the live step and
+   the planner's feed above it (see stepIsFoldable in step-card.js). The body
+   stays in the DOM and is hidden, which is what lets the toggle be an attribute
+   flip rather than a repaint that would remount every inline session. */
+.tl-hdr--fold {
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tl-fold-caret {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.tl-hdr--fold:hover .tl-fold-caret { color: var(--text-mute); }
+.tl-step[data-collapsed="true"] .tl-fold-caret { transform: rotate(-90deg); }
+.tl-step[data-collapsed="true"] .tl-body { display: none; }
+/* Expanded, the orchestrated card renders its own identity row — drop the folded
+   stand-in rather than saying the same thing twice. */
+.tl-step[data-collapsed="false"] .tl-ident--folded { display: none; }
+/* Three lines and nothing else: one line of description, and no body to space away
+   from the step below. */
+.tl-step[data-collapsed="true"]:not(:last-child) { padding-bottom: 10px; }
+.tl-step[data-collapsed="true"] .tl-summary {
+  margin: 2px 0 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tl-step[data-collapsed="true"] .tl-content > .tl-ident { margin-bottom: 0; }
+
 .tl-refs {
   display: flex;
   flex-wrap: wrap;
@@ -915,7 +956,7 @@ html[data-layout="mobile"] .tk-menu-item { padding: 11px 12px; }
 /* In the step timeline the findings box follows the inline session feed / refs
    directly — give it top breathing room the plan-card usage (first child, must
    hug the card edge) doesn't want. */
-.tl-content > .plan-findings { margin-top: 12px; }
+.tl-body > .plan-findings { margin-top: 12px; }
 .plan-findings-label { margin-bottom: 6px; }
 .plan-findings .finding-verdict { margin-top: 8px; font-size: 12px; color: var(--text-mute); }
 .plan-findings .finding-evidence,
