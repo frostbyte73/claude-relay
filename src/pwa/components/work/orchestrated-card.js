@@ -120,6 +120,19 @@ function feedMountHtml(s) {
   return `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>`;
 }
 
+// A running dispatch IS the implementor session, and its row used to offer exactly one way to
+// find out what it was doing: "Open ↗". So a controller that had fanned the work out showed a
+// static brief written at dispatch time, for however long the child took. The child gets its
+// own feed here for the same reason the controller has one — syncInlineMounts keys purely on
+// sessionId across the whole rendered tree at any depth, so this needs no new plumbing, only
+// the mount. Only while it is running: a settled dispatch's row is record, and mounting a
+// finished child would make the daemon respawn its long-reaped subprocess (see the terminal
+// guard in mountInlineSession).
+function dispatchFeedHtml(d) {
+  if (d.status !== 'running' || !d.sessionId) return '';
+  return `<div class="orc-dispatch-feed step-inline-session-mount" data-session-id="${escapeHtml(d.sessionId)}"></div>`;
+}
+
 function dispatchRowHtml(d) {
   const cat = actionCategory(d.action);
   return `
@@ -132,6 +145,7 @@ function dispatchRowHtml(d) {
         : ''}
       ${d.brief ? `<div class="orc-dispatch-brief">${escapeHtml(d.brief)}</div>` : ''}
       ${d.failure ? `<div class="orc-dispatch-failure">${escapeHtml(d.failure)}</div>` : ''}
+      ${dispatchFeedHtml(d)}
       ${d.draft ? renderWriteDraft(d.draft) : ''}
     </div>`;
 }

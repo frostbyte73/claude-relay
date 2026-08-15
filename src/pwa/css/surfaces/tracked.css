@@ -666,6 +666,10 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 /* A dispatch-raised write draft is a full-bleed block same as brief/failure above — without
    this it auto-places into the grid's first (auto-sized) column and renders crushed. */
 .orc-dispatch .wd-card { grid-column: 1 / -1; }
+/* Same full-bleed treatment for the running child's own feed. mountInlineSession puts
+   .step-inline-session on the element itself, which is what carries the shared feed chrome
+   (rail, padding) from base.css — only the grid placement is this row's business. */
+.orc-dispatch-feed { grid-column: 1 / -1; }
 
 /* ── "Message the controller" ─────────────────────────────────────────────
    One line at rest — utils/autogrow.js grows it, and the Send row only appears

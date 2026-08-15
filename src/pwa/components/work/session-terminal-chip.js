@@ -84,9 +84,34 @@ export function renderTerminalChipHtml(step) {
 // an action step's session going quiet means it's about to settle and take the terminal chip.
 //
 // `⏸` unconditionally rather than per-status: the glyph is answering "is this session
-// running", which is already false by the time this renders.
+// running", which is already false by the time this renders. That is also why this covers
+// ONLY the `parked` kind — a step that is mid-resume has work coming and must not wear a
+// pause glyph (see startingStripHtml).
 export function renderIdleChipHtml(step) {
   if (!step || step.type !== 'orchestrated') return '';
-  const status = orchestratedRows(step).statusLine;
-  return status ? chipHtml('idle', `⏸ ${status}`) : '';
+  const { statusLine, statusKind } = orchestratedRows(step);
+  if (!statusLine || statusKind !== 'parked') return '';
+  return chipHtml('idle', `⏸ ${statusLine}`);
+}
+
+// The other half of "no transcript is streaming": work has been handed to this step and the
+// session is on its way back up. Deliberately the SAME animated strip the feed shows while a
+// turn is in flight, rather than a chip — the dots are the whole point (something is coming),
+// and base.css pulses the feed's live rail off `.thinking-strip` being present, so this state
+// reads as moving instead of stopped without a single new rule.
+export function startingStripHtml(label) {
+  return (
+    '<div class="thinking-strip" role="status" aria-live="polite">' +
+      `<span class="thinking-strip-label">${escapeHtml(label)}</span>` +
+      '<span class="thinking-strip-dots" aria-hidden="true"><span></span><span></span><span></span></span>' +
+    '</div>'
+  );
+}
+
+// Null unless the step is genuinely mid-resume, so the feed can tell this apart from a parked
+// controller (idle chip) and from a real streaming turn (the transcript tail).
+export function startingLabelOf(step) {
+  if (!step || step.type !== 'orchestrated') return null;
+  const { statusLine, statusKind } = orchestratedRows(step);
+  return statusKind === 'starting' ? (statusLine ?? 'Resuming') : null;
 }

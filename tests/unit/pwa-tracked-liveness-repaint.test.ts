@@ -21,7 +21,12 @@ function job(live: string[], updatedAt = 100) {
     events: [],
     steps: [{
       id: 'st1', type: 'orchestrated', title: 'Implement', controller: 'code.orchestrate-pr',
-      phase: 'implement', state: 'running', sessionId: SESSION, cancelled: false,
+      // Genuinely PARKED, which is the only state that still wears the idle chip: a
+      // `running` step with no live session is mid-resume and gets the animated strip
+      // instead (see pwa-inline-feed-activity.test.ts). The repaint-key behaviour this
+      // file guards is the same either way.
+      phase: 'implement', state: 'waiting', waitingOn: { reason: 'Watching CI' },
+      sessionId: SESSION, cancelled: false,
       createdAt: 1, updatedAt,
       dispatches: [], inbox: [], drafts: [], artifacts: {},
       events: [{ kind: 'spawned', at: 1 }],
@@ -51,7 +56,7 @@ describe('Tracked detail repaints on a liveness-only job update', () => {
   it('drops the parked status chip once the step session starts working again', () => {
     seed([]);
     renderTrackedDetail(root, 'j1');
-    expect(idleChip(root)?.textContent).toContain('Implement');
+    expect(idleChip(root)?.textContent).toContain('Watching CI');
 
     // Same job, same updatedAt — only `live` moved.
     seed([SESSION]);

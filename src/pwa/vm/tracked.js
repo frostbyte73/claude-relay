@@ -253,11 +253,35 @@ function markResolvedInfo(s) {
 // open. Down here it loses to anything more specific and survives only for the cases nothing
 // else covers: the pre-PR spec/plan phases, and code.orchestrate-review's own ladder
 // (triage → lenses → synthesis → watching), which the PR block says nothing about.
-function statusLineOf(s) {
-  if (s.state === 'waiting') return s.waitingOn?.reason ?? 'Waiting';
+//
+// `kind` splits the two reasons a controller has nothing streaming, which read identically
+// as prose but must not render identically: 'parked' has stopped and is waiting on something
+// with no work in flight; 'starting' has been handed work and is on its way back.
+function statusOf(s) {
+  if (s.state === 'waiting') return { kind: 'parked', text: s.waitingOn?.reason ?? 'Waiting' };
   const running = (s.dispatches ?? []).find((d) => d.status === 'running');
-  if (running?.brief) return running.brief;
-  return phaseLabelOf(s) || null;
+  if (running?.brief) return { kind: 'parked', text: running.brief };
+  // A `running` step with nothing streaming is mid-resume, NOT parked. Delivering an inbox
+  // item sets `state: 'running'` and clears `waitingOn` (drainForDelivery) the instant it
+  // lands, while resumeControllerRound still has a worktree to provision and the launch
+  // governor to clear — seconds to minutes later. Falling through to the phase label here is
+  // what made review comments sent from the git view read as "nothing happened": the feed
+  // painted "⏸ Implement", which is character-for-character what a step parked for an hour
+  // shows. Say what actually just happened instead.
+  if (s.state === 'running') return { kind: 'starting', text: resumingTextOf(s) };
+  const phase = phaseLabelOf(s);
+  return phase ? { kind: 'parked', text: phase } : null;
+}
+
+// `lastDelivered` is what drainForDelivery handed this round (persisted on the step so a cold
+// resume still shows what woke it), so it can name the trigger rather than saying a bare
+// "Resuming" — the one thing the user actually wants confirmed is that their message landed.
+function resumingTextOf(s) {
+  const delivered = s.lastDelivered ?? [];
+  if (delivered.some((i) => i.kind === 'user-message')) return 'Picking up your message';
+  if (delivered.some((i) => i.kind === 'dispatch-done')) return 'Picking up a finished dispatch';
+  if (delivered.some((i) => i.kind === 'external')) return 'Picking up a PR update';
+  return 'Resuming';
 }
 
 export function orchestratedRows(step) {
@@ -287,8 +311,10 @@ export function orchestratedRows(step) {
     !d.approvedAt && d.raisedBy?.kind === raisedByKind
     && (raisedByKind !== 'dispatch' || d.raisedBy.dispatchId === dispatchId)) ?? null);
 
+  const status = statusOf(s);
   return {
-    statusLine: statusLineOf(s),
+    statusLine: status?.text ?? null,
+    statusKind: status?.kind ?? null,
     dispatchRows: (s.dispatches ?? []).map((d) => ({
       id: d.id,
       action: d.action,

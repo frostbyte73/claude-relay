@@ -13,7 +13,13 @@ import {
   bindAskCardHandlers,
   buildAskAnswerWire,
 } from '../ask-card.js';
-import { renderIdleChipHtml, renderTerminalChipHtml, terminalChipVariant } from './session-terminal-chip.js';
+import {
+  renderIdleChipHtml,
+  renderTerminalChipHtml,
+  startingLabelOf,
+  startingStripHtml,
+  terminalChipVariant,
+} from './session-terminal-chip.js';
 import { decideApproval, openSession } from '../../app-bridge.js';
 
 function isTerminal(step) { return step ? terminalChipVariant(step) !== null : false; }
@@ -130,10 +136,30 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null, live:
       setHtmlIfChanged(dom.body, renderTerminalChipHtml(currentStep));
       return;
     }
-    // A controller that has parked (on CI, on a dispatch, on an approval) states its status
-    // here rather than leaving the last two lines it said before parking on screen looking
-    // like live work. Same slot, same shape as the terminal chip above.
-    if (!currentLive) {
+    const slice = sessions.getSlice(sessionId);
+    // `currentLive` is the daemon's per-session liveness. It is derived per broadcast, never
+    // persisted, recomputed only on discrete daemon edges (turn start, Stop hook, proc exit),
+    // and it reaches us on the NOTIFICATIONS socket — a different channel from the per-session
+    // stream this mount is already attached to. A turn in flight on our own stream is direct
+    // evidence, and it outranks that second-hand boolean: gating on `currentLive` alone means
+    // every window the rebroadcast doesn't cover paints a working controller as parked, and
+    // there is always another such window (the worktree provision and launch-governor queue a
+    // resume waits through, a dropped frame, a reconnect). This is the fix that stops that
+    // being one plumbing hole at a time.
+    const streaming = !!slice?.thinking;
+    if (!currentLive && !streaming) {
+      // Work has landed on the step and the session is coming back up — animated, not paused,
+      // and the stale tail from the previous round is dropped either way.
+      const starting = startingLabelOf(currentStep);
+      if (starting) {
+        stopMetaTicker();
+        setHtmlIfChanged(dom.thinking, startingStripHtml(starting));
+        setHtmlIfChanged(dom.body, '');
+        return;
+      }
+      // A controller that has parked (on CI, on a dispatch, on an approval) states its status
+      // here rather than leaving the last two lines it said before parking on screen looking
+      // like live work. Same slot, same shape as the terminal chip above.
       const idle = renderIdleChipHtml(currentStep);
       if (idle) {
         stopMetaTicker();
@@ -142,18 +168,13 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null, live:
         return;
       }
     }
-    const slice = sessions.getSlice(sessionId);
-    const hasActivity = !!slice?.thinking || (slice?.transcript?.length ?? 0) > 0;
+    const hasActivity = streaming || (slice?.transcript?.length ?? 0) > 0;
     if (!hasActivity) {
       // Guarded for the same reason renderThinkingStrip patches in place: these
       // dots animate on a staggered infinite delay, and this paint runs on every
       // slice/approvals tick (uncoalesced), so rebuilding meant dots 2 and 3
       // never reached their bright frame.
-      setHtmlIfChanged(dom.thinking,
-        '<div class="thinking-strip" role="status" aria-live="polite">' +
-          '<span class="thinking-strip-label">starting</span>' +
-          '<span class="thinking-strip-dots" aria-hidden="true"><span></span><span></span><span></span></span>' +
-        '</div>');
+      setHtmlIfChanged(dom.thinking, startingStripHtml('starting'));
       setHtmlIfChanged(dom.body, '');
       return;
     }

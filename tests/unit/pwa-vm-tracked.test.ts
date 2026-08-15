@@ -175,16 +175,30 @@ describe('orchestratedRows', () => {
   });
 
   it('falls back to the phase label, known or controller-coined, when nothing else applies', () => {
-    expect(orchestratedRows(step({ phase: 'implement' })).statusLine).toBe('Implement');
+    expect(orchestratedRows(step({ phase: 'implement', state: 'pending' })).statusLine).toBe('Implement');
     expect(orchestratedRows(step({ phase: 'merged', state: 'resolved' })).statusLine).toBe('Merged');
-    expect(orchestratedRows(step({ phase: 'awaiting_qa' })).statusLine).toBe('Awaiting qa');
+    expect(orchestratedRows(step({ phase: 'awaiting_qa', state: 'pending' })).statusLine).toBe('Awaiting qa');
+  });
+
+  // A `running` step with no dispatch in flight is between rounds: the inbox has been drained
+  // onto it and resumeControllerRound is still provisioning / queued behind the governor. The
+  // phase label used to win here, so a step woken by review comments from the git view rendered
+  // "⏸ Implement" — identical to a step parked for an hour, for the whole resume window.
+  it('a running step reports the resume, not its phase, and names what woke it', () => {
+    expect(orchestratedRows(step({ phase: 'implement', state: 'running' })).statusLine).toBe('Resuming');
+    expect(orchestratedRows(step({ phase: 'implement', state: 'running' })).statusKind).toBe('starting');
+    expect(orchestratedRows(step({
+      phase: 'implement', state: 'running',
+      lastDelivered: [{ id: 'i1', at: 1, kind: 'user-message', body: 'no' }],
+    })).statusLine).toBe('Picking up your message');
   });
 
   it('surfaces the wait reason only while waiting', () => {
     const waiting = { waitingOn: { reason: 'Watching CI' } };
     expect(orchestratedRows(step({ state: 'waiting', ...waiting })).statusLine).toBe('Watching CI');
-    // No phase either, so nothing is left to say.
-    expect(orchestratedRows(step({ state: 'running', ...waiting })).statusLine).toBeNull();
+    expect(orchestratedRows(step({ state: 'waiting', ...waiting })).statusKind).toBe('parked');
+    // A stale waitingOn on a running step is not a status — it has already been drained.
+    expect(orchestratedRows(step({ state: 'running', ...waiting })).statusLine).toBe('Resuming');
   });
 
   it('falls back to the running dispatch brief for the status line', () => {
@@ -200,7 +214,9 @@ describe('orchestratedRows', () => {
     // ...and both outrank the phase, which is why "PR open" no longer restates the PR block.
     expect(orchestratedRows(step({ state: 'running', phase: 'pr_open', dispatches })).statusLine)
       .toBe('rewriting the reply path');
-    expect(orchestratedRows(step({ state: 'running' })).statusLine).toBeNull();
+    // A controller parked on a child it fanned out really has stopped, so this stays 'parked'
+    // — it is the dispatch that is moving, and that child now carries its own feed.
+    expect(orchestratedRows(step({ state: 'running', dispatches })).statusKind).toBe('parked');
   });
 
   it('marks the newest artifact only while the step is still moving', () => {
