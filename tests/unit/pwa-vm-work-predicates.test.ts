@@ -67,6 +67,31 @@ describe('stepNeedsYou', () => {
       state: 'running', drafts: [{ id: 'd1', raisedBy: { kind: 'step' }, approvedAt: 5 }],
     }))).toBe(false);
   });
+
+  // "Propose changes" is the case `approvedAt` alone cannot see: reviseDraft leaves the very
+  // same draft pending (feedback appended) and only unparks the raiser, so a predicate that
+  // stops at `approvedAt` keeps the job in Needs-you and keeps the decision card on screen,
+  // unchanged, after the click.
+  it('false once a pending draft has been sent back for changes', () => {
+    expect(stepNeedsYou(step({
+      type: 'orchestrated', state: 'running',
+      drafts: [{ id: 'd1', raisedBy: { kind: 'controller' }, feedback: ['try again'] }],
+    }))).toBe(false);
+    expect(stepNeedsYou(step({
+      type: 'orchestrated', state: 'waiting',
+      dispatches: [{ id: 'dp1', status: 'running' }],
+      drafts: [{ id: 'd1', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' }, feedback: ['try again'] }],
+    }))).toBe(false);
+  });
+
+  // A draft whose dispatch row can't be found is kept, not dropped: hiding a decision the
+  // user still owes parks the step forever with nothing on screen to act on.
+  it('true for a dispatch-raised draft whose dispatch row is missing', () => {
+    expect(stepNeedsYou(step({
+      type: 'orchestrated', state: 'waiting', dispatches: [{ id: 'other', status: 'running' }],
+      drafts: [{ id: 'd1', raisedBy: { kind: 'dispatch', dispatchId: 'dp1' } }],
+    }))).toBe(true);
+  });
 });
 
 describe('isTerminalStep / isFailureStep', () => {

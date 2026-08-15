@@ -7,7 +7,7 @@ import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
 import { renderMarkdown } from '../../markdown.js';
 import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
-import { isTerminalStep, hasUnapprovedDraft } from '../../vm/work-predicates.js';
+import { isTerminalStep, hasUnapprovedDraft, draftAwaitsUser } from '../../vm/work-predicates.js';
 import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -234,11 +234,14 @@ function waitBlockHtml(s) {
 // stay pending forever on a step that's actually dead — rendering a live Accept/Propose/
 // Deny card whose every button would 409 against the server's own terminal-step guard.
 function draftsHtml(s) {
-  if (s.type !== 'action' || isTerminalStep(s)) return '';
-  return (s.drafts ?? [])
-    .filter((d) => !d.approvedAt)
-    .map((d) => renderWriteDraft(d))
-    .join('');
+  return pendingDrafts(s).map((d) => renderWriteDraft(d)).join('');
+}
+
+// The drafts this step is currently asking the user to decide — `draftAwaitsUser`, not merely
+// `!approvedAt`, or the card survives its own "Propose changes" unchanged (see that predicate).
+function pendingDrafts(s) {
+  if (s.type !== 'action' || isTerminalStep(s)) return [];
+  return (s.drafts ?? []).filter((d) => draftAwaitsUser(s, d));
 }
 
 // Token-launch-queue status for this step, in its own row (never crammed onto
@@ -379,10 +382,7 @@ export function wireTimelineStep(el, job, s) {
       }
     });
   });
-  if (s.type === 'action' && !isTerminalStep(s)) {
-    (s.drafts ?? []).filter((d) => !d.approvedAt)
-      .forEach((d) => wireWriteDraft(el, { jobId: job.id, stepId: s.id, draft: d }));
-  }
+  pendingDrafts(s).forEach((d) => wireWriteDraft(el, { jobId: job.id, stepId: s.id, draft: d }));
   if (s.type === 'orchestrated') wireOrchestratedCard(el, s, { job });
 }
 

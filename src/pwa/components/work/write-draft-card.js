@@ -312,16 +312,38 @@ export function wireWriteDraft(root, { jobId, stepId, draft }) {
   // needs debugging, since only the shown copy is stripped.
   const displayMessage = (msg) => msg.replace(/^work api \d+:\s*/, '');
 
-  async function decide(run) {
+  // A taken decision has to be visible on the card that carried it, immediately — the repaint
+  // that removes it is a store round-trip away, and detail.js's restoreUi would otherwise put a
+  // still-open revise composer straight back, text and all, on the way through. So settle the
+  // card here: freeze the payload, close the composers (empty, so there's nothing left to
+  // restore), and say what was just done where the buttons were.
+  function settle(text) {
+    card.querySelectorAll('[data-composer]').forEach((c) => {
+      const ta = c.querySelector('textarea');
+      if (ta) ta.value = '';
+      c.setAttribute('hidden', '');
+    });
+    card.querySelectorAll('textarea, input').forEach((el) => { el.disabled = true; });
+    const actions = card.querySelector('.step-actions');
+    if (actions) {
+      const note = document.createElement('div');
+      note.className = 'wd-decided';
+      note.textContent = text;
+      actions.replaceChildren(note);
+    }
+    card.classList.add('is-decided');
+  }
+
+  async function decide(run, decided) {
     clearError();
     setBusy(true);
     try {
       await run();
+      settle(decided);
     } catch (e) {
       const msg = displayMessage(e?.message || String(e));
       showError(msg);
       showStatusToast(`${draft.action}: ${msg}`);
-    } finally {
       setBusy(false);
     }
   }
@@ -329,10 +351,14 @@ export function wireWriteDraft(root, { jobId, stepId, draft }) {
   card.querySelector('[data-wd-action="accept"]')?.addEventListener('click', () => {
     const { calls, errors } = collectCalls(card, draft);
     if (errors.length) { showError(errors.join('; ')); return; }
-    void decide(() => work.acceptDraft(jobId, stepId, draft.id, calls));
+    const posting = calls.filter((c) => !c.skip).length;
+    void decide(
+      () => work.acceptDraft(jobId, stepId, draft.id, calls),
+      posting ? `✓ Approved — ${draft.action} is running it now.` : '✓ Nothing approved — no call will run.',
+    );
   });
 
-  function wireComposer(kind, submitFn) {
+  function wireComposer(kind, submitFn, decided) {
     // `data-composer` (not a `data-wd-*` name) so detail.js's repaint-preservation
     // (`snapshotUi`/`restoreUi`, scoped by `[data-composer]`) carries a half-typed revise/
     // deny reason and its open/closed state across a store-driven repaint, same as every
@@ -349,9 +375,11 @@ export function wireWriteDraft(root, { jobId, stepId, draft }) {
     submitBtn?.addEventListener('click', () => {
       const text = ta.value.trim();
       if (!text) { ta.focus(); return; }
-      void decide(() => submitFn(text));
+      void decide(() => submitFn(text), decided);
     });
   }
-  wireComposer('revise', (text) => work.reviseDraft(jobId, stepId, draft.id, text));
-  wireComposer('deny', (text) => work.denyDraft(jobId, stepId, draft.id, text));
+  wireComposer('revise', (text) => work.reviseDraft(jobId, stepId, draft.id, text),
+    `↩ Sent back — ${draft.action} is drafting again.`);
+  wireComposer('deny', (text) => work.denyDraft(jobId, stepId, draft.id, text),
+    '✗ Denied — nothing was written.');
 }

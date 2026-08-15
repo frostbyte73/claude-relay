@@ -1,7 +1,7 @@
 // Tracked-list view-model: buckets jobs by attention priority, and derives the
 // single "what should the user do next" focus action for a job's right rail.
 
-import { needsYou, stepNeedsYou, hasUnapprovedDraft, isTerminalStep } from './work-predicates.js';
+import { needsYou, stepNeedsYou, hasUnapprovedDraft, isTerminalStep, draftAwaitsUser } from './work-predicates.js';
 
 const NO_LIVE = { orchestrator: false, stepIds: [] };
 
@@ -307,8 +307,12 @@ export function orchestratedRows(step) {
   // prunes (see step-card.js's draftsHtml, which needs this same guard for real). Kept here
   // anyway so this file doesn't silently start relying on that backend invariant holding
   // forever, and so it doesn't look like an asymmetric oversight next to draftsHtml's guard.
+  //
+  // `draftAwaitsUser` is the other half, and it is not optional — a draft the user has already
+  // sent back is still `!approvedAt`, and rendering it would put the decision card back up
+  // unchanged after the click. See that predicate for the full account.
   const draftFor = (raisedByKind, dispatchId) => (isTerminalStep(s) ? null : drafts.find((d) =>
-    !d.approvedAt && d.raisedBy?.kind === raisedByKind
+    draftAwaitsUser(s, d) && d.raisedBy?.kind === raisedByKind
     && (raisedByKind !== 'dispatch' || d.raisedBy.dispatchId === dispatchId)) ?? null);
 
   const status = statusOf(s);

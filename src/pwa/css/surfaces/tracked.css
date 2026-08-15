@@ -433,6 +433,11 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .wd-error.work-error { margin-bottom: 0; background: var(--bg); border: 1px solid var(--danger); }
 .wd-subhead { font-size: 12px; color: var(--text-mute); }
 
+/* What the decision row folds down to the moment a decision lands, before the store round-trip
+   repaints the card away (write-draft-card.js's `settle`). Quiet — it's a receipt, not a CTA. */
+.wd-decided { font-size: 12px; color: var(--text-mute); }
+.wd-card.is-decided { opacity: 0.6; }
+
 /* A `code.reply-pr-comments` draft is the same card, wrapped around the PR block's comment
    threads instead of around a stack of commands (pr-block.js) — so it keeps the --warn rail
    that says "waiting on you" and drops the soft fill, which at thread-list size reads as a
@@ -992,6 +997,11 @@ html[data-layout="mobile"] .tk-menu-item { padding: 11px 12px; }
 
 .work-empty { color: var(--text-mute); padding: 24px 12px; text-align: center; font-style: italic; }
 .work-error { color: var(--danger); background: var(--danger-soft); padding: 12px; border-radius: var(--r-control); margin-bottom: 12px; display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+/* The author `display: flex` above beats the UA `[hidden] { display: none }` rule, so the one
+   caller that hides this slot by attribute (write-draft-card.js's error line, empty until
+   something actually fails) rendered as a permanent empty red-bordered box on every write-draft
+   card. The two dialogs sidestepped it with inline `style="display:none"`; this is the fix. */
+.work-error[hidden] { display: none; }
 
 
 /* ───── Activity stream (audit log) ─────────────────────────

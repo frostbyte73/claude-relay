@@ -37,7 +37,32 @@ export function isFailureStep(s) {
 // pending-draft approval apart from the other things `stepNeedsYou` flags, without
 // re-deriving the same check.
 export function hasUnapprovedDraft(s) {
-  return !isTerminalStep(s) && (s.drafts ?? []).some((d) => !d.approvedAt);
+  return !isTerminalStep(s) && (s.drafts ?? []).some((d) => draftAwaitsUser(s, d));
+}
+
+// Is this draft the user's to answer RIGHT NOW? `!approvedAt` is only half the question:
+// `approvedAt` records that a draft was ACCEPTED, not that it was DECIDED. "Propose changes"
+// (reviseDraft, write-draft-runner.ts) leaves the very same draft pending — it appends the
+// feedback and unparks the raiser so the session can redraft — so a predicate that stops at
+// `approvedAt` keeps the job pinned in "Needs you" and keeps rendering an untouched approval
+// card, replies and Accept/Propose/Deny and all, after the click. Nothing moved on screen and
+// the decision read as dropped.
+//
+// The raiser's own parked state is the honest signal, and it differs by raiser (see the note
+// above `hasUnapprovedDraft`): submitDraft parks a `step`/`controller` draft on the step's
+// `gate_pending_approval`, and a `dispatch` draft on that dispatch's `awaiting_approval`.
+// Every one of accept/revise/deny unparks it again.
+// Note which way each branch fails: a MISSING dispatch row answers "yes, still yours", not
+// "no". Hiding a decision the user still owes is the one unrecoverable outcome here — the
+// step sits parked forever with nothing on screen to act on — so anything this can't resolve
+// against a live raiser keeps the card up.
+export function draftAwaitsUser(s, d) {
+  if (d.approvedAt) return false;
+  if (d.raisedBy?.kind === 'dispatch') {
+    const dispatch = (s.dispatches ?? []).find((x) => x.id === d.raisedBy.dispatchId);
+    return !dispatch || dispatch.status === 'awaiting_approval';
+  }
+  return s.state === 'gate_pending_approval';
 }
 
 export function stepNeedsYou(s) {
