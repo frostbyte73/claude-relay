@@ -28,17 +28,6 @@ export interface MetaRoutesDeps {
   mcpConfigPath: string;
 }
 
-// Prose lifted from CLAUDE.md's permission-groups section — the JSON file itself
-// carries no description field, so the UI's copy lives here instead of duplicating
-// it a third place.
-const GROUP_DESCRIPTIONS: Record<string, string> = {
-  core: 'Envelope-I/O baseline for every action: read the job envelope, jq, curl to the loopback hook server, ToolSearch. Implicit for every runner:claude action.',
-  read: 'Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch).',
-  pull: 'Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident-io/Grafana, curl -s, and read-only gh commands.',
-  edit: 'Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, mage/npm/go/pytest/cargo, git rebase/checkout --.',
-  push: 'External writes, each anchored to the worktree\'s own repo: git push (no force, no --delete, bare remote name), gh pr merge/review/comment/create/edit/close and the issue/release verbs (no --repo, no PR URL, no --admin, --body-file pinned to /tmp), git commit/tag, and an explicit list of write-side MCP tools.',
-};
-
 // Same group-name resolution ActionRegistry.resolvePermissions uses internally
 // (core implied for claude runners, explicit "core" in the list is a no-op) —
 // duplicated here rather than exported from the registry since it's the only
@@ -146,7 +135,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     }
     const groups = Object.entries(permissionGroups).map(([name, cfg]) => ({
       name,
-      description: GROUP_DESCRIPTIONS[name] ?? '',
+      description: cfg.description ?? '',
       alwaysAllow: cfg.alwaysAllow,
       alwaysAllowBashPatterns: cfg.alwaysAllowBashPatterns,
       alwaysAllowMcpPatterns: cfg.alwaysAllowMcpPatterns,

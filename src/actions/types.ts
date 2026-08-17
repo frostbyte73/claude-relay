@@ -33,7 +33,11 @@ export interface ActionAllowlist {
   alwaysAllowPathPatterns: string[];
 }
 
-export type PermissionGroupMap = Record<string, ActionAllowlist>;
+export interface PermissionGroup extends ActionAllowlist {
+  description?: string;
+}
+
+export type PermissionGroupMap = Record<string, PermissionGroup>;
 
 export interface ActionDef {
   name: string;

@@ -1,5 +1,6 @@
 {
   "core": {
+    "description": "Envelope-I/O baseline for every action: read the job envelope, jq, curl to the loopback hook server, ToolSearch. Implicit for every runner:claude action.",
     "alwaysAllow": ["ToolSearch"],
     "alwaysAllowBashPatterns": [
       "^cat \"\\$OUTPOST_ENVELOPE\"$",
@@ -12,6 +13,7 @@
     "alwaysAllowPathPatterns": []
   },
   "read": {
+    "description": "Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch).",
     "alwaysAllow": ["Read", "Glob", "Grep", "LS", "NotebookRead"],
     "alwaysAllowBashPatterns": [
       "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|printenv|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od)(\\s|$)",
@@ -23,6 +25,7 @@
     "alwaysAllowPathPatterns": []
   },
   "pull": {
+    "description": "Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident-io/Grafana, curl -s, and read-only gh commands.",
     "alwaysAllow": ["WebFetch", "WebSearch", "ListMcpResourcesTool", "ReadMcpResourceTool"],
     "alwaysAllowBashPatterns": [
       "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|[\"']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s\"'<>&|;\\\\]*[\"']?))*(?:\\s|\\\\\\n)*$",
@@ -41,6 +44,7 @@
     "alwaysAllowPathPatterns": []
   },
   "edit": {
+    "description": "Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, mage/npm/go/pytest/cargo, git rebase/checkout --.",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
       "^mage(\\s|$)",
@@ -65,6 +69,7 @@
     ]
   },
   "push": {
+    "description": "External writes, each anchored to the worktree's own repo: git push (no force, no --delete, bare remote name), gh pr merge/review/comment/create/edit/close and the issue/release verbs (no --repo, no PR URL, no --admin, --body-file pinned to /tmp), git commit/tag, and an explicit list of write-side MCP tools.",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
       "^git push(?:[ \\t]+(?:-u|--set-upstream|-q|--quiet|--porcelain))*(?:[ \\t]+[A-Za-z][A-Za-z0-9._-]*(?:[ \\t]+(?!(?:[mM][aA][iI][nN]|[mM][aA][sS][tT][eE][rR]|[tT][rR][uU][nN][kK]|[dD][eE][vV][eE][lL][oO][pP]|[dD][eE][vV]|[rR][eE][lL][eE][aA][sS][eE][/-][^\\s]*|(?:[rR][eE][fF][sS]/)?[hH][eE][aA][dD][sS]/[^\\s]*)[ \\t]*$)(?:HEAD|[A-Za-z0-9_][A-Za-z0-9._/-]*))?)?[ \\t]*$",
