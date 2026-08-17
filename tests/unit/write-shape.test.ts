@@ -177,6 +177,16 @@ describe('classifyInterpreterShape', () => {
     expect(interp('^(node)(\\s|$)')).toBe(false);
     expect(interp('^(tsx|node|tsc|vitest)(\\s|$)')).toBe(false);
   });
+
+  it('still refuses eval-shaped or arbitrary-content alternations, even unidentified (gap narrowed)', () => {
+    // The anchoring check above is still a known gap — a bare, unidentified binary alternation
+    // slips past it — but an alternation that also hands over an eval flag or arbitrary
+    // trailing content doesn't need the binary identified to be refused.
+    expect(interp('^(bash) -c .*$')).toBe(true);
+    expect(interp('^(node) -e .*$')).toBe(true);
+    expect(interp('^(python3) -c "x"$')).toBe(true);
+    expect(interp('^(node|python3) .*$')).toBe(true);
+  });
 });
 
 describe('classifyRuleShape — gh write verbs the probe corpus was missing', () => {
@@ -312,8 +322,9 @@ describe('classifyHttpWriteShape', () => {
     // `--fie[l]d` and `-[f]` compile to exactly the flags `--field` and `-f`, but neither
     // appears in the pattern's source text, and no fixed probe corpus can name the arbitrary
     // endpoint each of these pins. Text scanning cannot decide what a regex permits, and
-    // trying harder there just moves the evasion one spelling along. The sound mitigation is
-    // the gate itself: a rule this narrow still only reaches a session through `push`.
+    // trying harder there just moves the evasion one spelling along. `assertNotWriteShaped`
+    // permits a rule shaped this way at every non-gated scope — action, colocated
+    // `allowlist.json`, global, project — so it is a live gap, not one the gate closes.
     expect(httpShaped('^gh api --fie[l]d title=x repos/o/r/issues$')).toBe(false);
     expect(httpShaped('^gh api -[f] title=x repos/o/r/issues$')).toBe(false);
   });

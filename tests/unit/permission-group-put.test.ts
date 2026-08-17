@@ -241,6 +241,11 @@ describe('PUT /api/permission-groups/:name', () => {
     expect(resolved).toContain('^rg(\\s|$)');
     expect(resolved).not.toContain('^find(\\s|$)');
     expect(revisions.list('read')).toHaveLength(0);
+    // The rejected edit must never reach disk either — a reload failure that still wrote the
+    // file would silently take effect at the next daemon restart with no audit row.
+    const onDisk = JSON.parse(readFileSync(groupsPath, 'utf8')) as PermissionGroupMap;
+    expect(onDisk.read!.alwaysAllowBashPatterns).toEqual(['^rg(\\s|$)']);
+    expect(onDisk.read!.alwaysAllowBashPatterns).not.toContain('^find(\\s|$)');
   });
 
   it('rolls back and records nothing when the config write fails', async () => {

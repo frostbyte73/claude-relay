@@ -1,5 +1,17 @@
 import type { RuleKind } from './allowlist.js';
 
+// This module is a heuristic net over a sound core (WRITE_PROBES compiled against the
+// candidate pattern), not an adversarial boundary — see the "known gap" tests in
+// write-shape.test.ts for the executable spec. Three residual gaps, all permitted at every
+// non-gated scope:
+//   1. a leading alternation can hide a binary from `classifyInterpreterShape`'s
+//      identification (`^(node)(\s|$)` slips past unless it also carries an eval flag or
+//      admits arbitrary content — see `classifyInterpreterShape` below).
+//   2. metacharacter splicing inside a flag name (`--fie[l]d`, `-[f]`) compiles to the real
+//      flag but defeats a text scan for it.
+//   3. the command-wrapper list (`env`/`xargs`/`nohup`/`time`/`sudo`/`command`) is an open
+//      set — `stdbuf`/`nice`/`timeout` and others still pass unrecognized.
+
 export interface ShapeVerdict {
   writeShaped: boolean;
   reason: string;
@@ -337,7 +349,9 @@ export function classifyHttpWriteShape(kind: RuleKind, value: string): ShapeVerd
 // Every scope reachable through addRule is non-gated: a call matching a rule added there
 // is checked by allows() but never by gatedMatch, so a write installed this way runs
 // without a write-draft pin. Permission groups are the only legitimate home for a write
-// rule, and they are not written through addRule.
+// rule, and they are not written through addRule. This is a guarantee against rules shaped
+// like the ones this module recognizes — see the module-header comment above for the three
+// shapes it does not.
 export function assertNotWriteShaped(kind: RuleKind, value: string): void {
   for (const verdict of [
     classifyRuleShape(kind, value),
@@ -358,7 +372,13 @@ export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVe
   if (lit === null) return { writeShaped: false, reason: '' };
   const first = lit.prefix.trim().split(/\s+/)[0] ?? '';
   const binary = first.split('/').pop() ?? first;
-  if (!INTERPRETERS.has(binary)) return { writeShaped: false, reason: '' };
+  const knownInterpreter = binary !== '' && INTERPRETERS.has(binary);
+  // A named binary that isn't an interpreter (git, mkdir, ...) is out of scope for this
+  // classifier entirely. An *empty* prefix — a leading alternation or other metacharacter hid
+  // the binary, e.g. `^(bash) -c .*$` — falls through instead: we can't say "this is an
+  // interpreter, anchor it", but the eval-flag and arbitrary-content checks below don't need
+  // to know which binary is invoked, only what the rule's text permits, so they still apply.
+  if (binary !== '' && !knownInterpreter) return { writeShaped: false, reason: '' };
 
   // Strip the trailing anchor before testing: the `-\s*$` alternative's `$` needs to see the
   // pattern's actual end-of-string, which sits one character before the literal `$` the
@@ -367,8 +387,25 @@ export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVe
   if (EVAL_FLAGS.test(body)) {
     return {
       writeShaped: true,
-      reason: `\`${binary}\` with an eval-shaped flag (-c/-e/--eval) executes arbitrary code`,
+      reason: knownInterpreter
+        ? `\`${binary}\` with an eval-shaped flag (-c/-e/--eval) executes arbitrary code`
+        : 'pattern names an eval-shaped flag (-c/-e/--eval) but the invoked binary cannot be '
+          + 'determined — refusing rather than assuming it is safe',
     };
+  }
+
+  if (!knownInterpreter) {
+    // binary === '' here. We can't require the "anchor with $, name the exact invocation" rule
+    // below without knowing this is an interpreter at all, but an unidentified binary handed
+    // arbitrary trailing content is still worth refusing rather than assuming is safe.
+    if (admitsArbitraryContent(value)) {
+      return {
+        writeShaped: true,
+        reason: 'pattern admits arbitrary trailing content and the invoked binary cannot be '
+          + 'determined — refusing rather than assuming it is safe',
+      };
+    }
+    return { writeShaped: false, reason: '' };
   }
 
   if (!value.endsWith('$')) {

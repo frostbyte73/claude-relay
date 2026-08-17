@@ -209,18 +209,30 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     const before = permissionGroups[name] ? structuredClone(permissionGroups[name]!) : null;
     // Mutated in place: daemon.ts holds this same object and hands it to the registry.
     permissionGroups[name] = next;
+
+    const rollback = () => {
+      // Put the old group back so the in-memory map can't outlive a failed reload or write.
+      if (before) permissionGroups[name] = before; else delete permissionGroups[name];
+      actionRegistry.setPermissionGroups(permissionGroups);
+      try { actionRegistry.load(); } catch { /* the rolled-back state is what the error below reports */ }
+    };
+
+    // Reload FIRST, on the in-memory map only — a rejected edit must never reach disk, or it
+    // silently takes effect at the next daemon restart with no audit row.
+    try {
+      actionRegistry.setPermissionGroups(permissionGroups);
+      actionRegistry.load();
+    } catch (e) {
+      rollback();
+      return { ok: false, status: 500, error: `group update failed: ${(e as Error).message}` };
+    }
+
     try {
       const tmp = `${permissionGroupsPath}.tmp`;
       writeFileSync(tmp, JSON.stringify(permissionGroups, null, 2) + '\n');
       renameSync(tmp, permissionGroupsPath);
-      actionRegistry.setPermissionGroups(permissionGroups);
-      actionRegistry.load();
     } catch (e) {
-      // Put the old group back so the in-memory map can't outlive a failed write or a
-      // reload that rejected the new grant.
-      if (before) permissionGroups[name] = before; else delete permissionGroups[name];
-      actionRegistry.setPermissionGroups(permissionGroups);
-      try { actionRegistry.load(); } catch { /* the rolled-back state is what the error below reports */ }
+      rollback();
       return { ok: false, status: 500, error: `group update failed: ${(e as Error).message}` };
     }
     // Recorded only once disk and registry both agree — the store indexes before it appends,
