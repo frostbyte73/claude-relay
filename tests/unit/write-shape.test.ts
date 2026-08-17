@@ -41,6 +41,11 @@ describe('classifyRuleShape refuses the rules the Allow button used to offer', (
       expect(shaped('bash', v), v).toBe(true);
     }
   });
+
+  it('refuses the unanchored yarn/pnpm grant and permits the narrowed one', () => {
+    expect(shaped('bash', '^(yarn|pnpm)(\\s|$)')).toBe(true);
+    expect(shaped('bash', '^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)')).toBe(false);
+  });
 });
 
 describe('classifyRuleShape permits the rules actions actually need', () => {

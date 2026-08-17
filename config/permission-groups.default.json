@@ -45,7 +45,7 @@
     "alwaysAllowBashPatterns": [
       "^mage(\\s|$)",
       "^npm (test|run|install|ci)(\\s|$)",
-      "^(yarn|pnpm)(\\s|$)",
+      "^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)",
       "^npx(\\s|$)",
       "^(tsx|node|tsc|vitest|jest|playwright|eslint|prettier)(\\s|$)",
       "^go(\\s|$)",
