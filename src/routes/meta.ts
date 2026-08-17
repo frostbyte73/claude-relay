@@ -11,7 +11,7 @@ import { Allowlist, type AllowlistConfig, type RuleKind, type RuleScope } from '
 import {
   classifyHttpWriteShape, classifyInterpreterShape, classifyRuleShape,
 } from '../permissions/write-shape.js';
-import type { PermissionGroupRevisionsStore } from '../storage/permission-group-revisions-store.js';
+import type { GroupAuthor, PermissionGroupRevisionsStore } from '../storage/permission-group-revisions-store.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
@@ -194,6 +194,47 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.end(JSON.stringify({ groups }));
   });
 
+  type ApplyGroupResult = { ok: true } | { ok: false; status: number; error: string };
+
+  // Shared by the PUT handler and revert: validate, write-and-reload with rollback on failure,
+  // then record. Revert calls this with the same rigor as a fresh edit — see validateGroupUpdate's
+  // header comment on why history is never a trusted replay.
+  function applyGroup(
+    name: string, next: PermissionGroup, author: GroupAuthor,
+    rationale: string | undefined, revertOf: string | undefined,
+  ): ApplyGroupResult {
+    const verdict = validateGroupUpdate(name, next);
+    if (!verdict.ok) return { ok: false, status: 400, error: verdict.error };
+
+    const before = permissionGroups[name] ? structuredClone(permissionGroups[name]!) : null;
+    // Mutated in place: daemon.ts holds this same object and hands it to the registry.
+    permissionGroups[name] = next;
+    try {
+      const tmp = `${permissionGroupsPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(permissionGroups, null, 2) + '\n');
+      renameSync(tmp, permissionGroupsPath);
+      actionRegistry.setPermissionGroups(permissionGroups);
+      actionRegistry.load();
+    } catch (e) {
+      // Put the old group back so the in-memory map can't outlive a failed write or a
+      // reload that rejected the new grant.
+      if (before) permissionGroups[name] = before; else delete permissionGroups[name];
+      actionRegistry.setPermissionGroups(permissionGroups);
+      try { actionRegistry.load(); } catch { /* the rolled-back state is what the error below reports */ }
+      return { ok: false, status: 500, error: `group update failed: ${(e as Error).message}` };
+    }
+    // Recorded only once disk and registry both agree — the store indexes before it appends,
+    // so a revision written ahead of a failed apply would outlive the state it describes.
+    groupRevisions.record({
+      group: name, author, before, after: next,
+      ...(rationale ? { rationale } : {}),
+      ...(revertOf ? { revertOf } : {}),
+    });
+    console.log(`[api] permission-group[${name}]: ${revertOf ? 'reverted' : 'updated'} `
+      + `(${next.alwaysAllowBashPatterns.length} bash rules)`);
+    return { ok: true };
+  }
+
   // Body: { group: PermissionGroup, rationale?: string }. The only path that may install a
   // write-shaped rule, and only into a gated group — see validateGroupUpdate.
   async function handlePutPermissionGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -214,40 +255,45 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       alwaysAllowMcpPatterns: group.alwaysAllowMcpPatterns,
       alwaysAllowPathPatterns: Array.isArray(group.alwaysAllowPathPatterns) ? group.alwaysAllowPathPatterns : [],
     };
-    const verdict = validateGroupUpdate(name, normalized);
-    if (!verdict.ok) { res.statusCode = 400; res.end(verdict.error); return; }
 
-    const before = permissionGroups[name] ? structuredClone(permissionGroups[name]!) : null;
-    // Mutated in place: daemon.ts holds this same object and hands it to the registry.
-    permissionGroups[name] = normalized;
-    try {
-      const tmp = `${permissionGroupsPath}.tmp`;
-      writeFileSync(tmp, JSON.stringify(permissionGroups, null, 2) + '\n');
-      renameSync(tmp, permissionGroupsPath);
-      actionRegistry.setPermissionGroups(permissionGroups);
-      actionRegistry.load();
-    } catch (e) {
-      // Put the old group back so the in-memory map can't outlive a failed write or a
-      // reload that rejected the new grant.
-      if (before) permissionGroups[name] = before; else delete permissionGroups[name];
-      actionRegistry.setPermissionGroups(permissionGroups);
-      try { actionRegistry.load(); } catch { /* the rolled-back state is what the error below reports */ }
-      res.statusCode = 500; res.end(`group update failed: ${(e as Error).message}`); return;
-    }
-    // Recorded only once disk and registry both agree — the store indexes before it appends,
-    // so a revision written ahead of a failed apply would outlive the state it describes.
-    groupRevisions.record({
-      group: name, author: 'user', before, after: normalized,
-      ...(typeof payload.rationale === 'string' ? { rationale: payload.rationale } : {}),
-    });
-    console.log(`[api] permission-group[${name}]: updated `
-      + `(${normalized.alwaysAllowBashPatterns.length} bash rules)`);
+    const applied = applyGroup(name, normalized,
+      'user', typeof payload.rationale === 'string' ? payload.rationale : undefined, undefined);
+    if (!applied.ok) { res.statusCode = applied.status; res.end(applied.error); return; }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ ok: true, group: normalized }));
   }
 
   server.route('PUT', '/api/permission-groups/:name', handlePutPermissionGroup);
+
+  // Newest-first history for a group — the Library/settings surface reads this to
+  // populate a revert picker.
+  server.route('GET', '/api/permission-groups/:name/revisions', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/permission-groups\/([A-Za-z0-9_-]+)\/revisions(?:\?|$)/);
+    if (!m) { res.statusCode = 400; res.end('bad group name'); return; }
+    const name = decodeURIComponent(m[1]!);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ revisions: groupRevisions.list(name) }));
+  });
+
+  // Re-validates rev.after against the CURRENT lint rather than trusting the snapshot — a
+  // revision recorded before a rule tightened must not be able to reinstate a grant the
+  // current validateGroupUpdate would refuse.
+  server.route('POST', '/api/permission-groups/:name/revert/:revisionId', (req, res) => {
+    const m = (req.url ?? '')
+      .match(/^\/api\/permission-groups\/([A-Za-z0-9_-]+)\/revert\/([A-Za-z0-9-]+)(?:\?|$)/);
+    if (!m) { res.statusCode = 400; res.end('bad revert path'); return; }
+    const name = decodeURIComponent(m[1]!);
+    const rev = groupRevisions.get(decodeURIComponent(m[2]!));
+    if (!rev || rev.group !== name) { res.statusCode = 404; res.end('no such revision'); return; }
+
+    const applied = applyGroup(name, rev.after, 'user', `revert to ${rev.id}`, rev.id);
+    if (!applied.ok) { res.statusCode = applied.status; res.end(applied.error); return; }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, group: rev.after }));
+  });
 
   // Body: { kind: 'tool'|'bash'|'mcp', value: string, scope?: 'global' | { project: string } | { action: string } | { session: string } | 'session' }.
   // Validates + dedupes + atomic-writes global allowlist.json or per-project file.
