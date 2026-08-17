@@ -30,13 +30,15 @@
     "alwaysAllowBashPatterns": [
       "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|[\"']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s\"'<>&|;\\\\]*[\"']?))*(?:\\s|\\\\\\n)*$",
       "^gh api(?:(?:\\s|\\\\\\n)+(?:--paginate|--slurp|(?:--cache|--hostname|-H|--header|-q|--jq|-t|--template)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:--method|-X)(?:(?:\\s|\\\\\\n)+|=)GET|(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)))*(?:\\s|\\\\\\n)*$",
-      "^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|workflow view|workflow list|repo view|issue view|issue list|search|release view|release list|label list|cache list|browse)(\\s|$)"
+      "^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|workflow view|workflow list|repo view|issue view|issue list|search|release view|release list|label list|cache list|browse)(\\s|$)",
+      "^kubectl (get|describe|logs|top|version|api-resources|api-versions)(\\s|$)",
+      "^kubectl config view$"
     ],
     "alwaysAllowMcpPatterns": [
       "^mcp__claude_ai_Linear__(get_|list_|search_)",
       "^mcp__claude_ai_DataDog_MCP__(search_|analyze_|find_|list_|load_|get_|aggregate_)",
       "^mcp__github__(get|list|search|pull_request_read|issue_read)",
-      "^mcp__notion__notion-(fetch|search|get-)",
+      "^mcp__notion__notion-(fetch|search|get-|query-data-sources)",
       "^mcp__claude_ai_Slack__slack_(read_|search_)",
       "^mcp__incident-io__(.*_show|.*_list|alert_stats|incident_stats|follow_up_stats|escalation_stats|ask|ask_incident|ask_telemetry|investigation_sync)$",
       "^mcp__grafana__(get_|list_|search_|query_|find_|analyze_)"

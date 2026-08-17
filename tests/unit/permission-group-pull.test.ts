@@ -155,3 +155,36 @@ describe('the pull group grants network reads only', () => {
     ]) expect(allowsMcp(t), t).toBe(true);
   });
 });
+
+describe('the pull group covers the remote reads that only global granted', () => {
+  it('allows kubectl read verbs', () => {
+    for (const c of ['kubectl get pods', 'kubectl describe pod x', 'kubectl logs pod-x',
+                     'kubectl top nodes', 'kubectl version', 'kubectl api-resources',
+                     'kubectl config view']) {
+      expect(allows(c), c).toBe(true);
+    }
+  });
+
+  it('refuses kubectl mutations', () => {
+    for (const c of ['kubectl apply -f deploy.yaml', 'kubectl delete pod x',
+                     'kubectl edit deploy x', 'kubectl scale deploy x --replicas=0',
+                     'kubectl exec pod-x -- sh']) {
+      expect(allows(c), c).toBe(false);
+    }
+  });
+
+  // `kubectl config view --raw` prints the kubeconfig unredacted (cluster certs, bearer
+  // tokens) — the exact anchor is what keeps `pull` from granting that unattended.
+  it('refuses kubectl config view with any arguments, including --raw', () => {
+    expect(allows('kubectl config view --raw'), 'config view --raw').toBe(false);
+    expect(allows('kubectl config view -o json'), 'config view -o json').toBe(false);
+  });
+
+  it('allows the Notion read that pull’s pattern missed', () => {
+    expect(allowsMcp('mcp__notion__notion-query-data-sources')).toBe(true);
+  });
+
+  it('still refuses DataDog writes', () => {
+    expect(allowsMcp('mcp__claude_ai_DataDog_MCP__submit_metric')).toBe(false);
+  });
+});
