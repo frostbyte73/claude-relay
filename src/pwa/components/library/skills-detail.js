@@ -288,29 +288,22 @@ function wireEditCard(view, edit) {
 function denialsSectionHtml(item, state) {
   const list = state.denials?.[item.name] ?? [];
   if (list.length === 0) return '';
-  // kind 'none' means the suggester found no rule that would unblock the call — an unresolvable
-  // redirect target, say. Offering Allow there posts a kind the route rejects with a 400, so the
-  // row shows why instead.
-  const rows = list.map((d) => {
-    const unfixable = d.suggested.kind === 'none';
-    return `
+  const rows = list.map((d) => `
     <div class="lib-denial-row" data-denial-id="${escapeHtml(d.id)}">
       <div class="lib-denial-desc">
         <span class="lib-denial-tool">${escapeHtml(d.toolName)}</span>
-        ${unfixable
+        ${d.suggested.kind === 'none'
           ? `<span class="lib-denial-unfixable">${escapeHtml(d.suggested.reason ?? 'no rule can allow this call')}</span>`
           : `<span class="o-pill code">${escapeHtml(d.suggested.kind)}: ${escapeHtml(d.suggested.value)}</span>`}
         ${d.count > 1 ? `<span class="lib-denial-count">×${d.count}</span>` : ''}
       </div>
-      ${unfixable ? '' : '<button type="button" class="o-btn o-btn--ghost" data-denial="allow">Allow</button>'}
       <button type="button" class="o-btn o-btn--ghost" data-denial="dismiss">Dismiss</button>
     </div>
-  `;
-  }).join('');
+  `).join('');
   return `
     <div class="o-section lib-section lib-denials">
       <h4 class="lib-section-hdr o-microhead">Blocked calls · ${list.length}</h4>
-      <div class="lib-denials-note">Tool calls this action attempted that the allowlist blocked — allow to add the suggested rule, dismiss to ignore.</div>
+      <div class="lib-denials-note">Tool calls this action attempted that the allowlist blocked. These are evidence for meta.improve-actions, which proposes either a permission group change or a fix to the action itself — a permission is never granted from here.</div>
       ${rows}
     </div>
   `;
@@ -320,16 +313,13 @@ function wireDenials(view, item, state) {
   const section = view.querySelector('.lib-denials');
   if (!section) return;
   section.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-denial]');
+    const btn = e.target.closest('[data-denial="dismiss"]');
     if (!btn) return;
     const row = btn.closest('.lib-denial-row');
     const denial = (state.denials?.[item.name] ?? []).find((d) => d.id === row?.dataset.denialId);
     if (!denial) return;
     btn.disabled = true;
     try {
-      if (btn.dataset.denial === 'allow') {
-        await actionsApi.addAllowlistRule(item.name, denial.suggested.kind, denial.suggested.value);
-      }
       await actionsApi.dismissDenial(item.name, denial.id);
     } catch (err) {
       window.alert(`Failed: ${err.message}`);
