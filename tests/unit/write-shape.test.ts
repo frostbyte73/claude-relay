@@ -200,6 +200,27 @@ describe('classifyRuleShape — gh write verbs the probe corpus was missing', ()
     expect(shaped('bash', '^gh workflow view(\\s|$)')).toBe(false);
     expect(shaped('bash', '^gh cache list(\\s|$)')).toBe(false);
   });
+
+  it('catches a regex-obfuscated gh api write by compiling it, not by reading it', () => {
+    // The sound half of the net: each of these permits the literal probe string
+    // `gh api --method POST repos/o/r/issues`, so compiling the candidate and testing it
+    // decides the question that scanning its source text cannot.
+    for (const v of ['^gh api --method P.ST repos/o/r/issues$',
+                     '^gh api --method P(O)ST repos/o/r/issues$',
+                     '^gh api --method PO*ST repos/o/r/issues$',
+                     '^gh api --method [P][O][S][T] repos/o/r/issues$']) {
+      expect(shaped('bash', v), v).toBe(true);
+    }
+    expect(shaped('bash', '^gh api -X POST repos/o/r/issues$')).toBe(true);
+    expect(shaped('bash', '^gh api --method PATCH repos/o/r/issues/[0-9]+$')).toBe(true);
+    expect(shaped('bash', '^gh api --input /tmp/body\\.json --method POST repos/o/r/issues$'))
+      .toBe(true);
+  });
+
+  it('still permits a GET-only gh api rule against the widened corpus', () => {
+    expect(shaped('bash', '^gh api --method GET repos/o/r/issues$')).toBe(false);
+    expect(shaped('bash', '^gh api repos/o/r/issues$')).toBe(false);
+  });
 });
 
 describe('classifyHttpWriteShape', () => {
@@ -268,6 +289,33 @@ describe('classifyHttpWriteShape', () => {
                      '^(gh|git) api --method POST repos/o/r/issues$']) {
       expect(httpShaped(v), v).toBe(true);
     }
+  });
+
+  it('folds case and strips wrappers/quotes off the binary and the method', () => {
+    for (const v of ['^gh api --method post repos/o/r/issues$',
+                     '^gh api -X Post repos/o/r/issues$',
+                     '^"gh" api --method POST repos/o/r/issues$',
+                     "^'gh' api --method POST repos/o/r/issues$",
+                     '^GH api --method POST repos/o/r/issues$',
+                     '^env gh api --method POST repos/o/r/issues$',
+                     '^xargs gh api --method POST repos/o/r/issues$',
+                     '^nohup gh api --method POST repos/o/r/issues$',
+                     '^time gh api --method POST repos/o/r/issues$',
+                     '^sudo gh api --method POST repos/o/r/issues$',
+                     '^command gh api --method POST repos/o/r/issues$',
+                     '^env sudo gh api --method POST repos/o/r/issues$']) {
+      expect(httpShaped(v), v).toBe(true);
+    }
+  });
+
+  it('does not see a metacharacter spliced into a flag name (known gap)', () => {
+    // `--fie[l]d` and `-[f]` compile to exactly the flags `--field` and `-f`, but neither
+    // appears in the pattern's source text, and no fixed probe corpus can name the arbitrary
+    // endpoint each of these pins. Text scanning cannot decide what a regex permits, and
+    // trying harder there just moves the evasion one spelling along. The sound mitigation is
+    // the gate itself: a rule this narrow still only reaches a session through `push`.
+    expect(httpShaped('^gh api --fie[l]d title=x repos/o/r/issues$')).toBe(false);
+    expect(httpShaped('^gh api -[f] title=x repos/o/r/issues$')).toBe(false);
   });
 
   it('still permits the pull group\'s gh rule verbatim, breadth pinned in both directions', () => {
