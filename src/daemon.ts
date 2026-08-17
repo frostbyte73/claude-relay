@@ -1260,8 +1260,8 @@ function discoverSlashCommands(): SlashCommand[] {
   const claudeDir = join(homedir(), '.claude');
   // 1. User commands.
   scanCommandDir(join(claudeDir, 'commands'), 'user', push);
-  // 2. Plugin commands: walk ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands/*.md.
-  scanPluginCommands(join(claudeDir, 'plugins', 'cache'), push);
+  // 2. Plugin commands AND plugin skills — a plugin ships either or both.
+  scanPlugins(claudeDir, push);
   // 3. User skills at ~/.claude/skills/<name>/SKILL.md.
   scanSkillDir(join(claudeDir, 'skills'), 'skill', push);
   return out;
@@ -1278,23 +1278,27 @@ function scanCommandDir(dir: string, source: string, push: (c: SlashCommand) => 
   }
 }
 
-function scanPluginCommands(root: string, push: (c: SlashCommand) => void) {
-  // BFS to depth 5; nesting varies by marketplace so we walk rather than glob a fixed shape.
-  const stack: { dir: string; depth: number; owner: string | null }[] = [{ dir: root, depth: 0, owner: null }];
-  while (stack.length) {
-    const { dir, depth, owner } = stack.pop()!;
-    if (depth > 5) continue;
-    let entries: { name: string; isDirectory(): boolean }[];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      if (e.name === 'commands') {
-        scanCommandDir(join(dir, e.name), `plugin${owner ? `:${owner}` : ''}`, push);
-        continue;
-      }
-      // First directory below cache/<marketplace> becomes the plugin label.
-      const nextOwner = owner ?? (depth === 1 ? e.name : null);
-      stack.push({ dir: join(dir, e.name), depth: depth + 1, owner: nextOwner });
+// Driven off installed_plugins.json rather than a walk of plugins/cache: the cache
+// keeps superseded version dirs and plugins the user has since disabled, neither of
+// which Claude Code itself offers in the menu.
+function scanPlugins(claudeDir: string, push: (c: SlashCommand) => void) {
+  let manifest: { plugins?: Record<string, { installPath?: string }[]> };
+  try {
+    manifest = JSON.parse(readFileSync(join(claudeDir, 'plugins', 'installed_plugins.json'), 'utf-8'));
+  } catch { return; }
+  // Project-scoped enables aren't consulted — one daemon serves every cwd.
+  let enabled: Record<string, boolean> = {};
+  try {
+    const settings = JSON.parse(readFileSync(join(claudeDir, 'settings.json'), 'utf-8'));
+    if (settings?.enabledPlugins && typeof settings.enabledPlugins === 'object') enabled = settings.enabledPlugins;
+  } catch { /* absent settings means nothing is explicitly disabled */ }
+  for (const [key, installs] of Object.entries(manifest.plugins ?? {})) {
+    if (enabled[key] === false) continue;
+    const source = `plugin:${key.split('@')[0] ?? key}`;
+    for (const install of installs ?? []) {
+      if (!install?.installPath) continue;
+      scanCommandDir(join(install.installPath, 'commands'), source, push);
+      scanSkillDir(join(install.installPath, 'skills'), source, push);
     }
   }
 }
