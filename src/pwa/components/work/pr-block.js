@@ -177,7 +177,16 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
     .map((c, i) => (claimed.has(i) ? '' : renderReplyCallHtml(pendingReplies, c, i, { label: c.label || 'an unknown comment' })))
     .join('');
 
-  const threadsHtml = openThreadsHtml ? `<div class="threads">${openThreadsHtml}</div>` : '';
+  // The open threads get the same "LABEL · count" heading the Checks and resolved-comments
+  // disclosures carry, so the three regions of the block announce themselves the same way —
+  // except under a pending reply draft, where the draft's own `wd-head` already names it.
+  const openHdr = pendingReplies ? '' : `
+    <div class="pr-threads-hdr">
+      <span class="o-microhead">Comments</span>
+      <span class="pr-disclosure-sep" aria-hidden="true">·</span>
+      <span class="pr-disclosure-count">${openThreads.length} open</span>
+    </div>`;
+  const threadsHtml = openThreadsHtml ? `${openHdr}<ul class="threads">${openThreadsHtml}</ul>` : '';
   const threadsRegion = !pendingReplies ? threadsHtml : `
     <div class="wd-card wd-card--replies" data-draft-id="${escapeHtml(pendingReplies.id)}">
       <div class="wd-head">⚠ ${escapeHtml(pendingReplies.summary)}</div>
@@ -215,9 +224,9 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
     ${resolvedThreads.length ? `
       <details class="pr-disclosure pr-threads-resolved">
         ${disclosureSummary('Comments', `${resolvedThreads.length} resolved`)}
-        <div class="threads">
+        <ul class="threads">
           ${resolvedThreads.map((chain) => renderThreadCard(chain)).join('')}
-        </div>
+        </ul>
       </details>
     ` : ''}`;
 

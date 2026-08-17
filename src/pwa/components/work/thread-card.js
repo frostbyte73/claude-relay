@@ -99,41 +99,72 @@ function recPill(rec) {
   return `<span class="thread-rec thread-rec-${rec}">${labels[rec]}</span>`;
 }
 
-function confidencePill(confidence) {
-  if (!confidence) return '';
-  return `<span class="thread-confidence thread-confidence-${confidence}">confidence: ${escapeHtml(confidence)}</span>`;
+const REC_WHY = { reply: 'Why reply', edit: 'Why edit', ignore: 'Why ignore' };
+
+// The card's footer: what the triage concluded and how sure it is. Confidence used to sit up in
+// the header beside the file path, where it read as a fact about the thread; it's a fact about
+// the assessment, so it belongs next to the reasoning it qualifies.
+function rationaleHtml(draft) {
+  if (!draft?.rationale && !draft?.confidence) return '';
+  return `
+    <footer class="thread-rationale">
+      <div class="thread-rationale-head">
+        <span class="o-microhead">${REC_WHY[draft.recommendation] ?? 'Assessment'}</span>
+        ${draft.confidence
+    ? `<span class="thread-confidence thread-confidence-${draft.confidence}">${escapeHtml(draft.confidence)} confidence</span>`
+    : ''}
+      </div>
+      ${draft.rationale ? `<p class="thread-rationale-text">${escapeHtml(draft.rationale)}</p>` : ''}
+    </footer>`;
+}
+
+// One message on the thread's avatar spine. The avatar is a direct grid child rather than a
+// member of the head row so the gutter is a real column every message shares — that column IS
+// the thread, and the 2px rail drawn down it is what makes a reply read as a reply. Reactions
+// belong to the root comment (that's the only one the watcher records them for), so they render
+// against its body instead of floating at the end of the chain.
+function messageHtml(c, { first, last, reactions }) {
+  return `
+    <div class="thread-msg${first ? ' thread-msg--root' : ' thread-msg--reply'}${last ? ' thread-msg--last' : ''}">
+      <span class="thread-avatar" aria-hidden="true">${escapeHtml(initials(c.author))}</span>
+      <div class="thread-msg-main">
+        <div class="thread-msg-head">
+          <span class="thread-author">${escapeHtml(c.author ?? 'unknown')}</span>
+          <span class="thread-msg-meta">${escapeHtml(relTime(c.createdAt))}</span>
+        </div>
+        <div class="thread-msg-body markdown">${renderMarkdown(stripHtmlComments(c.body), { allowHtml: true })}</div>
+        ${reactions}
+      </div>
+    </div>`;
 }
 
 export function renderThreadCard(chain, draft, replyHtmlFor = () => '') {
   const root = chain[0];
   const leaf = chain[chain.length - 1];
-  const loc = root.file ? (root.line ? `${root.file}:${root.line}` : root.file) : 'general comment';
+  const loc = root.file ? (root.line ? `${root.file}:${root.line}` : root.file) : 'PR conversation';
   const recClass = draft?.recommendation ? ` thread-has-${draft.recommendation}` : '';
   const replies = chain.map((c) => replyHtmlFor(c.id) || '');
+  const reactions = reactionsStrip(chain);
+  // The header carries only what the thread is ABOUT — the location, and the triage verdict on
+  // it. Author and time used to print here too, then again 10px below in the first message's
+  // own head: one string, two typographies. The message row is where they belong. No reply
+  // count either: the messages are right there on the spine, already counted.
   return `
     <li class="thread${recClass}${replies.some(Boolean) ? ' thread--replying' : ''}" data-comment-id="${escapeHtml(leaf.id)}">
       <article class="thread-card">
         <header class="thread-header">
           <span class="thread-loc">${escapeHtml(loc)}</span>
-          <span class="thread-author">${escapeHtml(root.author ?? 'unknown')}</span>
-          <span class="thread-time">${escapeHtml(relTime(root.createdAt))}</span>
           ${recPill(draft?.recommendation)}
-          ${confidencePill(draft?.confidence)}
         </header>
         ${root.diffHunk ? `<pre class="thread-hunk">${renderDiffHunk(root.diffHunk)}</pre>` : ''}
-        ${chain.map((c, i) => `
-          <div class="thread-msg">
-            <div class="thread-msg-head">
-              <span class="thread-avatar">${escapeHtml(initials(c.author))}</span>
-              <span class="thread-author">${escapeHtml(c.author ?? 'unknown')}</span>
-              <span class="thread-msg-meta">${escapeHtml(relTime(c.createdAt))}</span>
-            </div>
-            <div class="thread-msg-body markdown">${renderMarkdown(stripHtmlComments(c.body), { allowHtml: true })}</div>
-          </div>
-          ${replies[i]}
-        `).join('')}
-        ${reactionsStrip(chain)}
-        ${draft?.rationale ? `<p class="thread-rationale">${escapeHtml(draft.rationale)}</p>` : ''}
+        <div class="thread-body">
+          ${chain.map((c, i) => messageHtml(c, {
+    first: i === 0,
+    last: i === chain.length - 1,
+    reactions: i === 0 ? reactions : '',
+  }) + replies[i]).join('')}
+        </div>
+        ${rationaleHtml(draft)}
       </article>
     </li>
   `;
