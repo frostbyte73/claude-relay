@@ -10,7 +10,7 @@ import { assertNotWriteShaped } from '../permissions/write-shape.js';
 
 export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
 // Groups whose grants mean "may propose this write for approval", not "may run it".
-const GATED_GROUPS: ReadonlySet<string> = new Set(['push']);
+export const GATED_GROUPS: ReadonlySet<string> = new Set(['push']);
 const KINDS: readonly ActionKind[] = ['action','step-orchestrator'];
 const SIDE_EFFECTS: readonly SideEffects[] = ['none','gated-write','worktree-edit','external-write'];
 const RUNNERS: readonly ActionRunner[] = ['claude','builtin'];
@@ -50,7 +50,7 @@ export interface ActionRegistryOpts {
 export class ActionRegistry {
   private readonly actionsByName = new Map<string, ActionDef>();
   private readonly ajv = new Ajv({ allErrors: true, strict: false });
-  private readonly permissionGroups: PermissionGroupMap;
+  private permissionGroups: PermissionGroupMap;
 
   constructor(private readonly actionsDir: string, opts: ActionRegistryOpts = {}) {
     this.permissionGroups = opts.permissionGroups ?? {};
@@ -69,6 +69,12 @@ export class ActionRegistry {
       throw new Error(`Action registry: ${errors.length} invalid entr${errors.length === 1 ? 'y' : 'ies'}\n${detail}`);
     }
     return { actions: this.actionsByName.size, errors };
+  }
+
+  // Caller must load() afterwards — every action's resolved allowlist is derived from these,
+  // and nothing already loaded is recomputed.
+  setPermissionGroups(groups: PermissionGroupMap): void {
+    this.permissionGroups = groups;
   }
 
   getAction(name: string): ActionDef | undefined { return this.actionsByName.get(name); }

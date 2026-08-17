@@ -5,8 +5,13 @@ import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
-import type { PermissionGroupMap } from '../actions/types.js';
+import { GATED_GROUPS } from '../actions/registry.js';
+import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import { Allowlist, type AllowlistConfig, type RuleKind, type RuleScope } from '../permissions/allowlist.js';
+import {
+  classifyHttpWriteShape, classifyInterpreterShape, classifyRuleShape,
+} from '../permissions/write-shape.js';
+import type { PermissionGroupRevisionsStore } from '../storage/permission-group-revisions-store.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
@@ -26,6 +31,8 @@ export interface MetaRoutesDeps {
   worktreeManager: WorktreeManager;
   journalStore: JournalStore;
   mcpConfigPath: string;
+  permissionGroupsPath: string;
+  groupRevisions: PermissionGroupRevisionsStore;
 }
 
 // Same group-name resolution ActionRegistry.resolvePermissions uses internally
@@ -120,10 +127,50 @@ async function probeHttpServer(url: string, headers?: Record<string, string>): P
   }
 }
 
+const KNOWN_GROUPS: ReadonlySet<string> = new Set(['core', 'read', 'pull', 'edit', 'push']);
+
+export type GroupUpdateResult = { ok: true } | { ok: false; error: string };
+
+// A permission group is the one place a write rule may legitimately live — and only if the
+// group is gated, since gating is what forces the call through an approved write draft.
+// Everything assertNotWriteShaped refuses elsewhere is refused here too, minus that one
+// carve-out: the three classifiers must be the same three, or this route becomes the weaker
+// of two doors onto the same allowlist. Interpreter shape is not part of the carve-out —
+// a pin matches command text, which says nothing about the code an interpreter is handed.
+export function validateGroupUpdate(name: string, group: PermissionGroup): GroupUpdateResult {
+  if (!KNOWN_GROUPS.has(name)) return { ok: false, error: `unknown permission group: ${name}` };
+  const gated = GATED_GROUPS.has(name);
+  const entries: Array<[RuleKind, string]> = [
+    ...group.alwaysAllow.map((v) => ['tool', v] as [RuleKind, string]),
+    ...group.alwaysAllowBashPatterns.map((v) => ['bash', v] as [RuleKind, string]),
+    ...group.alwaysAllowMcpPatterns.map((v) => ['mcp', v] as [RuleKind, string]),
+    ...(group.alwaysAllowPathPatterns ?? []).map((v) => ['path', v] as [RuleKind, string]),
+  ];
+  for (const [kind, value] of entries) {
+    const interp = classifyInterpreterShape(kind, value);
+    if (interp.writeShaped) return { ok: false, error: `${value}: ${interp.reason}` };
+    for (const shape of [classifyRuleShape(kind, value), classifyHttpWriteShape(kind, value)]) {
+      if (!shape.writeShaped) continue;
+      if (shape.reason.includes('does not compile')) {
+        return { ok: false, error: `${value}: ${shape.reason}` };
+      }
+      if (!gated) {
+        return {
+          ok: false,
+          error: `${value}: ${shape.reason} — a write rule may only live in a gated group `
+            + `(${[...GATED_GROUPS].join(', ')})`,
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
 export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   const {
     actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
     actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, mcpConfigPath,
+    permissionGroupsPath, groupRevisions,
   } = deps;
 
   server.route('GET', '/api/permission-groups', (_req, res) => {
@@ -146,6 +193,61 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ groups }));
   });
+
+  // Body: { group: PermissionGroup, rationale?: string }. The only path that may install a
+  // write-shaped rule, and only into a gated group — see validateGroupUpdate.
+  async function handlePutPermissionGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const m = (req.url ?? '').match(/^\/api\/permission-groups\/([A-Za-z0-9_-]+)(?:\?|$)/);
+    if (!m) { res.statusCode = 400; res.end('bad group name'); return; }
+    const name = decodeURIComponent(m[1]!);
+    const payload = await readJsonObject<{ group?: PermissionGroup; rationale?: string }>(req, res);
+    if (!payload) return;
+    const group = payload.group;
+    if (!group || typeof group !== 'object' || !Array.isArray(group.alwaysAllow)
+      || !Array.isArray(group.alwaysAllowBashPatterns) || !Array.isArray(group.alwaysAllowMcpPatterns)) {
+      res.statusCode = 400; res.end('body must be { group: PermissionGroup }'); return;
+    }
+    const normalized: PermissionGroup = {
+      description: typeof group.description === 'string' ? group.description : '',
+      alwaysAllow: group.alwaysAllow,
+      alwaysAllowBashPatterns: group.alwaysAllowBashPatterns,
+      alwaysAllowMcpPatterns: group.alwaysAllowMcpPatterns,
+      alwaysAllowPathPatterns: Array.isArray(group.alwaysAllowPathPatterns) ? group.alwaysAllowPathPatterns : [],
+    };
+    const verdict = validateGroupUpdate(name, normalized);
+    if (!verdict.ok) { res.statusCode = 400; res.end(verdict.error); return; }
+
+    const before = permissionGroups[name] ? structuredClone(permissionGroups[name]!) : null;
+    // Mutated in place: daemon.ts holds this same object and hands it to the registry.
+    permissionGroups[name] = normalized;
+    try {
+      const tmp = `${permissionGroupsPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(permissionGroups, null, 2) + '\n');
+      renameSync(tmp, permissionGroupsPath);
+      actionRegistry.setPermissionGroups(permissionGroups);
+      actionRegistry.load();
+    } catch (e) {
+      // Put the old group back so the in-memory map can't outlive a failed write or a
+      // reload that rejected the new grant.
+      if (before) permissionGroups[name] = before; else delete permissionGroups[name];
+      actionRegistry.setPermissionGroups(permissionGroups);
+      try { actionRegistry.load(); } catch { /* the rolled-back state is what the error below reports */ }
+      res.statusCode = 500; res.end(`group update failed: ${(e as Error).message}`); return;
+    }
+    // Recorded only once disk and registry both agree — the store indexes before it appends,
+    // so a revision written ahead of a failed apply would outlive the state it describes.
+    groupRevisions.record({
+      group: name, author: 'user', before, after: normalized,
+      ...(typeof payload.rationale === 'string' ? { rationale: payload.rationale } : {}),
+    });
+    console.log(`[api] permission-group[${name}]: updated `
+      + `(${normalized.alwaysAllowBashPatterns.length} bash rules)`);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, group: normalized }));
+  }
+
+  server.route('PUT', '/api/permission-groups/:name', handlePutPermissionGroup);
 
   // Body: { kind: 'tool'|'bash'|'mcp', value: string, scope?: 'global' | { project: string } | { action: string } | { session: string } | 'session' }.
   // Validates + dedupes + atomic-writes global allowlist.json or per-project file.

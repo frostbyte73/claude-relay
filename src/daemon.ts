@@ -57,6 +57,7 @@ import { RunsStore } from './storage/runs-store.js';
 import { ActionRunsStore } from './storage/action-runs-store.js';
 import { DenialsStore } from './storage/denials-store.js';
 import { ActionRevisionsStore } from './storage/action-revisions-store.js';
+import { PermissionGroupRevisionsStore } from './storage/permission-group-revisions-store.js';
 import { ActionRunLedger } from './work/action-run-ledger.js';
 import { UsageLedger } from './integrations/usage-ledger.js';
 import { createRunsCapture, type ScheduleRunContext } from './storage/runs-capture.js';
@@ -395,6 +396,8 @@ async function main() {
   const actionRunsStore = new ActionRunsStore(join(RUNTIME_DIR, 'action-runs.jsonl'));
   const denialsStore = new DenialsStore(join(RUNTIME_DIR, 'denials.json'));
   const actionRevisionsStore = new ActionRevisionsStore(join(RUNTIME_DIR, 'action-revisions'));
+  const groupRevisions = new PermissionGroupRevisionsStore(
+    join(RUNTIME_DIR, 'permission-group-revisions.jsonl'));
   const actionRunLedger = new ActionRunLedger({
     store: actionRunsStore,
     onSettled: (action) => {
@@ -891,6 +894,7 @@ async function main() {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
     actionsStore, actionsStorePath: join(RUNTIME_DIR, 'actions.json'), projectRegistry, worktreeManager,
     journalStore, mcpConfigPath,
+    permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
   registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
