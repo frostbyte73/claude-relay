@@ -1,0 +1,8 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": [
+    "Write:^/tmp/"
+  ]
+}

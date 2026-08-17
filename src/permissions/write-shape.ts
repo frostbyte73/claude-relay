@@ -84,6 +84,10 @@ export const MCP_WRITE_PROBES: readonly string[] = [
   'mcp__notion__notion-update-page',
   'mcp__grafana__update_dashboard',
   'mcp__incident-io__incident_create',
+  // Verb-agnostic HTTP proxy to the Grafana API — reaches every Grafana write
+  // (update_dashboard, create_folder, delete_snapshot, ...) behind one tool name. Discovered
+  // during the Ship 2 audit: it cleared this lint only because nobody had probed it yet.
+  'mcp__grafana__grafana_api_request',
 ];
 
 // Binaries that can perform an external write given the right subcommand. A rule granting

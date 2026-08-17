@@ -1268,6 +1268,33 @@ describe('meta.build-action effective allowlist', () => {
   });
 });
 
+// Ship 2 Task 4: the SKILL.md says plainly "Never write scratch JSON (or any non-source
+// files) into the worktree. Use `/tmp/` for anything you need to materialize" — but this
+// action declared `[read]` only, with no path grant, so that instruction was unfollowable
+// (confirmed by two recorded `path:Write:^/tmp/` denials against it). The fix is the narrow
+// `Write:^/tmp/` path rule `edit` already grants for the same reason, not the whole group.
+describe('code.triage-pr-comments effective allowlist', () => {
+  // Empty global config, on purpose: `daemonAllowlist` above is built from
+  // `config/allowlist.default.json`, whose global scope is a strict subset of what
+  // `read`/`pull` already grant (Task 1's finding) — so an assertion built on it can pass
+  // "by accident" through global rather than through this action's own new grant. This
+  // instance has nothing in global at all, so only the action's resolved allowlist can answer.
+  const emptyGlobalAllowlist = new Allowlist(
+    { alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] },
+    { actionRegistry: registry },
+  );
+  const tool = (t: string, input: unknown) => emptyGlobalAllowlist.allows(t, input, undefined, 'code.triage-pr-comments');
+
+  it('grants a scratch Write under /tmp/', () => {
+    expect(tool('Write', { file_path: '/tmp/outpost-triage-scratch.json' })).toBe(true);
+  });
+
+  it('does not grant a Write outside /tmp/', () => {
+    expect(tool('Write', { file_path: '/Users/dc/frostbyte73/outpost/src/daemon.ts' })).toBe(false);
+    expect(tool('Write', { file_path: '/tmp/../etc/passwd' })).toBe(false);
+  });
+});
+
 it('every action inheriting push resolves a non-empty gated set, and no other action does', () => {
   for (const def of registry.listActions()) {
     const inheritsPush = (def.frontmatter.outpost.permissions ?? []).includes('push');
