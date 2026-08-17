@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { AllowlistConfig } from '../permissions/allowlist.js';
-import { assertNotWriteShaped, classifyInterpreterShape, classifyRuleShape } from '../permissions/write-shape.js';
+import {
+  assertNotWriteShaped, classifyHttpWriteShape, classifyInterpreterShape, classifyRuleShape,
+} from '../permissions/write-shape.js';
 
 export interface ActionConfig {
   allowlist: AllowlistConfig;
@@ -50,7 +52,8 @@ function auditPersistedRules(byName: ReadonlyMap<string, ActionConfig>): string[
     for (const [kind, values] of checks) {
       for (const value of values) {
         const writeShaped = classifyRuleShape(kind, value).writeShaped
-          || classifyInterpreterShape(kind, value).writeShaped;
+          || classifyInterpreterShape(kind, value).writeShaped
+          || classifyHttpWriteShape(kind, value).writeShaped;
         if (writeShaped) hits.push(`${name} ${kind}=${value}`);
       }
     }

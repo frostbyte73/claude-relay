@@ -45,6 +45,11 @@ export const WRITE_PROBES: readonly string[] = [
   'npm publish',
   'yarn publish',
   'pnpm publish',
+  'gh workflow run deploy.yml --ref main',
+  'gh secret set FOO --body bar',
+  'gh repo create org/name --public',
+  'gh repo delete org/name --yes',
+  'gh cache delete 12345',
 ];
 
 // MCP tools that write to a system outside this machine. Same role as WRITE_PROBES: a
@@ -212,12 +217,73 @@ function admitsArbitraryContent(pattern: string): boolean {
   return false;
 }
 
+// Loopback destinations the daemon exposes to its own spawned sessions ($OUTPOST_API_URL and
+// its 127.0.0.1 spelling — see claude-proc.ts). A POST there is a session calling back into
+// Outpost's own API, not an external write; `write.add-project`'s dispatch-to-daemon rule is
+// the reason this exemption exists. Backslashes are stripped before matching so an escaped
+// pattern source (`127\.0\.0\.1`) still reads as the plain host string.
+function mentionsLoopback(value: string): boolean {
+  const stripped = value.replace(/\\/g, '');
+  return stripped.includes('127.0.0.1') || stripped.includes('localhost') || stripped.includes('OUTPOST_API_URL');
+}
+
+const HTTP_WRITE_METHOD_RE = /\b(?:POST|PUT|PATCH|DELETE)\b/;
+
+// Long-form flags that hand curl/gh/wget a body or a file to send — checked as plain
+// substrings since a longer flag containing a shorter one (`--data-raw` contains `--data`)
+// still deserves the same verdict either way.
+const BODY_FLAG_LONG_FORMS: readonly string[] = [
+  '--data-raw', '--data-binary', '--data', '--upload-file', '--form',
+  '--output', '--input', '--field', '--raw-field',
+];
+
+// Short flags for the same thing, but a raw substring search would also fire on `--data`
+// (contains `-d`) or a clustered read flag string like `-fsSL`. The `(?![A-Za-z-])` guard
+// requires the flag not be immediately followed by a letter or another dash, so it only
+// fires on the flag as its own token.
+const BODY_FLAG_SHORT_FORMS: readonly string[] = ['-d', '-T', '-F', '-o'];
+
+function hasBodySendingFlag(value: string): boolean {
+  if (BODY_FLAG_LONG_FORMS.some((flag) => value.includes(flag))) return true;
+  return BODY_FLAG_SHORT_FORMS.some((flag) => new RegExp(`${flag}(?![A-Za-z-])`).test(value));
+}
+
+// Probe matching can never catch a narrowly-scoped write endpoint — a `gh api` or `curl` rule
+// pinned to one specific path still sends a body to an external destination if it names a
+// non-GET method or a body-sending flag, and no fixed WRITE_PROBES corpus can enumerate every
+// path. This is a structural check instead: the pattern TEXT names a write-shaped HTTP verb or
+// flag, full stop, unless the destination is the daemon's own loopback API.
+export function classifyHttpWriteShape(kind: RuleKind, value: string): ShapeVerdict {
+  if (kind !== 'bash') return { writeShaped: false, reason: '' };
+  if (mentionsLoopback(value)) return { writeShaped: false, reason: '' };
+
+  if (HTTP_WRITE_METHOD_RE.test(value)) {
+    return {
+      writeShaped: true,
+      reason: 'pattern names a non-GET HTTP method (POST/PUT/PATCH/DELETE) — that sends a '
+        + 'body to an external destination',
+    };
+  }
+  if (hasBodySendingFlag(value)) {
+    return {
+      writeShaped: true,
+      reason: 'pattern admits a body-sending flag (--data/--upload-file/--form/--output/'
+        + '--input/--field/--raw-field or -d/-T/-F/-o)',
+    };
+  }
+  return { writeShaped: false, reason: '' };
+}
+
 // Every scope reachable through addRule is non-gated: a call matching a rule added there
 // is checked by allows() but never by gatedMatch, so a write installed this way runs
 // without a write-draft pin. Permission groups are the only legitimate home for a write
 // rule, and they are not written through addRule.
 export function assertNotWriteShaped(kind: RuleKind, value: string): void {
-  for (const verdict of [classifyRuleShape(kind, value), classifyInterpreterShape(kind, value)]) {
+  for (const verdict of [
+    classifyRuleShape(kind, value),
+    classifyInterpreterShape(kind, value),
+    classifyHttpWriteShape(kind, value),
+  ]) {
     if (verdict.writeShaped) {
       throw new Error(
         `refusing to add this rule outside a gated permission group: ${verdict.reason}`);

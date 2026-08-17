@@ -2,8 +2,7 @@
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
     "^gh pr view(\\s|$)",
-    "^gh api[ \\t]+[\"']?repos/\\{owner\\}/\\{repo\\}/pulls/[0-9]+/comments[\"']?(?:[ \\t]+(?:--paginate|(?:--jq|-q)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)))*[ \\t]*$",
-    "^gh api[ \\t]+(?:--method|-X)(?:[ \\t]+|=)POST[ \\t]+[\"']?repos/\\{owner\\}/\\{repo\\}/pulls/comments/[0-9]+/replies[\"']?[ \\t]+(?:-f(?:[ \\t]+|=)body=(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--input(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*[\"']?)[ \\t]*$"
+    "^gh api[ \\t]+[\"']?repos/\\{owner\\}/\\{repo\\}/pulls/[0-9]+/comments[\"']?(?:[ \\t]+(?:--paginate|(?:--jq|-q)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)))*[ \\t]*$"
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": [
