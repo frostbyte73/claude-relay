@@ -2,7 +2,7 @@
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [],
   "alwaysAllowMcpPatterns": [
-    "^mcp__claude_ai_Linear__(get_team|list_teams|list_issue_labels|get_issue|save_issue)$"
+    "^mcp__claude_ai_Linear__(get_team|list_teams|list_issue_labels|get_issue)$"
   ],
   "alwaysAllowPathPatterns": []
 }

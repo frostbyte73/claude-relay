@@ -1,8 +1,6 @@
 {
   "alwaysAllow": [],
-  "alwaysAllowBashPatterns": [
-    "^gh api (?:--method|-X)(?:[ \\t]+|=)POST[ \\t]+[\"']?repos/\\{owner\\}/\\{repo\\}/pulls/[0-9]+/reviews[\"']?[ \\t]+--input(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*[\"']?[ \\t]*$"
-  ],
+  "alwaysAllowBashPatterns": [],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": [
     "Write:^/tmp/"

@@ -22,12 +22,6 @@ export const actionsApi = {
   feedbackProposal(sessionId, feedback) { return request(`/api/action-edits/${encodeURIComponent(sessionId)}/proposal-feedback`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
   cancelEdit(sessionId)           { return request(`/api/action-edits/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST', body: '{}' }); },
   remove(name)            { return request(`/api/actions/${encodeURIComponent(name)}`, { method: 'DELETE' }); },
-  addAllowlistRule(name, kind, value) {
-    return request('/api/allowlist/rules', {
-      method: 'POST',
-      body: JSON.stringify({ kind, value, scope: { action: name } }),
-    });
-  },
   // Skills-library detail: recent journal entries + the permission-groups
   // catalog (src/routes/meta.ts). Colocated here rather than a new net file —
   // both are action-metadata reads, same shape of concern as the rest of this module.

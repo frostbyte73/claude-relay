@@ -5,6 +5,7 @@ import type { ActionRegistry } from '../actions/index.js';
 import type { ActionAllowlist } from '../actions/types.js';
 import { literalRedirectPath, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
 import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
+import { assertNotWriteShaped } from './write-shape.js';
 
 export interface AllowlistConfig {
   alwaysAllow: string[];
@@ -383,6 +384,7 @@ export class Allowlist {
   // Persists project writes via projectDir if set. Global writes are still persisted
   // by the caller (daemon writes config/allowlist.json or its configured override).
   addRule(kind: RuleKind, value: string, scope: RuleScope = 'global'): boolean {
+    assertNotWriteShaped(kind, value);
     if (typeof scope === 'object' && 'action' in scope) {
       if (!this.actionsStore) throw new Error('action scope requires actionsStore');
       return this.actionsStore.addRule(scope.action, kind, value);

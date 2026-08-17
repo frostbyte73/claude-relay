@@ -183,7 +183,10 @@ describe('ActionRegistry — permission groups', () => {
       allowlist: {
         alwaysAllow: [],
         alwaysAllowBashPatterns: [],
-        alwaysAllowMcpPatterns: ['^mcp__claude_ai_Linear__save_comment$'],
+        // A write-shaped extra (e.g. `save_comment`) is refused at load — writes belong
+        // in the `push` group, never a colocated allowlist.json. This extra is a narrower
+        // read-only grant, which is exactly what colocated extras are for.
+        alwaysAllowMcpPatterns: ['^mcp__claude_ai_Linear__get_issue$'],
         alwaysAllowPathPatterns: [],
       },
     });
@@ -196,7 +199,7 @@ describe('ActionRegistry — permission groups', () => {
     expect(al.alwaysAllowBashPatterns).toContain('^ls');      // read
     expect(al.alwaysAllowBashPatterns).toContain('^git push'); // push
     expect(al.alwaysAllowMcpPatterns).toContain('^mcp__github__create_');         // push
-    expect(al.alwaysAllowMcpPatterns).toContain('^mcp__claude_ai_Linear__save_comment$'); // extras
+    expect(al.alwaysAllowMcpPatterns).toContain('^mcp__claude_ai_Linear__get_issue$'); // extras
   });
 
   it('rejects an unknown permission group name', () => {
