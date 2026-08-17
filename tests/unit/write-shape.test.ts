@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyRuleShape } from '../../src/permissions/write-shape.js';
+import { classifyRuleShape, classifyInterpreterShape } from '../../src/permissions/write-shape.js';
 
 const shaped = (kind: 'tool' | 'bash' | 'mcp' | 'path', v: string) =>
   classifyRuleShape(kind, v).writeShaped;
@@ -103,5 +103,48 @@ describe('classifyRuleShape fails closed', () => {
     const unescaped = '^/usr/local/bin/git(\\s|$)';
     expect(shaped('bash', escaped)).toBe(shaped('bash', unescaped));
     expect(shaped('bash', escaped)).toBe(true);
+  });
+});
+
+const interp = (v: string) => classifyInterpreterShape('bash', v).writeShaped;
+
+describe('classifyInterpreterShape', () => {
+  it('permits a fully anchored exact invocation', () => {
+    expect(interp('^python3 -m pytest$')).toBe(false);
+    expect(interp('^python3 -m pytest tests/unit$')).toBe(false);
+    expect(interp('^node scripts/build\\.js$')).toBe(false);
+  });
+
+  it('permits an anchored pattern with an enumerated tail', () => {
+    expect(interp('^python3 -m pytest(\\s+[A-Za-z0-9._/-]+)*$')).toBe(false);
+  });
+
+  it('refuses an unanchored interpreter grant', () => {
+    for (const v of ['^python3(\\s|$)', '^python3 ', '^node(\\s|$)', '^docker(\\s|$)']) {
+      expect(interp(v), v).toBe(true);
+    }
+  });
+
+  it('refuses an eval-shaped flag even when anchored', () => {
+    expect(interp('^python3 -c "print\\(1\\)"$')).toBe(true);
+    expect(interp('^node -e "console\\.log\\(1\\)"$')).toBe(true);
+    expect(interp('^python3 --eval x$')).toBe(true);
+  });
+
+  it('refuses an anchored pattern whose tail admits arbitrary text', () => {
+    expect(interp('^python3 .*$')).toBe(true);
+  });
+
+  it('ignores rules that are not interpreter invocations', () => {
+    expect(interp('^sed(\\s|$)')).toBe(false);
+    expect(interp('^git status')).toBe(false);
+  });
+
+  it('does not see an interpreter hidden inside a leading alternation (known gap)', () => {
+    // `^(node)(\s|$)` is a working evasion of the anchoring check: the leading `(` yields an
+    // empty literal prefix, so the binary is never identified. Closing this needs the `edit`
+    // group's own interpreter rules narrowed first — deferred with them.
+    expect(interp('^(node)(\\s|$)')).toBe(false);
+    expect(interp('^(tsx|node|tsc|vitest)(\\s|$)')).toBe(false);
   });
 });

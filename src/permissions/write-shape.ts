@@ -163,3 +163,48 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
 
   return { writeShaped: false, reason: '' };
 }
+
+// Binaries that execute code handed to them. Granting one unanchored is equivalent to
+// granting Bash: `node -e "require('fs').writeFileSync(...)"` reaches any file, and no
+// gated-group membership sees it because the hook only inspects the command text.
+export const INTERPRETERS: ReadonlySet<string> = new Set([
+  'python', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'osascript',
+  'bash', 'sh', 'zsh', 'deno', 'bun', 'docker', 'sqlite3', 'awk', 'gawk',
+]);
+
+const EVAL_FLAGS = /(?:^|\s)(?:-c|-e|--eval|--command|-\s*$)/;
+
+export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVerdict {
+  if (kind !== 'bash') return { writeShaped: false, reason: '' };
+
+  const lit = literalPrefix(value);
+  if (lit === null) return { writeShaped: false, reason: '' };
+  const first = lit.prefix.trim().split(/\s+/)[0] ?? '';
+  const binary = first.split('/').pop() ?? first;
+  if (!INTERPRETERS.has(binary)) return { writeShaped: false, reason: '' };
+
+  if (EVAL_FLAGS.test(value)) {
+    return {
+      writeShaped: true,
+      reason: `\`${binary}\` with an eval-shaped flag (-c/-e/--eval) executes arbitrary code`,
+    };
+  }
+
+  if (!value.endsWith('$')) {
+    return {
+      writeShaped: true,
+      reason: `\`${binary}\` is an interpreter — anchor the rule with \`$\` and name the `
+        + 'exact invocation (e.g. `^python3 -m pytest$`)',
+    };
+  }
+
+  // `.*` or `.+` before the anchor reopens everything the `$` was meant to close.
+  if (/\.[*+]/.test(value)) {
+    return {
+      writeShaped: true,
+      reason: `\`${binary}\` rule uses \`.*\`, which admits any arguments — enumerate them instead`,
+    };
+  }
+
+  return { writeShaped: false, reason: '' };
+}
