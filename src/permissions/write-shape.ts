@@ -174,6 +174,37 @@ export const INTERPRETERS: ReadonlySet<string> = new Set([
 
 const EVAL_FLAGS = /(?:^|\s)(?:-c|-e|--eval|--command|-\s*$)/;
 
+// `[\s\S]` is a literal spelling of "any character" via a bounded class rather than `.`;
+// checked separately from the scan below because it's a fixed 6-character construct, not
+// something that needs class-depth tracking to recognize.
+const ANY_CHAR_CLASS = /\[\\s\\S\]/;
+
+// True when the pattern contains a construct that can match arbitrary content: an unescaped
+// `.` outside a character class, a negated-class opener `[^`, or `[\s\S]`. A `.` *inside* a
+// class (`[A-Za-z0-9._/-]`) is a literal character, not a metacharacter, so it must not trip
+// this — hence tracking whether the scan is currently inside `[...]`.
+function admitsArbitraryContent(pattern: string): boolean {
+  if (ANY_CHAR_CLASS.test(pattern)) return true;
+  let inClass = false;
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i]!;
+    if (c === '\\') { i += 2; continue; }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      i++;
+      continue;
+    }
+    if (c === '.') return true;
+    if (c === '[') {
+      if (pattern[i + 1] === '^') return true;
+      inClass = true;
+    }
+    i++;
+  }
+  return false;
+}
+
 export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind !== 'bash') return { writeShaped: false, reason: '' };
 
@@ -183,7 +214,11 @@ export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVe
   const binary = first.split('/').pop() ?? first;
   if (!INTERPRETERS.has(binary)) return { writeShaped: false, reason: '' };
 
-  if (EVAL_FLAGS.test(value)) {
+  // Strip the trailing anchor before testing: the `-\s*$` alternative's `$` needs to see the
+  // pattern's actual end-of-string, which sits one character before the literal `$` the
+  // pattern uses to anchor itself — left in place, `-\s*$` can never fire.
+  const body = value.endsWith('$') ? value.slice(0, -1) : value;
+  if (EVAL_FLAGS.test(body)) {
     return {
       writeShaped: true,
       reason: `\`${binary}\` with an eval-shaped flag (-c/-e/--eval) executes arbitrary code`,
@@ -198,11 +233,10 @@ export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVe
     };
   }
 
-  // `.*` or `.+` before the anchor reopens everything the `$` was meant to close.
-  if (/\.[*+]/.test(value)) {
+  if (admitsArbitraryContent(value)) {
     return {
       writeShaped: true,
-      reason: `\`${binary}\` rule uses \`.*\`, which admits any arguments — enumerate them instead`,
+      reason: `\`${binary}\` rule admits arbitrary trailing content — enumerate the arguments instead`,
     };
   }
 

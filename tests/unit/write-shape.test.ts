@@ -131,8 +131,27 @@ describe('classifyInterpreterShape', () => {
     expect(interp('^python3 --eval x$')).toBe(true);
   });
 
+  it('refuses a bare trailing dash (read program from stdin) even when anchored', () => {
+    expect(interp('^python3 -$')).toBe(true);
+    expect(interp('^node -$')).toBe(true);
+    // still permitted: the anchor stripping must not reopen these
+    expect(interp('^python3 -m pytest$')).toBe(false);
+    expect(interp('^node scripts/build\\.js$')).toBe(false);
+  });
+
   it('refuses an anchored pattern whose tail admits arbitrary text', () => {
     expect(interp('^python3 .*$')).toBe(true);
+  });
+
+  it('refuses any construct that admits arbitrary trailing text', () => {
+    for (const v of ['^python3 .*$', '^python3 [\\s\\S]*$', '^python3 (.|\\n)*$', '^python3 [^]*$']) {
+      expect(interp(v), v).toBe(true);
+    }
+  });
+
+  it('still permits an escaped dot and a bounded character class', () => {
+    expect(interp('^node scripts/build\\.js$')).toBe(false);
+    expect(interp('^python3 -m pytest(\\s+[A-Za-z0-9._/-]+)*$')).toBe(false);
   });
 
   it('ignores rules that are not interpreter invocations', () => {
