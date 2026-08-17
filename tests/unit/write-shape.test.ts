@@ -33,6 +33,14 @@ describe('classifyRuleShape refuses the rules the Allow button used to offer', (
       expect(shaped('bash', v), v).toBe(true);
     }
   });
+
+  it('refuses a subcommand-constrained rule that still spans a write', () => {
+    for (const v of ['^kubectl (get|apply|delete)(\\s|$)',
+                     '^terraform (plan|apply)(\\s|$)',
+                     '^helm (list|install)(\\s|$)']) {
+      expect(shaped('bash', v), v).toBe(true);
+    }
+  });
 });
 
 describe('classifyRuleShape permits the rules actions actually need', () => {
@@ -80,5 +88,15 @@ describe('classifyRuleShape fails closed', () => {
 
   it('gives a reason naming the probe it matched', () => {
     expect(classifyRuleShape('bash', '^gh(\\s|$)').reason).toContain('gh pr merge');
+  });
+
+  it('classifies an escaped-metacharacter prefix the same as its unescaped equivalent', () => {
+    // Escaping the path separators is a no-op for what the regex matches, but each `\/`
+    // consumes two pattern characters while contributing only one to the literal prefix —
+    // exactly the case that misaligns the bare-binary check's `rest` slice if unhandled.
+    const escaped = '^\\/usr\\/local\\/bin\\/git(\\s|$)';
+    const unescaped = '^/usr/local/bin/git(\\s|$)';
+    expect(shaped('bash', escaped)).toBe(shaped('bash', unescaped));
+    expect(shaped('bash', escaped)).toBe(true);
   });
 });
