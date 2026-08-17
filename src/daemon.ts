@@ -3,6 +3,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, statSync, createReadStream, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs';
 import { Allowlist, type AllowlistConfig } from './permissions/allowlist.js';
+import { loadRuntimePermissionGroups } from './permissions/permission-groups-loader.js';
 import { ProjectRegistry } from './storage/project-registry.js';
 import { ApprovalQueue } from './permissions/approvals.js';
 import { SessionStore } from './session/session-store.js';
@@ -112,18 +113,9 @@ function loadRuntimeAllowlist(path: string): AllowlistConfig {
 // Runtime permission groups are gitignored too; first start copies from
 // permission-groups.default.json so a checkout can carry setup-specific
 // integrations (e.g. an extra MCP read pattern) without leaking them upstream.
+// See permission-groups-loader.ts for the provenance-based merge on subsequent starts.
 const PERMISSION_GROUPS_PATH = join(SRC_DIR, '..', 'config', 'permission-groups.json');
-
-function loadRuntimePermissionGroups(path: string): PermissionGroupMap {
-  if (existsSync(path)) {
-    return JSON.parse(readFileSync(path, 'utf8')) as PermissionGroupMap;
-  }
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(permissionGroupsDefault, null, 2) + '\n');
-  renameSync(tmp, path);
-  return permissionGroupsDefault;
-}
+const PERMISSION_GROUPS_SEEDED_PATH = join(SRC_DIR, '..', 'config', 'permission-groups.seeded.json');
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -211,7 +203,7 @@ async function main() {
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
   const outpostActionsDir = join(RUNTIME_DIR, 'actions');
   const actionsStore = new ActionsStore(join(RUNTIME_DIR, 'actions.json'));
-  const permissionGroups = loadRuntimePermissionGroups(PERMISSION_GROUPS_PATH);
+  const permissionGroups = loadRuntimePermissionGroups(PERMISSION_GROUPS_PATH, PERMISSION_GROUPS_SEEDED_PATH, permissionGroupsDefault as PermissionGroupMap);
   // Seed the bundled action defaults into ~/.outpost/actions before the registry
   // reads it — user-modified action dirs are left alone, so LiveKit-specific edits
   // survive upgrades and never touch the repo. The registry is rooted at this live

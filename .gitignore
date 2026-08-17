@@ -31,3 +31,6 @@ docs/superpowers/
 # Runtime permission groups — copied from config/permission-groups.default.json
 # on first daemon start; the local copy can carry setup-specific integrations.
 /config/permission-groups.json
+# Snapshot of the default the live file above was last seeded/synced from, so a
+# later default change can be told apart from a local addition (see daemon.ts).
+/config/permission-groups.seeded.json
