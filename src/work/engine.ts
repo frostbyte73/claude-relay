@@ -544,6 +544,19 @@ export class WorkEngine {
         }
       }
     }
+    // A job that completes on its own reaps what the manual paths (markJobDone / abandon /
+    // delete / reset) already reap. Without this, organic completion strands every worktree
+    // whose step didn't exit through the controller's `resolve` move — an action step never
+    // archives per-step at all, and a PR step ending `merged` doesn't either.
+    // `mark-failed` is deliberately excluded: a failed job is a halt, not a grave (see the
+    // recovery branch at the top of this method), and its worktrees are what a retry resumes into.
+    if (markedDone) {
+      const done = this.opts.queue.get(jobId);
+      if (done) {
+        try { await this.terminateJobResources(done); }
+        catch (e) { console.error(`[work] reap ${jobId}: ${(e as Error).message}`); }
+      }
+    }
     if (markedDone || markedFailed) return;
 
     const actions = decide(this.opts.queue.get(jobId) ?? j, this.ctx);

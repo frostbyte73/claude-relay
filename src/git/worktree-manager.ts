@@ -457,6 +457,33 @@ export class WorktreeManager {
     }
   }
 
+  // Worktrees whose owner is gone — a job that completed before organic completion reaped its
+  // own (see tickOne), or an interactive session the user never explicitly archived, since the
+  // 15-minute idle reap kills the process and leaves the checkout. Ownership can only be judged
+  // by the daemon, which holds the queue and the session store, so it comes in as a predicate.
+  // MIN_AGE_MS keeps the sweep off a worktree provisioned moments ago whose step or session
+  // hasn't bound yet; a real orphan is days old, so nothing needs reclaiming promptly.
+  async sweepOrphaned(isOwned: (key: string) => boolean, minAgeMs = 6 * 60 * 60 * 1000): Promise<string[]> {
+    const cutoff = Date.now() - minAgeMs;
+    const orphans = [...this.records.values()]
+      .filter((r) => !r.archivedAt && r.worktreePath && r.createdAt < cutoff && !isOwned(r.sessionId))
+      // Every worktree this manager creates lives under its own root, so a path outside it is a
+      // malformed record — in practice one naming the project checkout itself. tearDown would
+      // fail the `worktree remove` harmlessly (git refuses the main worktree) and then land a
+      // real `branch -D` on the user's repo. Never let the automatic path reach that.
+      .filter((r) => isUnder(r.worktreePath, this.root));
+    const reaped: string[] = [];
+    for (const rec of orphans) {
+      try {
+        await this.archive(rec.sessionId, rec.projectCwd);
+        reaped.push(rec.sessionId);
+      } catch (e) {
+        console.error(`[worktree] sweep ${rec.sessionId.slice(0, 8)}: ${(e as Error).message}`);
+      }
+    }
+    return reaped;
+  }
+
   // The only network-touching subprocess on the provision path. Overridable so a test can
   // count fetches without a remote.
   protected async runGitFetch(cwd: string, args: string[]): Promise<void> {

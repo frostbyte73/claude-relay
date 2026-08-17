@@ -106,3 +106,35 @@ describe('engine.worktreeRecordForSession', () => {
     expect(engine.worktreeRecordForSession('unknown-session')).toBeUndefined();
   });
 });
+
+describe('organic completion reaps the job resources', () => {
+  // Regression: only the manual paths (markJobDone / abandon / delete / reset) called
+  // terminateJobResources, so a job that finished on its own stranded every worktree whose
+  // step didn't exit through the controller's `resolve` move — the leak that left 32
+  // worktrees on disk across 9 repos.
+  it('a job that settles to done on its own archives its steps worktrees', async () => {
+    const { engine, queue, archived } = makeEngine();
+    const jobId = seedStep(engine, queue, { reviewed: true });
+
+    engine.markStepResolved(jobId, 'step-1');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(queue.get(jobId)!.state).toBe('done');
+    expect(archived.map((a) => a.stepId)).toEqual(['step-1']);
+  });
+
+  // A failed job is a halt, not a grave: tickOne lifts it back to executing once the failure
+  // clears, and the retry resumes into the same checkout. Reaping here would delete it.
+  it('a job halted at failed keeps its worktrees', async () => {
+    const { engine, queue, archived } = makeEngine();
+    const jobId = seedStep(engine, queue, {
+      reviewed: true, failure: { reason: 'real failure', at: 1 },
+    });
+    queue.upsert({ ...queue.get(jobId)!, state: 'failed' });
+
+    await engine.tick(jobId);
+
+    expect(queue.get(jobId)!.state).toBe('failed');
+    expect(archived).toEqual([]);
+  });
+});

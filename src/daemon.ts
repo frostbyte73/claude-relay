@@ -1230,6 +1230,23 @@ async function main() {
   } else {
     console.log('[work] LINEAR_API_TOKEN missing from ~/.outpost/.env — work orchestrator disabled');
   }
+
+  // Reclaim worktrees whose owner is gone: a job that finished before organic completion
+  // reaped its own, or an interactive session the user never explicitly archived (the
+  // 15-minute idle reap kills the process and leaves the checkout). Unconditional — worktrees
+  // leak with or without Linear — and last, so the reconciles above have already settled any
+  // step this would otherwise judge ownerless. A `failed` job counts as owned: it's a
+  // resumable halt whose retry resumes into the checkout.
+  void worktreeManager.sweepOrphaned((key) => {
+    for (const job of jobQueue.list()) {
+      const owns = job.steps.some((s) => s.id === key
+        || (s.type === 'orchestrated' && s.dispatches.some((d) => d.id === key)));
+      if (owns) return job.state !== 'done' && job.state !== 'abandoned';
+    }
+    return !!sessionStore.findSession(key);
+  }).then((reaped) => {
+    if (reaped.length) console.log(`[daemon] swept ${reaped.length} orphaned worktree(s)`);
+  }).catch((e) => console.error(`[daemon] worktree sweep: ${(e as Error).message}`));
 }
 
 function summarizeToolInput(toolName: string, toolInput: unknown): string {

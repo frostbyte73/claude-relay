@@ -783,3 +783,83 @@ describe('WorktreeManager — base freshness on re-provision', () => {
     expect(runGitDiff(rec, 'branch')).toBe('');
   });
 });
+
+describe('WorktreeManager — sweepOrphaned', () => {
+  it('archives a record no owner claims', async () => {
+    const repo = makeGitRepo();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-orphan', projectCwd: repo, baseBranch: 'main' });
+
+    const reaped = await m.sweepOrphaned(() => false, 0);
+
+    expect(reaped).toEqual(['sess-orphan']);
+    expect(existsSync(rec.worktreePath)).toBe(false);
+    expect(m.get('sess-orphan')!.archivedAt).toBeDefined();
+  });
+
+  it('leaves a record its owner still claims', async () => {
+    const repo = makeGitRepo();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-owned', projectCwd: repo, baseBranch: 'main' });
+
+    const reaped = await m.sweepOrphaned((key) => key === 'sess-owned', 0);
+
+    expect(reaped).toEqual([]);
+    expect(existsSync(rec.worktreePath)).toBe(true);
+    expect(m.get('sess-owned')!.archivedAt).toBeUndefined();
+  });
+
+  // A worktree provisioned moments ago may not have bound to its step or session yet, so
+  // an ownerless verdict on a fresh record is meaningless — a real orphan is days old.
+  it('leaves an ownerless record younger than minAge', async () => {
+    const repo = makeGitRepo();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-fresh', projectCwd: repo, baseBranch: 'main' });
+
+    const reaped = await m.sweepOrphaned(() => false, 60_000);
+
+    expect(reaped).toEqual([]);
+    expect(existsSync(rec.worktreePath)).toBe(true);
+  });
+
+  it('skips tombstones so an already-archived record is never swept twice', async () => {
+    const root = newRoot();
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    m._testSeedRecord({
+      sessionId: 'sess-tomb',
+      projectCwd: '/tmp/repoT',
+      worktreePath: '',
+      branch: '',
+      baseBranch: 'main',
+      createdAt: 100,
+      archivedAt: 200,
+    });
+
+    expect(await m.sweepOrphaned(() => false, 0)).toEqual([]);
+  });
+});
+
+describe('WorktreeManager — sweepOrphaned refuses malformed records', () => {
+  // A record naming the project checkout itself (worktreePath === projectCwd) has existed in
+  // the wild. tearDown's `worktree remove` fails harmlessly there, but the `branch -D` that
+  // follows lands on the user's real repo — so the automatic sweep must never touch one.
+  it('skips a record whose worktreePath is outside the manager root', async () => {
+    const repo = makeGitRepo();
+    execFileSync('git', ['-C', repo, 'branch', 'keep-me']);
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    m._testSeedRecord({
+      sessionId: 'sess-selfpath',
+      projectCwd: repo,
+      worktreePath: repo,
+      branch: 'keep-me',
+      baseBranch: 'main',
+      createdAt: 100,
+    });
+
+    expect(await m.sweepOrphaned(() => false, 0)).toEqual([]);
+    expect(m.get('sess-selfpath')!.archivedAt).toBeUndefined();
+    expect(
+      execFileSync('git', ['-C', repo, 'branch', '--list', 'keep-me']).toString().trim(),
+    ).toContain('keep-me');
+  });
+});
