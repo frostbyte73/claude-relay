@@ -154,6 +154,17 @@ describe('classifyInterpreterShape', () => {
     expect(interp('^python3 -m pytest(\\s+[A-Za-z0-9._/-]+)*$')).toBe(false);
   });
 
+  it('refuses a shorthand-complement class in any spelling', () => {
+    for (const v of ['^python3 [\\s\\S]*$', '^python3 [\\S\\s]*$',
+                     '^python3 [\\w\\W]*$', '^python3 [\\d\\D]*$']) {
+      expect(interp(v), v).toBe(true);
+    }
+  });
+
+  it('still permits a shorthand outside a character class', () => {
+    expect(interp('^python3 -m pytest(\\s+[A-Za-z0-9._/-]+)*$')).toBe(false);
+  });
+
   it('ignores rules that are not interpreter invocations', () => {
     expect(interp('^sed(\\s|$)')).toBe(false);
     expect(interp('^git status')).toBe(false);

@@ -174,22 +174,29 @@ export const INTERPRETERS: ReadonlySet<string> = new Set([
 
 const EVAL_FLAGS = /(?:^|\s)(?:-c|-e|--eval|--command|-\s*$)/;
 
-// `[\s\S]` is a literal spelling of "any character" via a bounded class rather than `.`;
-// checked separately from the scan below because it's a fixed 6-character construct, not
-// something that needs class-depth tracking to recognize.
-const ANY_CHAR_CLASS = /\[\\s\\S\]/;
+// Shorthand escapes whose complement pair spans every character (`[\s\S]`, `[\S\s]`,
+// `[\w\W]`, `[\d\D]`, ...). Refusing any one of these inside a class — rather than
+// enumerating the pairs — catches every spelling, present and future, without a denylist.
+const SHORTHAND_CLASSES: ReadonlySet<string> = new Set(['s', 'S', 'w', 'W', 'd', 'D', 'b', 'B']);
 
 // True when the pattern contains a construct that can match arbitrary content: an unescaped
-// `.` outside a character class, a negated-class opener `[^`, or `[\s\S]`. A `.` *inside* a
-// class (`[A-Za-z0-9._/-]`) is a literal character, not a metacharacter, so it must not trip
-// this — hence tracking whether the scan is currently inside `[...]`.
+// `.` outside a character class, a negated-class opener `[^`, or a shorthand escape
+// (`\s`/`\w`/`\d`/...) *inside* a class — `[\s\S]` and its reversed/complement-pair spellings
+// all match any character there. The same shorthand outside a class (`\s+` in
+// `(\s+[A-Za-z0-9._/-]+)*`) is an ordinary bounded repetition and must not trip this — hence
+// tracking whether the scan is currently inside `[...]`. A `.` inside a class
+// (`[A-Za-z0-9._/-]`) is likewise a literal character, not a metacharacter.
 function admitsArbitraryContent(pattern: string): boolean {
-  if (ANY_CHAR_CLASS.test(pattern)) return true;
   let inClass = false;
   let i = 0;
   while (i < pattern.length) {
     const c = pattern[i]!;
-    if (c === '\\') { i += 2; continue; }
+    if (c === '\\') {
+      const next = pattern[i + 1];
+      if (inClass && next !== undefined && SHORTHAND_CLASSES.has(next)) return true;
+      i += 2;
+      continue;
+    }
     if (inClass) {
       if (c === ']') inClass = false;
       i++;
