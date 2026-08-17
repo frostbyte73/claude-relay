@@ -12,10 +12,10 @@ function empty(): Allowlist {
 describe('Allowlist — session scope', () => {
   it('session rules apply only to the granting session', () => {
     const a = empty();
-    a.addRule('bash', '^kubectl delete pod ', { session: 'sess-1' });
-    expect(a.allows('Bash', { command: 'kubectl delete pod x' }, undefined, undefined, undefined, 'sess-1')).toBe(true);
-    expect(a.allows('Bash', { command: 'kubectl delete pod x' }, undefined, undefined, undefined, 'sess-2')).toBe(false);
-    expect(a.allows('Bash', { command: 'kubectl delete pod x' })).toBe(false);
+    a.addRule('bash', '^kubectl get pod ', { session: 'sess-1' });
+    expect(a.allows('Bash', { command: 'kubectl get pod x' }, undefined, undefined, undefined, 'sess-1')).toBe(true);
+    expect(a.allows('Bash', { command: 'kubectl get pod x' }, undefined, undefined, undefined, 'sess-2')).toBe(false);
+    expect(a.allows('Bash', { command: 'kubectl get pod x' })).toBe(false);
   });
 
   it('clearSession revokes the grants', () => {

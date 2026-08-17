@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { AllowlistConfig } from '../permissions/allowlist.js';
+import { assertNotWriteShaped, classifyInterpreterShape, classifyRuleShape } from '../permissions/write-shape.js';
 
 export interface ActionConfig {
   allowlist: AllowlistConfig;
@@ -34,6 +35,29 @@ function atomicWrite(path: string, data: string): void {
   renameSync(tmp, path);
 }
 
+// addRule guards every rule added from here on, but rules persisted before that guard
+// existed never passed through it — a stale `^gh workflow run ` from before this lint
+// shipped still loads and still runs ungated. Observability only: never throws, never
+// changes what loads, just names the debt so it's visible instead of silent.
+function auditPersistedRules(byName: ReadonlyMap<string, ActionConfig>): string[] {
+  const hits: string[] = [];
+  for (const [name, cfg] of byName) {
+    const checks: Array<['tool' | 'bash' | 'mcp', string[]]> = [
+      ['tool', cfg.allowlist.alwaysAllow],
+      ['bash', cfg.allowlist.alwaysAllowBashPatterns],
+      ['mcp', cfg.allowlist.alwaysAllowMcpPatterns],
+    ];
+    for (const [kind, values] of checks) {
+      for (const value of values) {
+        const writeShaped = classifyRuleShape(kind, value).writeShaped
+          || classifyInterpreterShape(kind, value).writeShaped;
+        if (writeShaped) hits.push(`${name} ${kind}=${value}`);
+      }
+    }
+  }
+  return hits;
+}
+
 export class ActionsStore {
   private byName = new Map<string, ActionConfig>();
 
@@ -53,6 +77,12 @@ export class ActionsStore {
         },
       });
     }
+    const hits = auditPersistedRules(this.byName);
+    if (hits.length > 0) {
+      console.warn(
+        `[actions] ${hits.length} persisted action-scoped rule(s) grant external writes `
+        + `that no write-draft gates: ${hits.join('; ')}`);
+    }
   }
 
   get(name: string): ActionConfig {
@@ -65,6 +95,7 @@ export class ActionsStore {
   }
 
   addRule(name: string, kind: 'tool' | 'bash' | 'mcp' | 'path', value: string): boolean {
+    assertNotWriteShaped(kind, value);
     const cur = this.byName.get(name) ?? defaultConfig();
     const al = cur.allowlist;
     const key = keyForKind(kind);

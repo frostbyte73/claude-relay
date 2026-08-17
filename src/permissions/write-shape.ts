@@ -212,6 +212,19 @@ function admitsArbitraryContent(pattern: string): boolean {
   return false;
 }
 
+// Every scope reachable through addRule is non-gated: a call matching a rule added there
+// is checked by allows() but never by gatedMatch, so a write installed this way runs
+// without a write-draft pin. Permission groups are the only legitimate home for a write
+// rule, and they are not written through addRule.
+export function assertNotWriteShaped(kind: RuleKind, value: string): void {
+  for (const verdict of [classifyRuleShape(kind, value), classifyInterpreterShape(kind, value)]) {
+    if (verdict.writeShaped) {
+      throw new Error(
+        `refusing to add this rule outside a gated permission group: ${verdict.reason}`);
+    }
+  }
+}
+
 export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind !== 'bash') return { writeShaped: false, reason: '' };
 

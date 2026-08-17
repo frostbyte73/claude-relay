@@ -53,9 +53,9 @@ describe('revertToEvent', () => {
 
     const applied = store.applyWrite({
       action: ACTION, dir: actionDir, body: 'v2\n', author: 'improver',
-      allowlistAdds: [{ kind: 'bash', value: '^curl ' }, { kind: 'tool', value: 'Write' }],
+      allowlistAdds: [{ kind: 'bash', value: '^sed ' }, { kind: 'tool', value: 'Write' }],
     });
-    actionsStore.addRule(ACTION, 'bash', '^curl ');
+    actionsStore.addRule(ACTION, 'bash', '^sed ');
     actionsStore.addRule(ACTION, 'tool', 'Write');
     // A later revision re-adds one of them, so that one is still earned.
     store.applyWrite({
@@ -65,7 +65,7 @@ describe('revertToEvent', () => {
 
     const { removed } = revert(applied.id);
 
-    expect(removed).toEqual([{ kind: 'bash', value: '^curl ' }]);
+    expect(removed).toEqual([{ kind: 'bash', value: '^sed ' }]);
     const al = actionsStore.get(ACTION).allowlist;
     expect(al.alwaysAllowBashPatterns).toEqual([]);
     expect(al.alwaysAllow).toEqual(['WebFetch', 'Write']);

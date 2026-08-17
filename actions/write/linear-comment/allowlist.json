@@ -2,7 +2,7 @@
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [],
   "alwaysAllowMcpPatterns": [
-    "^mcp__claude_ai_Linear__(get_issue|save_comment)$"
+    "^mcp__claude_ai_Linear__get_issue$"
   ],
   "alwaysAllowPathPatterns": []
 }

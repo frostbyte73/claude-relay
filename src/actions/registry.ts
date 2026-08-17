@@ -6,6 +6,7 @@ import type {
   ActionAllowlist, ActionCategory, ActionDef, ActionFrontmatter, ActionKind, ActionRunner,
   PermissionGroupMap, SideEffects,
 } from './types.js';
+import { assertNotWriteShaped } from '../permissions/write-shape.js';
 
 export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
 // Groups whose grants mean "may propose this write for approval", not "may run it".
@@ -109,6 +110,9 @@ export class ActionRegistry {
     catch (e) { throw new Error(`output.schema.json invalid: ${(e as Error).message}`); }
 
     const extras = readAllowlist(join(dir, 'allowlist.json'));
+    for (const v of extras.alwaysAllow) assertNotWriteShaped('tool', v);
+    for (const v of extras.alwaysAllowBashPatterns) assertNotWriteShaped('bash', v);
+    for (const v of extras.alwaysAllowMcpPatterns) assertNotWriteShaped('mcp', v);
     const { allowlist, gated } = this.resolvePermissions(fm, extras);
 
     return {

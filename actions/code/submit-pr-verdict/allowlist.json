@@ -1,8 +1,6 @@
 {
   "alwaysAllow": [],
-  "alwaysAllowBashPatterns": [
-    "^gh pr review[ \\t]+[0-9]+[ \\t]+(?:--approve|--request-changes)(?:[ \\t]+(?:--body(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*[\"']?))?[ \\t]*$"
-  ],
+  "alwaysAllowBashPatterns": [],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": [
     "Write:^/tmp/"
