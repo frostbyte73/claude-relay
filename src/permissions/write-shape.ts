@@ -217,60 +217,69 @@ function admitsArbitraryContent(pattern: string): boolean {
   return false;
 }
 
-// Loopback destinations the daemon exposes to its own spawned sessions ($OUTPOST_API_URL and
-// its 127.0.0.1 spelling — see claude-proc.ts). A POST there is a session calling back into
-// Outpost's own API, not an external write; `write.add-project`'s dispatch-to-daemon rule is
-// the reason this exemption exists. Backslashes are stripped before matching so an escaped
-// pattern source (`127\.0\.0\.1`) still reads as the plain host string.
-function mentionsLoopback(value: string): boolean {
-  const stripped = value.replace(/\\/g, '');
-  return stripped.includes('127.0.0.1') || stripped.includes('localhost') || stripped.includes('OUTPOST_API_URL');
+// Flags that are never a read, regardless of which tool grants them: `-T`/`--upload-file`
+// hands curl a local file to PUT/POST to a remote, and `-o`/`--output` overwrites an
+// arbitrary local file with the response. No destination pin makes either of these safe to
+// leave ungated, so these apply to every bash rule, not just a specific binary.
+const UNAMBIGUOUS_WRITE_LONG_FLAGS: readonly string[] = ['--upload-file', '--output'];
+const UNAMBIGUOUS_WRITE_SHORT_FLAGS: readonly string[] = ['-T', '-o'];
+
+// `POST`/`PUT`/`PATCH`/`DELETE` and `-f`/`--field`/`--raw-field`/`--input` are unambiguous
+// writes only on GitHub's REST API, which is method-semantic — a `gh api` call using one of
+// these always mutates something. The same tokens mean nothing of the sort on `curl`: GraphQL,
+// RPC, and search APIs all read over POST, and a body-shaped flag can carry a read-only query
+// (see `meta.orchestrate`'s Linear GraphQL rule, pinned to one host with mutations excluded).
+// So this check is scoped to rules whose literal prefix is `gh api` — never applied to `curl`.
+const GH_API_WRITE_METHOD_RE = /\b(?:POST|PUT|PATCH|DELETE)\b/;
+const GH_API_WRITE_LONG_FLAGS: readonly string[] = ['--field', '--raw-field', '--input'];
+const GH_API_WRITE_SHORT_FLAGS: readonly string[] = ['-f'];
+
+function isGhApiRule(value: string): boolean {
+  const lit = literalPrefix(value);
+  return lit !== null && lit.prefix.trimStart().startsWith('gh api');
 }
 
-const HTTP_WRITE_METHOD_RE = /\b(?:POST|PUT|PATCH|DELETE)\b/;
-
-// Long-form flags that hand curl/gh/wget a body or a file to send — checked as plain
-// substrings since a longer flag containing a shorter one (`--data-raw` contains `--data`)
-// still deserves the same verdict either way.
-const BODY_FLAG_LONG_FORMS: readonly string[] = [
-  '--data-raw', '--data-binary', '--data', '--upload-file', '--form',
-  '--output', '--input', '--field', '--raw-field',
-];
-
-// Short flags for the same thing, but a raw substring search would also fire on `--data`
-// (contains `-d`) or a clustered read flag string like `-fsSL`. The `(?![A-Za-z-])` guard
-// requires the flag not be immediately followed by a letter or another dash, so it only
-// fires on the flag as its own token.
-const BODY_FLAG_SHORT_FORMS: readonly string[] = ['-d', '-T', '-F', '-o'];
-
-function hasBodySendingFlag(value: string): boolean {
-  if (BODY_FLAG_LONG_FORMS.some((flag) => value.includes(flag))) return true;
-  return BODY_FLAG_SHORT_FORMS.some((flag) => new RegExp(`${flag}(?![A-Za-z-])`).test(value));
+// A raw substring search on a short flag would also fire inside a longer flag that contains it
+// (`--data` contains `-d`) or a clustered read-flag string (`-fsSL`). The `(?![A-Za-z-])` guard
+// requires the flag not be immediately followed by a letter or another dash, so it only fires
+// on the flag as its own token.
+function hasFlag(value: string, longForms: readonly string[], shortForms: readonly string[]): boolean {
+  if (longForms.some((flag) => value.includes(flag))) return true;
+  return shortForms.some((flag) => new RegExp(`${flag}(?![A-Za-z-])`).test(value));
 }
 
-// Probe matching can never catch a narrowly-scoped write endpoint — a `gh api` or `curl` rule
-// pinned to one specific path still sends a body to an external destination if it names a
-// non-GET method or a body-sending flag, and no fixed WRITE_PROBES corpus can enumerate every
-// path. This is a structural check instead: the pattern TEXT names a write-shaped HTTP verb or
-// flag, full stop, unless the destination is the daemon's own loopback API.
+// Probe matching can never catch a narrowly-scoped write endpoint — a `gh api` rule pinned to
+// one specific path still mutates something if it names a non-GET method or a write-shaped
+// flag, and no fixed WRITE_PROBES corpus can enumerate every path. This is a structural check
+// instead, deliberately narrower than "any HTTP write shape": the method/body-field half is
+// gh-api-only, because that's the only protocol here whose verbs are reliably write-semantic.
 export function classifyHttpWriteShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind !== 'bash') return { writeShaped: false, reason: '' };
-  if (mentionsLoopback(value)) return { writeShaped: false, reason: '' };
 
-  if (HTTP_WRITE_METHOD_RE.test(value)) {
+  if (hasFlag(value, UNAMBIGUOUS_WRITE_LONG_FLAGS, UNAMBIGUOUS_WRITE_SHORT_FLAGS)) {
     return {
       writeShaped: true,
-      reason: 'pattern names a non-GET HTTP method (POST/PUT/PATCH/DELETE) — that sends a '
-        + 'body to an external destination',
+      reason: 'pattern admits an unconditional write flag (--upload-file/-T uploads to a '
+        + 'remote, --output/-o overwrites an arbitrary local file)',
     };
   }
-  if (hasBodySendingFlag(value)) {
-    return {
-      writeShaped: true,
-      reason: 'pattern admits a body-sending flag (--data/--upload-file/--form/--output/'
-        + '--input/--field/--raw-field or -d/-T/-F/-o)',
-    };
+
+  if (isGhApiRule(value)) {
+    if (GH_API_WRITE_METHOD_RE.test(value)) {
+      return {
+        writeShaped: true,
+        reason: 'gh api pattern names a non-GET HTTP method (POST/PUT/PATCH/DELETE), which on '
+          + "GitHub's REST API always mutates something",
+      };
+    }
+    if (hasFlag(value, GH_API_WRITE_LONG_FLAGS, GH_API_WRITE_SHORT_FLAGS)) {
+      return {
+        writeShaped: true,
+        reason: 'gh api pattern admits a body-sending flag (-f/--field/--raw-field/--input)',
+      };
+    }
   }
+
   return { writeShaped: false, reason: '' };
 }
 

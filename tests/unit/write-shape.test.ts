@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyRuleShape, classifyInterpreterShape } from '../../src/permissions/write-shape.js';
+import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape } from '../../src/permissions/write-shape.js';
 
 const shaped = (kind: 'tool' | 'bash' | 'mcp' | 'path', v: string) =>
   classifyRuleShape(kind, v).writeShaped;
@@ -176,5 +176,85 @@ describe('classifyInterpreterShape', () => {
     // group's own interpreter rules narrowed first — deferred with them.
     expect(interp('^(node)(\\s|$)')).toBe(false);
     expect(interp('^(tsx|node|tsc|vitest)(\\s|$)')).toBe(false);
+  });
+});
+
+describe('classifyRuleShape — gh write verbs the probe corpus was missing', () => {
+  // A rule scoped to one exact write endpoint never matches a probe corpus by shape alone
+  // unless the corpus names that exact endpoint. These five close the `gh workflow`/`secret`/
+  // `repo`/`cache` gap the load-time audit found in real, persisted actions.json rules.
+  it('refuses the five new gh write probes at their own bare grant', () => {
+    for (const v of ['^gh workflow run(\\s|$)', '^gh secret set(\\s|$)',
+                     '^gh repo create(\\s|$)', '^gh repo delete(\\s|$)', '^gh cache delete(\\s|$)']) {
+      expect(shaped('bash', v), v).toBe(true);
+    }
+  });
+
+  it('refuses the narrow persisted rules the load-time audit flagged', () => {
+    expect(shaped('bash', '^gh workflow (run|view|list)(\\s|$)')).toBe(true);
+    expect(shaped('bash', '^gh workflow (run|view|list)\\b')).toBe(true);
+    expect(shaped('bash', '^gh workflow run ')).toBe(true);
+  });
+
+  it('still permits the read-only workflow/cache verbs', () => {
+    expect(shaped('bash', '^gh workflow view(\\s|$)')).toBe(false);
+    expect(shaped('bash', '^gh cache list(\\s|$)')).toBe(false);
+  });
+});
+
+describe('classifyHttpWriteShape', () => {
+  const httpShaped = (v: string) => classifyHttpWriteShape('bash', v).writeShaped;
+
+  it('refuses -T/--upload-file and -o/--output on any tool, not just gh api', () => {
+    expect(httpShaped('^curl -T /tmp/x https://example\\.com/upload$')).toBe(true);
+    expect(httpShaped('^curl --upload-file /tmp/x https://example\\.com/upload$')).toBe(true);
+    expect(httpShaped('^curl -o /tmp/x https://example\\.com/x$')).toBe(true);
+    expect(httpShaped('^wget --output /tmp/x https://example\\.com/x$')).toBe(true);
+  });
+
+  it('does not false-positive the unconditional flags on unrelated tokens', () => {
+    // `-fsS` (a read-only curl cluster) and `--connect-timeout` both contain a `-` immediately
+    // before a letter that is not `T`/`o` on its own — the (?![A-Za-z-]) guard must not fire.
+    expect(httpShaped('^curl -fsS https://example\\.com$')).toBe(false);
+    expect(httpShaped('^curl --connect-timeout 5 https://example\\.com$')).toBe(false);
+  });
+
+  it('refuses a non-GET method or a body-sending flag on gh api', () => {
+    expect(httpShaped('^gh api --method POST repos/o/r/issues$')).toBe(true);
+    expect(httpShaped('^gh api -X PUT repos/o/r/x$')).toBe(true);
+    expect(httpShaped('^gh api repos/o/r/issues -f title=x$')).toBe(true);
+    expect(httpShaped('^gh api repos/o/r/issues --field title=x$')).toBe(true);
+    expect(httpShaped('^gh api repos/o/r/issues --input /tmp/body\\.json$')).toBe(true);
+  });
+
+  it('permits GET on gh api and ignores POST/-f entirely on curl', () => {
+    expect(httpShaped('^gh api --method GET repos/o/r/issues$')).toBe(false);
+    expect(httpShaped('^gh api repos/o/r/issues$')).toBe(false);
+    // curl is not method-semantic the way gh api is — GraphQL, RPC, and search APIs all read
+    // over POST, and `-f` is not even a curl flag with a body-sending meaning.
+    expect(httpShaped('^curl -X POST https://api\\.example\\.com/graphql$')).toBe(false);
+  });
+
+  it('the six cases the coordinator asked to be pinned', () => {
+    const replies = '^gh api[ \\t]+(?:--method|-X)(?:[ \\t]+|=)POST[ \\t]+["\']?repos/\\{owner\\}/\\{repo\\}/pulls/comments/[0-9]+/replies["\']?[ \\t]+(?:-f(?:[ \\t]+|=)body=(?:"[^"$`\\n]*"|\'[^\'\\n]*\'|[A-Za-z0-9_./][^\\s"\'$`\\n]*)|--input(?:[ \\t]+|=)["\']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*["\']?)[ \\t]*$';
+    const broadCurlPost = '^curl -X POST ';
+    const metaOrchestrateLinear = '^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:"(?![^"\\n]*\\$\\()[^-"\\n`][^"\\n`]*"|\'[^-\'\\n][^\'\\n]*\'|[A-Za-z0-9_$./][^\\s"\'()`<>&|;\\\\]*)|(?:-X|--request)(?:(?:\\s|\\\\\\n)+|=)POST|(?:-d|--data)(?:(?:\\s|\\\\\\n)+|=)\'(?![^\']*(?:mutation|subscription))\\{\\s*"query"\\s*:\\s*"\\s*(?:query\\b|\\{)[^\']*\'))*(?:\\s|\\\\\\n)+["\']?https://api\\.linear\\.app/graphql["\']?(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:"(?![^"\\n]*\\$\\()[^-"\\n`][^"\\n`]*"|\'[^-\'\\n][^\'\\n]*\'|[A-Za-z0-9_$./][^\\s"\'()`<>&|;\\\\]*)|(?:-X|--request)(?:(?:\\s|\\\\\\n)+|=)POST|(?:-d|--data)(?:(?:\\s|\\\\\\n)+|=)\'(?![^\']*(?:mutation|subscription))\\{\\s*"query"\\s*:\\s*"\\s*(?:query\\b|\\{)[^\']*\'))*(?:\\s|\\\\\\n)*$';
+    const addProjectLoopback = '^curl -fsS -X POST ("\\$OUTPOST_API_URL"|\\$OUTPOST_API_URL|http://127\\.0\\.0\\.1:[0-9]+)/api/projects\\b';
+    const pullCurl = '^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:"[^-"\\n][^"\\n]*"|\'[^-\'\\n][^\'\\n]*\'|[A-Za-z0-9_$./][^\\s"\'<>&|;\\\\]*)|["\']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s"\'<>&|;\\\\]*["\']?))*(?:\\s|\\\\\\n)*$';
+    const pullGhApi = '^gh api(?:(?:\\s|\\\\\\n)+(?:--paginate|--slurp|(?:--cache|--hostname|-H|--header|-q|--jq|-t|--template)(?:(?:\\s|\\\\\\n)+|=)(?:"[^-"\\n][^"\\n]*"|\'[^-\'\\n][^\'\\n]*\'|[A-Za-z0-9_$./][^\\s"\'<>&|;\\\\]*)|(?:--method|-X)(?:(?:\\s|\\\\\\n)+|=)GET|(?:"[^-"\\n][^"\\n]*"|\'[^-\'\\n][^\'\\n]*\'|[A-Za-z0-9_$./][^\\s"\'<>&|;\\\\]*)))*(?:\\s|\\\\\\n)*$';
+    const ghWorkflowProbe = '^gh workflow (run|view|list)(\\s|$)';
+
+    const refused = (v: string) =>
+      classifyRuleShape('bash', v).writeShaped
+      || classifyInterpreterShape('bash', v).writeShaped
+      || classifyHttpWriteShape('bash', v).writeShaped;
+
+    expect(refused(replies)).toBe(true);
+    expect(refused(broadCurlPost)).toBe(true);
+    expect(refused(metaOrchestrateLinear)).toBe(false);
+    expect(refused(addProjectLoopback)).toBe(false);
+    expect(refused(pullCurl)).toBe(false);
+    expect(refused(pullGhApi)).toBe(false);
+    expect(refused(ghWorkflowProbe)).toBe(true);
   });
 });
