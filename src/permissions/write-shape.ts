@@ -225,18 +225,31 @@ const UNAMBIGUOUS_WRITE_LONG_FLAGS: readonly string[] = ['--upload-file', '--out
 const UNAMBIGUOUS_WRITE_SHORT_FLAGS: readonly string[] = ['-T', '-o'];
 
 // `POST`/`PUT`/`PATCH`/`DELETE` and `-f`/`--field`/`--raw-field`/`--input` are unambiguous
-// writes only on GitHub's REST API, which is method-semantic — a `gh api` call using one of
-// these always mutates something. The same tokens mean nothing of the sort on `curl`: GraphQL,
-// RPC, and search APIs all read over POST, and a body-shaped flag can carry a read-only query
-// (see `meta.orchestrate`'s Linear GraphQL rule, pinned to one host with mutations excluded).
-// So this check is scoped to rules whose literal prefix is `gh api` — never applied to `curl`.
+// writes only on GitHub's REST API, which is method-semantic — a `gh` call using one of these
+// always mutates something. The same tokens mean nothing of the sort on `curl`: GraphQL, RPC,
+// and search APIs all read over POST, and a body-shaped flag can carry a read-only query (see
+// `meta.orchestrate`'s Linear GraphQL rule, pinned to one host with mutations excluded). So this
+// check is scoped to the `gh` binary specifically — not the `gh api` subcommand, since gating on
+// the two-word prefix left `gh  api` (double space), `gh (api|pr) …` (prefix broken by its own
+// alternation) and an absolute `/usr/bin/gh api …` path all unclassified. Gating on the binary
+// alone is strictly broader and catches all three: every non-`api` `gh` subcommand that could
+// name a write method is either already caught by a `WRITE_PROBES` entry or doesn't take one.
 const GH_API_WRITE_METHOD_RE = /\b(?:POST|PUT|PATCH|DELETE)\b/;
 const GH_API_WRITE_LONG_FLAGS: readonly string[] = ['--field', '--raw-field', '--input'];
 const GH_API_WRITE_SHORT_FLAGS: readonly string[] = ['-f'];
 
-function isGhApiRule(value: string): boolean {
+// The literal prefix's first token, basenamed the same way `isBareBinary` handles a `/`-rooted
+// invocation — so `/usr/bin/gh` reads as `gh`. Whitespace runs collapse for free: splitting on
+// `[ \t]+` treats `gh  api` (two spaces) and `gh api` identically. Returns null when the prefix
+// can't identify a binary at all — either the pattern isn't `^`-anchored, or it opens with a
+// metacharacter (e.g. a leading `(gh|git)` alternation), so there is nothing to tokenize.
+function ruleBinary(value: string): string | null {
   const lit = literalPrefix(value);
-  return lit !== null && lit.prefix.trimStart().startsWith('gh api');
+  if (lit === null) return null;
+  const trimmed = lit.prefix.trim();
+  if (!trimmed) return null;
+  const first = trimmed.split(/[ \t]+/)[0] ?? '';
+  return first.split('/').pop() ?? first;
 }
 
 // A raw substring search on a short flag would also fire inside a longer flag that contains it
@@ -248,11 +261,11 @@ function hasFlag(value: string, longForms: readonly string[], shortForms: readon
   return shortForms.some((flag) => new RegExp(`${flag}(?![A-Za-z-])`).test(value));
 }
 
-// Probe matching can never catch a narrowly-scoped write endpoint — a `gh api` rule pinned to
-// one specific path still mutates something if it names a non-GET method or a write-shaped
-// flag, and no fixed WRITE_PROBES corpus can enumerate every path. This is a structural check
-// instead, deliberately narrower than "any HTTP write shape": the method/body-field half is
-// gh-api-only, because that's the only protocol here whose verbs are reliably write-semantic.
+// Probe matching can never catch a narrowly-scoped write endpoint — a `gh` rule pinned to one
+// specific path still mutates something if it names a non-GET method or a write-shaped flag,
+// and no fixed WRITE_PROBES corpus can enumerate every path. This is a structural check instead,
+// deliberately narrower than "any HTTP write shape": the method/body-field half only applies to
+// `gh`, because that's the only protocol here whose verbs are reliably write-semantic.
 export function classifyHttpWriteShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind !== 'bash') return { writeShaped: false, reason: '' };
 
@@ -264,20 +277,32 @@ export function classifyHttpWriteShape(kind: RuleKind, value: string): ShapeVerd
     };
   }
 
-  if (isGhApiRule(value)) {
-    if (GH_API_WRITE_METHOD_RE.test(value)) {
+  const binary = ruleBinary(value);
+  const namesWriteMethod = GH_API_WRITE_METHOD_RE.test(value);
+
+  if (binary === 'gh') {
+    if (namesWriteMethod) {
       return {
         writeShaped: true,
-        reason: 'gh api pattern names a non-GET HTTP method (POST/PUT/PATCH/DELETE), which on '
+        reason: 'gh pattern names a non-GET HTTP method (POST/PUT/PATCH/DELETE), which on '
           + "GitHub's REST API always mutates something",
       };
     }
     if (hasFlag(value, GH_API_WRITE_LONG_FLAGS, GH_API_WRITE_SHORT_FLAGS)) {
       return {
         writeShaped: true,
-        reason: 'gh api pattern admits a body-sending flag (-f/--field/--raw-field/--input)',
+        reason: 'gh pattern admits a body-sending flag (-f/--field/--raw-field/--input)',
       };
     }
+  } else if (binary === null && namesWriteMethod) {
+    // Can't tell which binary this invokes — the pattern opens with a metacharacter, e.g. a
+    // leading `(gh|git)` alternation — and it still names a write-shaped HTTP method. Fail
+    // closed rather than assume the unidentified binary is a safe one like `curl`.
+    return {
+      writeShaped: true,
+      reason: 'pattern names a non-GET HTTP method (POST/PUT/PATCH/DELETE) but the invoked '
+        + 'binary cannot be determined — refusing rather than assuming it is safe',
+    };
   }
 
   return { writeShaped: false, reason: '' };

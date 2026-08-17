@@ -257,4 +257,23 @@ describe('classifyHttpWriteShape', () => {
     expect(refused(pullGhApi)).toBe(false);
     expect(refused(ghWorkflowProbe)).toBe(true);
   });
+
+  it('refuses a gh api write however the invocation is spelled', () => {
+    // classifyRuleShape's probe corpus doesn't name any of these exact invocations, so the
+    // catch is entirely classifyHttpWriteShape's — check it directly rather than through
+    // `shaped` (classifyRuleShape only), the same way assertNotWriteShaped combines all three.
+    for (const v of ['^gh  api --method POST repos/o/r/issues$',
+                     '^gh (api|pr) --method POST repos/o/r/issues$',
+                     '^/usr/bin/gh api --method POST repos/o/r/issues$',
+                     '^(gh|git) api --method POST repos/o/r/issues$']) {
+      expect(httpShaped(v), v).toBe(true);
+    }
+  });
+
+  it('still permits the pull group\'s gh rule verbatim, breadth pinned in both directions', () => {
+    expect(httpShaped(
+      '^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|'
+      + 'workflow view|workflow list|repo view|issue view|issue list|search|release view|'
+      + 'release list|label list|cache list|browse)(\\s|$)')).toBe(false);
+  });
 });
