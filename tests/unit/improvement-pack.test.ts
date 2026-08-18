@@ -4,7 +4,7 @@ import {
   type ImprovementPackDeps,
 } from '../../src/actions/improvement-pack.js';
 import type { ActionRunOutcome, ActionRunRecord } from '../../src/storage/action-runs-store.js';
-import type { ActionDenial } from '../../src/storage/denials-store.js';
+import type { ActionDenial, DenialVerdict } from '../../src/storage/denials-store.js';
 import type { ActionEvent } from '../../src/storage/action-revisions-store.js';
 
 const NOW = 1_700_000_000_000;
@@ -38,6 +38,13 @@ function denial(overrides: Partial<ActionDenial> = {}): ActionDenial {
     suggested: { kind: 'bash', value: '^rg ' },
     at: NOW - HOUR,
     count: 3,
+    ...overrides,
+  };
+}
+
+function verdict(overrides: Partial<DenialVerdict> = {}): DenialVerdict {
+  return {
+    disposition: 'never', reason: 'not a permission gap', decidedAt: NOW - HOUR, decidedBy: 'user',
     ...overrides,
   };
 }
@@ -241,6 +248,18 @@ describe('buildImprovementPack', () => {
     const d = deps({ denialsFor: () => [denial({ id: 'once', count: 1 }), denial({ id: 'again', count: 5 })] });
     const pack = buildImprovementPack('read.investigate', d);
     expect(pack.denials.map((x) => x.count)).toEqual([5]);
+  });
+
+  it('excludes a verdicted denial and carries the id of an unresolved one', () => {
+    const d = deps({
+      denialsFor: () => [
+        denial({ id: 'resolved', count: 5, verdict: verdict() }),
+        denial({ id: 'open', count: 5 }),
+      ],
+    });
+    const pack = buildImprovementPack('read.investigate', d);
+    expect(pack.denials).toHaveLength(1);
+    expect(pack.denials[0]).toMatchObject({ id: 'open' });
   });
 
   it('caps each evidence list so a long-lived action stays a curated trace', () => {

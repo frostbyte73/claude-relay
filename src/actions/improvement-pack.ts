@@ -51,7 +51,7 @@ export interface ImprovementPack {
   scorecard: Scorecard;
   failures: Array<{ runId: string; at: number; round: string; attempt: number; jobId: string; stepId?: string; reason?: string }>;
   revisions: Array<{ runId: string; at: number; round: string; attempt: number; feedbackChars?: number; jobId: string }>;
-  denials: Array<{ toolName: string; suggested: ActionDenial['suggested']; count: number; at: number }>;
+  denials: Array<{ id: string; toolName: string; suggested: ActionDenial['suggested']; count: number; at: number }>;
   rejectedProposals: Array<{ at: number; rationale?: string; feedback?: string }>;
   lessons: JournalEntry[];
   history: Array<{ at: number; kind: ActionEvent['kind']; author: ActionEvent['author']; bodyBytes?: number; rationale?: string }>;
@@ -84,9 +84,12 @@ function adjudicatedSince(runs: ActionRunRecord[], since: number): ActionRunReco
 }
 
 // A denial seen more than once is a standing signal that the action's permissions or its
-// instructions are wrong — worth a review even below the run threshold.
+// instructions are wrong — worth a review even below the run threshold. A verdicted denial is
+// excluded regardless of disposition (Ship 6 Ruling P2: presence, not disposition) — an
+// applied `promote` is as resolved as a `never`, and re-surfacing either would have the
+// improver re-propose a grant that already exists every cycle.
 function recurringDenials(denials: ActionDenial[], since = -Infinity): ActionDenial[] {
-  return denials.filter((d) => d.count > 1 && d.at > since);
+  return denials.filter((d) => d.count > 1 && d.at > since && !d.verdict);
 }
 
 // All three terms are counts, so they're directly comparable: a failure weighs more than a
@@ -190,7 +193,7 @@ export function buildImprovementPack(
       })),
     denials: recurringDenials(denials)
       .slice(0, LIST_CAP)
-      .map(({ toolName, suggested, count, at }) => ({ toolName, suggested, count, at })),
+      .map(({ id, toolName, suggested, count, at }) => ({ id, toolName, suggested, count, at })),
     rejectedProposals: events
       .filter((e) => e.kind === 'rejected')
       .slice(0, LIST_CAP)
