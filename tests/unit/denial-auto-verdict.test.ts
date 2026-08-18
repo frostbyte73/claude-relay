@@ -103,6 +103,35 @@ describe('shellArtifactVerdict', () => {
     });
   }
 
+  // The whitelist matched on basename, so any path-qualified spelling of an artifact passed it.
+  // `cd`, `export` and `true` have no on-disk form at all, so `./cd` is necessarily some other
+  // executable wearing the name — an opaque local script, worse than the curl case because not
+  // even the payload is visible in the command text.
+  const pathQualified: Array<[string, string]> = [
+    ['cd', 'cd /tmp && ./cd payload-arg'],
+    ['cd', 'cd /tmp && scripts/cd payload-arg'],
+    ['echo', 'echo hi && ./echo payload-arg'],
+    ['export', 'export FOO=1 && ./export payload-arg'],
+    ['true', 'true && /tmp/x/true payload-arg'],
+  ];
+
+  for (const [binary, cmd] of pathQualified) {
+    it(`does NOT auto-verdict a path-qualified impostor of ${binary} (${cmd})`, () => {
+      const v = shellArtifactVerdict('Bash', { command: cmd }, bashRule(binary), AT);
+      expect(v).toBeNull();
+    });
+  }
+
+  // A quoted or escaped spelling is not the builtin either. These already failed closed under
+  // basename matching (the quote characters survive into the token); pinning it so the bare-word
+  // test can't be loosened into a strip-and-compare without a failure.
+  for (const cmd of ['"echo" hi', '\\echo hi', '$SHELL_CMD hi']) {
+    it(`does NOT auto-verdict a non-bare spelling (${cmd})`, () => {
+      const v = shellArtifactVerdict('Bash', { command: cmd }, bashRule('echo'), AT);
+      expect(v).toBeNull();
+    });
+  }
+
   it('does not auto-verdict a path-kind denial', () => {
     const v = shellArtifactVerdict('Read', { file_path: '/etc/passwd' }, { kind: 'path', value: 'Read:^/etc/' }, AT);
     expect(v).toBeNull();

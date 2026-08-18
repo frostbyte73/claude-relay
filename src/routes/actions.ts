@@ -16,7 +16,7 @@ import type { ActionRunsStore } from '../storage/action-runs-store.js';
 import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denials-store.js';
 import type { Allowlist, RuleKind } from '../permissions/allowlist.js';
 import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
-import { binaryOf } from '../permissions/tool-classify.js';
+import { bareBuiltinOf } from '../permissions/tool-classify.js';
 import { splitShellClauses } from '../permissions/shell-split.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
 import type { GroupApplier } from './meta.js';
@@ -94,7 +94,10 @@ const SHELL_ARTIFACT_BINARIES: readonly string[] = ['cd', 'export', 'true', 'fun
 // pass it, whether the classifier's answer for it is `unknown` or `read`. No clause anywhere in
 // the command may carry a file-creating redirect either — `echo x > /etc/passwd` or
 // `true > some/file` are real local writes, not artifacts, and the loop below never inspects
-// redirects.
+// redirects. The whitelist matches on a BARE word (bareBuiltinOf), not a basename: `cd`,
+// `export` and `true` have no on-disk form, so `cd /tmp && ./cd payload` is an opaque local
+// script wearing a builtin's name — the one shape that would carry a real command past a
+// whitelist this tight.
 export function shellArtifactVerdict(
   toolName: string,
   toolInput: unknown,
@@ -107,7 +110,7 @@ export function shellArtifactVerdict(
   const cmd = (toolInput as { command?: string } | null)?.command ?? '';
   const clauses = splitShellClauses(cmd);
   if (!clauses || clauses.length === 0 || clauses.some((c) => c.writeTargets.length > 0)) return null;
-  const everyClauseIsArtifact = clauses.every((c) => SHELL_ARTIFACT_BINARIES.includes(binaryOf(c.text)));
+  const everyClauseIsArtifact = clauses.every((c) => SHELL_ARTIFACT_BINARIES.includes(bareBuiltinOf(c.text)));
   if (!everyClauseIsArtifact) return null;
   return {
     disposition: 'fix-action',
