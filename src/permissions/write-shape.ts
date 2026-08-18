@@ -1,4 +1,5 @@
 import type { RuleKind } from './allowlist.js';
+import { MCP_WRITE_TOOLS } from './tool-classify.js';
 
 // This module is a heuristic net over a sound core (WRITE_PROBES compiled against the
 // candidate pattern), not an adversarial boundary — see the "known gap" tests in
@@ -70,25 +71,11 @@ export const WRITE_PROBES: readonly string[] = [
 ];
 
 // MCP tools that write to a system outside this machine. Same role as WRITE_PROBES: a
-// candidate MCP pattern matching any of these spans a write.
-export const MCP_WRITE_PROBES: readonly string[] = [
-  'mcp__github__merge_pull_request',
-  'mcp__github__create_pull_request',
-  'mcp__github__create_or_update_file',
-  'mcp__github__delete_file',
-  'mcp__github__push_files',
-  'mcp__claude_ai_Linear__save_issue',
-  'mcp__claude_ai_Linear__save_comment',
-  'mcp__claude_ai_Slack__slack_send_message',
-  'mcp__notion__notion-create-pages',
-  'mcp__notion__notion-update-page',
-  'mcp__grafana__update_dashboard',
-  'mcp__incident-io__incident_create',
-  // Verb-agnostic HTTP proxy to the Grafana API — reaches every Grafana write
-  // (update_dashboard, create_folder, delete_snapshot, ...) behind one tool name. Discovered
-  // during the Ship 2 audit: it cleared this lint only because nobody had probed it yet.
-  'mcp__grafana__grafana_api_request',
-];
+// candidate MCP pattern matching any of these spans a write. Derived from tool-classify.ts's
+// MCP_WRITE_TOOLS rather than hand-duplicated, so the two lists cannot silently disagree —
+// that disagreement is exactly how mcp__grafana__grafana_api_request sat unprobed until an
+// audit tripped over it by accident.
+export const MCP_WRITE_PROBES: readonly string[] = MCP_WRITE_TOOLS;
 
 // Binaries that can perform an external write given the right subcommand. A rule granting
 // one of these with nothing after it grants every subcommand, including the write ones.

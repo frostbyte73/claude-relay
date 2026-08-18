@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape, assertNotWriteShaped } from '../../src/permissions/write-shape.js';
+import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape, assertNotWriteShaped, MCP_WRITE_PROBES } from '../../src/permissions/write-shape.js';
+import { classifyTool, MCP_WRITE_TOOLS } from '../../src/permissions/tool-classify.js';
 
 const shaped = (kind: 'tool' | 'bash' | 'mcp' | 'path', v: string) =>
   classifyRuleShape(kind, v).writeShaped;
@@ -343,5 +344,15 @@ describe('MCP_WRITE_PROBES pins the Grafana proxy', () => {
   // silently re-opening the hole (see write-shape.ts's module header on that ruling).
   it('refuses a grant of the raw Grafana API request tool', () => {
     expect(() => assertNotWriteShaped('mcp', '^mcp__grafana__grafana_api_request$')).toThrow();
+  });
+});
+
+describe('the probe corpus cannot drift from the classifier', () => {
+  it('probes every MCP tool the classifier calls an external write', () => {
+    for (const t of MCP_WRITE_TOOLS) expect(MCP_WRITE_PROBES, t).toContain(t);
+  });
+
+  it('classifies every MCP probe as an external write', () => {
+    for (const p of MCP_WRITE_PROBES) expect(classifyTool(p).effect, p).toBe('external-write');
   });
 });

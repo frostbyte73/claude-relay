@@ -14,13 +14,17 @@ const emptyCfg = { alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpP
 
 describe('Allowlist — action scope', () => {
   it('action rule allows where global denies', () => {
+    // A read-shaped tool, deliberately: mcp__github__add_issue_comment is a genuine external
+    // write and assertNotWriteShaped (write-shape.ts) now refuses to add it as an ungated
+    // action-scoped rule — this test is about scope leakage, not write-gating, so it needs a
+    // fixture addRule will actually accept.
     const store = newStore();
-    store.addRule('code.triage-pr-comments', 'mcp', '^mcp__github__add_issue_comment$');
+    store.addRule('code.triage-pr-comments', 'mcp', '^mcp__github__list_issues$');
     const a = new Allowlist(emptyCfg, { actionsStore: store });
 
-    expect(a.allows('mcp__github__add_issue_comment', {}, undefined, 'code.triage-pr-comments')).toBe(true);
-    expect(a.allows('mcp__github__add_issue_comment', {}, undefined, 'meta.orchestrate')).toBe(false);
-    expect(a.allows('mcp__github__add_issue_comment', {})).toBe(false);
+    expect(a.allows('mcp__github__list_issues', {}, undefined, 'code.triage-pr-comments')).toBe(true);
+    expect(a.allows('mcp__github__list_issues', {}, undefined, 'meta.orchestrate')).toBe(false);
+    expect(a.allows('mcp__github__list_issues', {})).toBe(false);
   });
 
   it('addRule with action scope persists via the store', () => {
