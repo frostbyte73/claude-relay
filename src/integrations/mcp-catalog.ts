@@ -10,10 +10,21 @@ export interface McpTool {
 
 export type CatalogResult =
   | { server: string; status: 'ok'; tools: McpTool[] }
-  | { server: string; status: 'unreachable' | 'unauthorized' | 'unsupported' | 'timeout'; reason: string };
+  | {
+      server: string;
+      status: 'unreachable' | 'unauthorized' | 'unsupported' | 'timeout' | 'truncated';
+      reason: string;
+    };
 
 const MCP_PROBE_TIMEOUT_MS = 2500;
 const PROTOCOL_VERSION = '2024-11-05';
+// A paginating server that never stops (or a hostile one) must not be allowed to spin this
+// loop forever or grow `tools` without bound — these caps are deliberately generous for any
+// real server's tool count while still being finite. Hitting either yields `status:
+// 'truncated'` rather than `'ok'`, never a silent partial list: an under-enumerated 'ok' is
+// the exact failure this pagination fix exists to close (see mcp-catalog's Ship 3 review).
+const MCP_TOOLS_MAX_PAGES = 50;
+const MCP_TOOLS_MAX_TOTAL = 5000;
 
 interface JsonRpcResponse {
   jsonrpc?: string;
@@ -81,7 +92,7 @@ function isToolLike(v: unknown): v is { name: string; description?: unknown } {
 export async function listTools(
   server: string,
   cfg: McpServerConfig,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; maxPages?: number; maxTools?: number },
 ): Promise<CatalogResult> {
   const transport = transportOf(cfg);
   if (transport === 'stdio') {
@@ -132,31 +143,56 @@ export async function listTools(
       method: 'notifications/initialized',
     }, ac.signal);
 
-    const list = await rpcCall(url, sessionHeaders, {
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/list',
-    }, ac.signal);
+    const maxPages = opts?.maxPages ?? MCP_TOOLS_MAX_PAGES;
+    const maxTools = opts?.maxTools ?? MCP_TOOLS_MAX_TOTAL;
+    const tools: McpTool[] = [];
+    let cursor: string | undefined;
+    let page = 0;
 
-    if (list.httpStatus === 401 || list.httpStatus === 403) {
-      return { server, status: 'unauthorized', reason: `tools/list returned HTTP ${list.httpStatus}` };
-    }
-    if (!list.parsed || list.parsed.error) {
-      return {
-        server,
-        status: 'unsupported',
-        reason: list.parsed?.error?.message ?? `tools/list did not return a JSON-RPC result (HTTP ${list.httpStatus})`,
-      };
-    }
-    const result = list.parsed.result as { tools?: unknown } | undefined;
-    if (!result || !Array.isArray(result.tools)) {
-      return { server, status: 'unsupported', reason: 'tools/list result missing a tools array' };
-    }
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      page++;
+      const list = await rpcCall(url, sessionHeaders, {
+        jsonrpc: '2.0',
+        id: 1 + page,
+        method: 'tools/list',
+        ...(cursor !== undefined ? { params: { cursor } } : {}),
+      }, ac.signal);
 
-    const tools: McpTool[] = result.tools.filter(isToolLike).map((t) => (
-      typeof t.description === 'string' ? { name: t.name, description: t.description } : { name: t.name }
-    ));
-    return { server, status: 'ok', tools };
+      if (list.httpStatus === 401 || list.httpStatus === 403) {
+        return { server, status: 'unauthorized', reason: `tools/list returned HTTP ${list.httpStatus}` };
+      }
+      if (!list.parsed || list.parsed.error) {
+        return {
+          server,
+          status: 'unsupported',
+          reason: list.parsed?.error?.message ?? `tools/list did not return a JSON-RPC result (HTTP ${list.httpStatus})`,
+        };
+      }
+      const result = list.parsed.result as { tools?: unknown; nextCursor?: unknown } | undefined;
+      if (!result || !Array.isArray(result.tools)) {
+        return { server, status: 'unsupported', reason: 'tools/list result missing a tools array' };
+      }
+
+      for (const t of result.tools.filter(isToolLike)) {
+        tools.push(typeof t.description === 'string' ? { name: t.name, description: t.description } : { name: t.name });
+      }
+
+      const nextCursor = typeof result.nextCursor === 'string' && result.nextCursor.length > 0
+        ? result.nextCursor
+        : undefined;
+      if (nextCursor === undefined) {
+        return { server, status: 'ok', tools };
+      }
+      if (page >= maxPages || tools.length >= maxTools) {
+        return {
+          server,
+          status: 'truncated',
+          reason: `stopped after ${page} page(s) / ${tools.length} tool(s); server still returned a nextCursor`,
+        };
+      }
+      cursor = nextCursor;
+    }
   } catch (e) {
     if (ac.signal.aborted) {
       return { server, status: 'timeout', reason: `no response within ${timeoutMs}ms` };

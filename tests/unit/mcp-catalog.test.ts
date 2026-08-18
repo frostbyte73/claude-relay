@@ -171,4 +171,157 @@ describe('listTools', () => {
       reason: 'stdio transport — enumeration requires spawning the server',
     });
   });
+
+  it('paginates across three pages and accumulates every tool', async () => {
+    const pages = [
+      { tools: [{ name: 'get_a' }, { name: 'get_b' }], nextCursor: 'page-2' },
+      { tools: [{ name: 'get_c' }], nextCursor: 'page-3' },
+      { tools: [{ name: 'get_d' }] },
+    ];
+    let listCall = 0;
+    server = createServer(async (req, res) => {
+      const body = (await readBody(req)) as { method: string; params?: { cursor?: string } };
+      res.setHeader('content-type', 'application/json');
+      if (body.method === 'initialize') {
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
+        return;
+      }
+      if (body.method === 'notifications/initialized') {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (body.method === 'tools/list') {
+        const expectedCursor = listCall === 0 ? undefined : `page-${listCall + 1}`;
+        expect(body.params?.cursor).toBe(expectedCursor);
+        const page = pages[listCall]!;
+        listCall++;
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 2, result: page }));
+        return;
+      }
+      res.statusCode = 500;
+      res.end();
+    });
+    const url = await listen(server);
+
+    const result = await listTools('paginating', { url });
+
+    expect(listCall).toBe(3);
+    expect(result).toEqual({
+      server: 'paginating',
+      status: 'ok',
+      tools: [{ name: 'get_a' }, { name: 'get_b' }, { name: 'get_c' }, { name: 'get_d' }],
+    });
+  });
+
+  it('reports truncated rather than ok when a server paginates forever', async () => {
+    let listCall = 0;
+    server = createServer(async (req, res) => {
+      const body = (await readBody(req)) as { method: string };
+      res.setHeader('content-type', 'application/json');
+      if (body.method === 'initialize') {
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
+        return;
+      }
+      if (body.method === 'notifications/initialized') {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (body.method === 'tools/list') {
+        listCall++;
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          result: { tools: [{ name: `tool_${listCall}` }], nextCursor: `page-${listCall + 1}` },
+        }));
+        return;
+      }
+      res.statusCode = 500;
+      res.end();
+    });
+    const url = await listen(server);
+
+    const result = await listTools('infinite-vendor', { url }, { maxPages: 5 });
+
+    expect(listCall).toBe(5);
+    expect(result.status).toBe('truncated');
+    expect(result).toMatchObject({
+      server: 'infinite-vendor',
+      reason: expect.stringContaining('5 page'),
+    });
+  });
+
+  it('parses an SSE-framed tools/list response', async () => {
+    server = createServer(async (req, res) => {
+      const body = (await readBody(req)) as { method: string };
+      if (body.method === 'initialize') {
+        res.setHeader('mcp-session-id', 'sse-sess');
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} })}\n\n`);
+        return;
+      }
+      if (body.method === 'notifications/initialized') {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (body.method === 'tools/list') {
+        res.setHeader('content-type', 'text/event-stream');
+        const payload = { jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'sse_tool', description: 'via SSE' }] } };
+        res.end(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+        return;
+      }
+      res.statusCode = 500;
+      res.end();
+    });
+    const url = await listen(server);
+
+    const result = await listTools('sse-vendor', { url });
+
+    expect(result).toEqual({
+      server: 'sse-vendor',
+      status: 'ok',
+      tools: [{ name: 'sse_tool', description: 'via SSE' }],
+    });
+  });
+
+  it('degrades to unsupported on a malformed SSE body rather than throwing', async () => {
+    server = createServer((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end('event: message\ndata: {not valid json\n\n');
+    });
+    const url = await listen(server);
+
+    const result = await listTools('malformed-sse-vendor', { url });
+
+    expect(result.status).toBe('unsupported');
+  });
+
+  it('still works for a bare-JSON single-page server (no nextCursor)', async () => {
+    server = createServer(async (req, res) => {
+      const body = (await readBody(req)) as { method: string };
+      res.setHeader('content-type', 'application/json');
+      if (body.method === 'initialize') {
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
+        return;
+      }
+      if (body.method === 'notifications/initialized') {
+        res.statusCode = 202;
+        res.end();
+        return;
+      }
+      if (body.method === 'tools/list') {
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'solo' }] } }));
+        return;
+      }
+      res.statusCode = 500;
+      res.end();
+    });
+    const url = await listen(server);
+
+    const result = await listTools('single-page', { url });
+
+    expect(result).toEqual({ server: 'single-page', status: 'ok', tools: [{ name: 'solo' }] });
+  });
 });
