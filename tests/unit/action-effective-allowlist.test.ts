@@ -99,15 +99,26 @@ describe('write.add-project effective allowlist', () => {
   // the bash `mkdir` scoping — so the rule that satisfies one `mkdir -p ~/<org>` call is also
   // a standing grant for every other Write the action might ever issue. `Write:^/Users/[^/]+/`
   // (matching only on the user segment) would hand out arbitrary home-directory file writes;
-  // requiring the first character of the next segment to be alnum keeps every dotfile/dotdir
-  // path out while still covering the exact 2-segment clone-parent path (no trailing slash)
-  // this action's own `mkdir -p` documents.
-  it('the Write grant covers only the clone destination shape, never a dotfile path', () => {
+  // round 2 fixed the first segment but left every *nested* segment unconstrained
+  // (`/Users/dc/livekit/.git/hooks/post-commit` still allowed — worse than the original hole,
+  // since a writable git hook is local code execution on the next `git` operation). Every
+  // segment after `/Users/<user>` must now start alnum, and the pattern is `$`-anchored so
+  // nothing past the last checked segment can ride along unconstrained.
+  it('the Write grant covers only the clone destination shape, never a dotfile path at any depth', () => {
     expect(allowsTool('Write', { file_path: '/Users/dc/livekit' })).toBe(true);
+    expect(allowsTool('Write', { file_path: '/Users/dc/work/livekit' })).toBe(true);
     expect(allowsTool('Write', { file_path: `${DEST}/README.md` })).toBe(true);
     expect(allowsTool('Write', { file_path: '/Users/dc/.ssh/authorized_keys' })).toBe(false);
     expect(allowsTool('Write', { file_path: '/Users/dc/.zshrc' })).toBe(false);
     expect(allowsTool('Write', { file_path: '/Users/dc/.config/anything' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/.ssh/id_rsa' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/.git/hooks/post-commit' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/repo/.env' })).toBe(false);
+  });
+
+  it('still denies traversal that resolve() would collapse back into a dotfile', () => {
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/../.ssh/id_rsa' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/../../../etc/passwd' })).toBe(false);
   });
 
   it('allows every command its SKILL.md documents', () => {
