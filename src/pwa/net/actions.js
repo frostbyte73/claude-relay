@@ -17,7 +17,6 @@ export const actionsApi = {
   createNewSkill(feedback = '') { return request('/api/skills/new', { method: 'POST', body: JSON.stringify({ feedback }) }); },
   edit(name, feedback = '')     { return request(`/api/actions/${encodeURIComponent(name)}/edit`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
   editSkill(name, feedback = '') { return request(`/api/skills/${encodeURIComponent(name)}/edit`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
-  dismissDenial(name, denialId) { return request(`/api/actions/${encodeURIComponent(name)}/denials/${encodeURIComponent(denialId)}`, { method: 'DELETE' }); },
   approveProposal(sessionId)      { return request(`/api/action-edits/${encodeURIComponent(sessionId)}/approve`, { method: 'POST', body: '{}' }); },
   feedbackProposal(sessionId, feedback) { return request(`/api/action-edits/${encodeURIComponent(sessionId)}/proposal-feedback`, { method: 'POST', body: JSON.stringify({ feedback }) }); },
   cancelEdit(sessionId)           { return request(`/api/action-edits/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST', body: '{}' }); },

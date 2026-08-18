@@ -145,8 +145,7 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
    this surface's disabled treatment is the one thing .o-btn itself doesn't
    define, scoped to this surface's action containers only. */
 .lib-detail-actions .o-btn:disabled,
-.lib-edit-actions .o-btn:disabled,
-.lib-denial-row .o-btn:disabled {
+.lib-edit-actions .o-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
