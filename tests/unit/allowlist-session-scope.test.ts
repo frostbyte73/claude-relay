@@ -45,12 +45,15 @@ describe('Allowlist — session scope', () => {
 
 describe('Allowlist — removeRule', () => {
   it('removes a global rule so it no longer allows', () => {
+    // Plain placeholder command, deliberately not one of the scoped file ops
+    // (allowlist-fileop-scope.test.ts owns that behaviour) — this test is only about
+    // addRule/removeRule toggling a bash pattern.
     const a = empty();
-    a.addRule('bash', '^rm -rf ', 'global');
-    expect(a.allows('Bash', { command: 'rm -rf /tmp/x' })).toBe(true);
-    expect(a.removeRule('bash', '^rm -rf ', 'global')).toBe(true);
-    expect(a.allows('Bash', { command: 'rm -rf /tmp/x' })).toBe(false);
-    expect(a.removeRule('bash', '^rm -rf ', 'global')).toBe(false);
+    a.addRule('bash', '^echo ', 'global');
+    expect(a.allows('Bash', { command: 'echo hi' })).toBe(true);
+    expect(a.removeRule('bash', '^echo ', 'global')).toBe(true);
+    expect(a.allows('Bash', { command: 'echo hi' })).toBe(false);
+    expect(a.removeRule('bash', '^echo ', 'global')).toBe(false);
   });
 
   it('removes a project rule and re-persists the project file', () => {

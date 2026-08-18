@@ -92,7 +92,34 @@ describe('the global scope grants no write to any action', () => {
 
 describe('write.add-project effective allowlist', () => {
   const allows = effective('write.add-project');
+  const allowsTool = effectiveTool('write.add-project');
   const DEST = '/Users/dc/livekit/unified-testing';
+
+  // Ship 5 round 4: three review rounds each tried to scope a `Write:` path rule narrowly
+  // enough to cover only this action's own `mkdir -p ~/<org>` call, and each still over-granted
+  // the `Write` tool — `alwaysAllowPathPatterns` is consulted by the `Write` tool check
+  // directly, not only by the bash `mkdir` scoping, so one rule was being asked to answer two
+  // different questions ("may this directory be created" vs "may this file be written"). The
+  // fix was to drop the `Write:` rule entirely and exempt `mkdir` from `allowlist.ts`'s
+  // path-scoped command set instead (`mkdir` can't overwrite, expose, or destroy anything, and
+  // the clause is still gated by its own bash rule). This action now carries no path rule at
+  // all, so every `Write`-tool call denies, everywhere, unconditionally.
+  it('carries no Write: rule at all — the Write tool is refused everywhere', () => {
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit' })).toBe(false);
+    expect(allowsTool('Write', { file_path: `${DEST}/README.md` })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/.ssh/authorized_keys' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/.git/hooks/post-commit' })).toBe(false);
+  });
+
+  // `mkdir` is unscoped now, so its bash rule is the only gate — and that rule's own character
+  // class (`[A-Za-z0-9._]` for the first path segment) admits a leading dot. This is reported,
+  // not hidden: an unscoped `mkdir -p ~/.ssh` can bring an *empty* `.ssh` directory into
+  // existence, but creates no key, exposes nothing, and the `Write` tool still cannot put a
+  // file there (see the test above) — judged an acceptable consequence of `mkdir`'s low-damage
+  // ceiling, not a new hole.
+  it('mkdir -p ~/.ssh: allowed by the bash rule\'s own character class, and that is judged fine', () => {
+    expect(allows('mkdir -p /Users/dc/.ssh')).toBe(true);
+  });
 
   it('allows every command its SKILL.md documents', () => {
     const documented = [
@@ -1302,4 +1329,105 @@ it('every action inheriting push resolves a non-empty gated set, and no other ac
       + def.gated.alwaysAllowMcpPatterns.length;
     expect(gatedCount > 0, def.name).toBe(inheritsPush);
   }
+});
+
+// Ship 5, Task 3: the denial log showed these four `edit`-inheriting actions repeatedly
+// reaching for sed/awk/protoc/vale/turbo/lkctl/python3/docker/curl. Each was classified
+// edit-group / colocated-extra / stays-denied on its own merits — see the ship's report.
+describe('code.implement grants the long tail its own SKILL.md and denial log evidenced', () => {
+  const allows = effective('code.implement');
+
+  // Ship 2's action-confinement audit read this SKILL.md and verdicted `[read, edit]` a
+  // no-change case — it instructs no network read anywhere. The one recorded curl denial
+  // (a GitHub release-tag lookup, evidently part of the same "fetch/build a jsonnet binary"
+  // detour the /tmp/jsonnet-<hash> case above already flags as fix-the-action) is one data
+  // point, not a documented need, and `pull` is a whole group (WebFetch/WebSearch plus every
+  // read-side Linear/DataDog/GitHub/Notion/Slack/incident-io/Grafana MCP tool) to grant on
+  // that alone. Stays denied — re-open only if a future run documents an actual need.
+  it('does not gain network reads for one undocumented curl lookup', () => {
+    expect(allows('curl -sL "https://api.github.com/repos/databricks/sjsonnet/releases/tags/0.6.3"')).toBe(false);
+  });
+
+  it('runs the protoc invocation its cross-repo build actually used, narrowly enumerated', () => {
+    expect(allows('protoc --version')).toBe(true);
+    expect(allows(
+      'protoc --es_out src/gen --es_opt target=dts+js -I=../../protobufs ../../protobufs/livekit_models.proto',
+    )).toBe(true);
+  });
+
+  it('does not let protoc smuggle a plugin or an arbitrary output path', () => {
+    expect(allows('protoc --plugin=protoc-gen-evil=/tmp/evil livekit_models.proto')).toBe(false);
+    expect(allows('protoc -o /tmp/out.desc livekit_models.proto')).toBe(false);
+    expect(allows('protoc --descriptor_set_out=/tmp/out.desc livekit_models.proto')).toBe(false);
+  });
+
+  // Ship 5's final whole-branch review: --es_out/-I/--proto_path were anchored on the trailing
+  // `.proto` but the destination itself was `\S+` — free to point anywhere. `mkdir` (unscoped,
+  // Ship 5 round 4) plus an absolute --es_out is a real write path to anywhere on the machine.
+  // The evidenced call's own `-I=../../protobufs` needs relative traversal, so the fix bars an
+  // absolute destination and $/~ expansion, not `..` itself.
+  it('does not let --es_out/-I/--proto_path point at an absolute destination', () => {
+    expect(allows(
+      'protoc --es_out /Users/x/evil --es_opt target=dts+js -I=../../protobufs ../../protobufs/livekit_models.proto',
+    )).toBe(false);
+    expect(allows(
+      'protoc --es_out src/gen --es_opt target=dts+js --proto_path=/Users/x ../../protobufs/livekit_models.proto',
+    )).toBe(false);
+    expect(allows(
+      'protoc --es_out $HOME/evil --es_opt target=dts+js -I=../../protobufs ../../protobufs/livekit_models.proto',
+    )).toBe(false);
+  });
+
+  it('prints an lkctl-rendered manifest but cannot reach any other lkctl subcommand', () => {
+    expect(allows('lkctl jkube print clusters/staging/oashburn1a/kube/unified-testing.jsonnet')).toBe(true);
+    expect(allows('lkctl jkube apply clusters/staging/oashburn1a/kube/unified-testing.jsonnet')).toBe(false);
+    expect(allows('lkctl deploy staging')).toBe(false);
+  });
+
+  it('still refuses the downloaded /tmp jsonnet binary and the eval-shaped python3 the log recorded', () => {
+    expect(allows('/tmp/jsonnet-dcb7d0ff -J . -J lib/jsonnet/vendor clusters/staging/x.jsonnet')).toBe(false);
+    expect(allows('python3 -c "import re; print(1)"')).toBe(false);
+  });
+});
+
+describe('the four edit-inheriting actions get the evidenced edit-group long tail', () => {
+  const editActions = ['code.implement', 'code.fix-ci', 'code.fix-pr-comment', 'code.resolve-conflicts'];
+
+  it('reads a line range with stream-mode sed, but not in place', () => {
+    for (const name of editActions) {
+      const allows = effective(name);
+      expect(allows("sed -n '380,560p' /Users/dc/livekit/protocol/egress/types.go"), name).toBe(true);
+      expect(allows('sed -i "s/foo/bar/" /Users/dc/livekit/protocol/egress/types.go'), name).toBe(false);
+    }
+  });
+
+  it('checks the docker daemon status but cannot run a container or mount the host', () => {
+    for (const name of editActions) {
+      const allows = effective(name);
+      expect(allows('docker info'), name).toBe(true);
+      expect(allows('docker run -v /:/host alpine'), name).toBe(false);
+    }
+  });
+
+  it('still cannot reach awk, staying denied because cut already covers the evidenced use', () => {
+    for (const name of editActions) {
+      expect(effective(name)("awk -F: '{print $1}'"), name).toBe(false);
+      expect(effective(name)('cut -d: -f1'), name).toBe(true);
+    }
+  });
+
+  // fix-ci shipped a colocated `^npx tsc(\s|$)` rule (a lone, already-too-broad npx grant)
+  // that let it typecheck; the other three actions had no colocated grant at all and only
+  // reached `npx tsc --noEmit` through the old bare `^npx(\s|$)` group rule. Narrowing that
+  // group rule away would have silently regressed them — every one of these SKILL.mds says
+  // "if the repo has linting or type-checking, run that too" — so the one evidenced,
+  // fully-anchored invocation moved to the group instead of staying a fix-ci-only rule.
+  it('all four can run the one documented typecheck invocation, and nothing broader', () => {
+    for (const name of editActions) {
+      const allows = effective(name);
+      expect(allows('npx tsc --noEmit'), name).toBe(true);
+      expect(allows('npx cowsay hi'), name).toBe(false);
+      expect(allows('npx tsc --watch'), name).toBe(false);
+    }
+  });
 });

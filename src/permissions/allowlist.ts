@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRegistry } from '../actions/index.js';
 import type { ActionAllowlist } from '../actions/types.js';
-import { literalRedirectPath, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
+import { literalRedirectPath, readWordAt, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
 import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
 import { assertNotWriteShaped } from './write-shape.js';
 
@@ -198,6 +198,48 @@ function bashPatternsMatch(rules: CompiledRules, clauseText: string): boolean {
   return body === '' || rules.bashPatterns.some((p) => p.test(body));
 }
 
+// The bash verbs `edit`'s `^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\s|$)` pattern hands out with
+// no path scoping at all. `Write` and `Edit` are already confined to the session worktree (or
+// a `Write:`-style path grant); this is the same treatment for their bash equivalents.
+//
+// `mkdir` is deliberately excluded (Ship 5 round 4). It cannot overwrite an existing file,
+// expose one, or destroy one — the worst it can do unscoped is bring an empty directory into
+// existence, and the clause is still gated by whatever bash rule granted it in the first place
+// (e.g. `write.add-project`'s own `^mkdir -p[ \t]+...` pattern, which already anchors the shape
+// of path it accepts). Folding `mkdir` into this set anyway forced every action that legitimately
+// creates a directory outside its worktree to also carry a `Write:`-style path rule — but that
+// rule is the *same* one the `Write` tool check consults, so "may `mkdir` here" and "may `Write`
+// here" collapsed into one grant. Three review rounds (see the ship's report) each tried to
+// scope that one rule narrowly enough to cover only the directory-creation case and each still
+// over-granted the `Write` tool — `Write:^/Users/[^/]+/` (any home directory), then a version
+// unconstrained below its first segment (`/Users/dc/livekit/.git/hooks/post-commit` writable),
+// then one unconstrained on `/Users/Shared`, other users' homes, and unbounded repo-tree depth.
+// The mechanism, not the regex, was wrong: one path-rule vocabulary was being asked to answer two
+// different questions ("may this directory be created" vs "may this file be written"). `rmdir`
+// stays scoped — it acts on an existing directory, not the low-damage "doesn't exist yet" case.
+const SCOPED_FILE_OPS = new Set(['mv', 'cp', 'touch', 'rm', 'rmdir', 'ln', 'chmod']);
+
+// chmod's first non-flag word is a mode (`777`, `+x`, `u+rwx,go-w`), not a path — recognising
+// it is what keeps chmod usable at all once its paths are scoped. Anything that doesn't match
+// falls through to the same strict default every other argument gets: treated as a path and
+// required to be in scope.
+const CHMOD_MODE_RE = /^(?:[0-7]{1,4}|[ugoa]*[+\-=][rwxXstugo]*(?:,[ugoa]*[+\-=][rwxXstugo]*)*)$/;
+
+// A `--flag=value` word starting with `-` reads as a flag to the classifier below, which would
+// let `cp --target-directory=/etc file` smuggle a destination past it. Only worth the extra
+// look when the value has a shape a path or an unresolvable expansion would have — a bare
+// word like `--preserve=mode` is neither and isn't worth flagging.
+function looksPathLike(value: string): boolean {
+  return value.includes('/') || /^[~$`]/.test(value);
+}
+
+// A redirect operator at the current scan position, optionally preceded by a bare fd number
+// with no space (`2>`, `0<` — a space there means something else, e.g. `2 > file` is three
+// plain words). Longest-first so `<<<` doesn't read as `<<` plus a stray `<`. Input forms are
+// included (unlike `matchRedirect`, which is write-only) because this scan has to step over
+// every redirect in the clause, read or write, to keep reading the operand words after it.
+const REDIRECT_AT_START = /^([0-9]*)(<<<|<<|<&|<|&>>|&>|>>|>\||>&|>)/;
+
 function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
   if (rules.alwaysAllow.has(toolName)) return true;
   if (toolName === 'Bash') {
@@ -333,6 +375,89 @@ export class Allowlist {
     return true;
   }
 
+  // A second bar a scoped file-op clause has to clear, mirroring redirectsAllowed: `mkdir`,
+  // `mv`, `cp`, `touch`, `rm`, `rmdir`, `ln`, `chmod` are granted against any path on the
+  // machine today — `cp ~/.ssh/id_rsa /tmp/x`, `rm -rf ~/Documents`, `chmod 777 /etc/passwd`
+  // all auto-approve. Every argument that isn't confidently a flag is treated as a path and
+  // must resolve inside the session worktree or a granted Write-style path rule; getting that
+  // wrong in the permissive direction is exactly the hole this closes, so the default is strict.
+  private fileOpArgsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    const clauses = splitShellClauses(cmd);
+    if (clauses === null) return false;
+    for (const clause of clauses) {
+      const body = stripLeadingAssignments(clause.text);
+      // The command word is always readable cleanly here: bashPatternsMatch already required
+      // one of `^(mkdir|mv|…)` to match this same `body` for the clause to have gotten this
+      // far, which means it starts with a plain word, not a redirect or a metacharacter.
+      const head = readWordAt(body, 0);
+      if (!head || !SCOPED_FILE_OPS.has(head)) continue;
+      if (!this.scopedOperandsAllowed(body.slice(head.length), head, scopes, sessionWorktreePath)) return false;
+    }
+    return true;
+  }
+
+  // Walks the rest of a scoped file-op clause after its command word, classifying every token
+  // as a redirect (skipped whole — redirectsAllowed already owns write targets, and an input
+  // redirect writes nothing so neither needs scoping here), a flag, or an operand a path rule
+  // must cover. A token this scan can't account for — a process substitution standing in for a
+  // path bash would generate dynamically at runtime, or a stray shell metacharacter — denies
+  // rather than ending the scan early: treating "I could not parse this" as "there is nothing
+  // left to check" is exactly the class of bug this whole gate exists to close, one layer up.
+  private scopedOperandsAllowed(
+    rest: string, head: string, scopes: CompiledRules[], sessionWorktreePath?: string,
+  ): boolean {
+    let i = 0;
+    let sawMode = head !== 'chmod';
+    let sawDoubleDash = false;
+    while (i < rest.length) {
+      if (rest[i] === ' ' || rest[i] === '\t') { i++; continue; }
+      const redir = REDIRECT_AT_START.exec(rest.slice(i));
+      if (redir && rest[i + redir[0].length] !== '(') {
+        i += redir[0].length;
+        while (i < rest.length && (rest[i] === ' ' || rest[i] === '\t')) i++;
+        const target = readWordAt(rest, i);
+        if (!target) {
+          if (i >= rest.length) break; // nothing left after the redirect — a genuine end
+          return false; // a redirect target this scan can't read — e.g. another bare metachar
+        }
+        i += target.length;
+        continue;
+      }
+      // `<(...)`/`>(...)`: bash substitutes a dynamically generated path (`/dev/fd/N`) here,
+      // never a literal one this checker can resolve or scope — so it can't be trusted as
+      // either a flag or an in-scope operand. Deny rather than guess at where its span ends.
+      if ((rest[i] === '<' || rest[i] === '>') && rest[i + 1] === '(') return false;
+      const word = readWordAt(rest, i);
+      if (!word) return false; // a shell metacharacter this scan doesn't otherwise account for
+      i += word.length;
+      if (!sawDoubleDash && word === '--') { sawDoubleDash = true; continue; }
+      if (!sawDoubleDash && word.startsWith('-')) {
+        const eq = word.indexOf('=');
+        const value = eq >= 0 ? word.slice(eq + 1) : '';
+        if (eq < 0 || !looksPathLike(value)) continue;
+        if (!this.pathArgAllowed(value, scopes, sessionWorktreePath)) return false;
+        continue;
+      }
+      if (!sawMode) {
+        sawMode = true;
+        if (CHMOD_MODE_RE.test(word)) continue;
+      }
+      if (!this.pathArgAllowed(word, scopes, sessionWorktreePath)) return false;
+    }
+    return true;
+  }
+
+  // One argument word, resolved exactly like a redirect target: unresolvable ($VAR, $(…),
+  // backtick, ~, glob, or any relative path — the checker sees command text, never the cwd the
+  // clause will actually run in) denies before any rule is consulted; otherwise it must be
+  // under the session's own worktree or covered by a granted Write-style path rule.
+  private pathArgAllowed(word: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    const path = literalRedirectPath(word);
+    if (path === null) return false;
+    if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
+    return scopes.some((s) => rulesAllow(s, 'Write', { file_path: path }));
+  }
+
   // Why a denied Bash command was denied, in the only terms a one-click grant can answer.
   // Order matters and mirrors the gates in allows(): a target no rule could ever name is
   // fatal whatever else is wrong, so it outranks the clause that also has no rule — grant
@@ -372,6 +497,7 @@ export class Allowlist {
       // be theatre. The gate exists to stop *pattern*-matched clauses from smuggling one.
       if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
         if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+        if (!this.fileOpArgsAllowed(cmd, scopes, sessionWorktreePath)) return false;
         if (!clausesShellSafe(cmd)) return false;
       }
     }

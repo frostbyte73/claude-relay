@@ -13,13 +13,14 @@
     "alwaysAllowPathPatterns": []
   },
   "read": {
-    "description": "Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch).",
+    "description": "Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch, sed restricted to a line-range print).",
     "alwaysAllow": ["Read", "Glob", "Grep", "LS", "NotebookRead"],
     "alwaysAllowBashPatterns": [
       "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|printenv|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od)(\\s|$)",
       "^git (-C [^-\\s]\\S* )?(status|log|diff|show|blame|branch|remote -v|remote get-url|config --get|fetch|rev-parse|merge-base|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list)(\\s|$)",
       "^(rg|grep)(\\s|$)",
-      "^find(\\s|$)"
+      "^find(\\s|$)",
+      "^sed -n[ \\t]+(?:'[0-9]+,[0-9]+p'|\"[0-9]+,[0-9]+p\"|[0-9]+,[0-9]+p)[ \\t]+\\S+$"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": []
@@ -46,22 +47,27 @@
     "alwaysAllowPathPatterns": []
   },
   "edit": {
-    "description": "Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, mage/npm/go/pytest/cargo, git rebase/checkout --.",
+    "description": "Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, npm/yarn/pnpm/go/pytest/cargo/turbo, mage limited to its two evidenced targets, npx limited to the one evidenced typecheck invocation, docker limited to a status check, local git as an anchored whitelist (git rebase <ref> with no --exec/-x, git checkout -- <path>, git merge <ref>/--abort, git add -A/<path> — no -C <path> prefix, no stash/reset/restore/cherry-pick/revert/clean/switch/apply/mv/rm; none evidenced by any edit-inheriting SKILL.md, see permission-group-edit-ceiling.test.ts). node/tsx/vitest/jest/playwright/eslint/prettier/make dropped as bare grants — none had evidenced direct use, and a bare npx/make can't be anchored safely (the danger is in the target, not the command line); see permission-group-edit.test.ts.",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
-      "^mage(\\s|$)",
+      "^mage$",
+      "^mage proto$",
+      "^npx tsc --noEmit$",
       "^npm (test|run|install|ci)(\\s|$)",
       "^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)",
-      "^npx(\\s|$)",
-      "^(tsx|node|tsc|vitest|jest|playwright|eslint|prettier)(\\s|$)",
-      "^go(\\s|$)",
+      "^go (test|build|vet)(\\s|$)",
       "^(golangci-lint|gofmt|goimports)(\\s|$)",
       "^pytest(\\s|$)",
       "^(ruff|black)(\\s|$)",
       "^cargo (build|test|check|clippy|fmt)(\\s|$)",
-      "^make(\\s|$)",
+      "^turbo (format|lint|test|build)(\\s|$)",
+      "^docker info$",
       "^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\\s|$)",
-      "^git (-C [^-\\s]\\S* )?(rebase|checkout|merge|stash|add|reset|restore|cherry-pick|revert|clean|switch|apply|mv|rm)(\\s|$)"
+      "^git checkout --(?:\\s+[A-Za-z0-9_./-]+)+$",
+      "^git rebase\\s+[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "^git merge\\s+(?:--abort|[A-Za-z0-9][A-Za-z0-9._/-]*)$",
+      "^git add\\s+-A$",
+      "^git add(?:\\s+[A-Za-z0-9._/][A-Za-z0-9._/-]*)+$"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": [

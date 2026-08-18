@@ -234,10 +234,13 @@ describe('the read group cannot execute a program', () => {
 
   it('denies every arbitrary-file-write vector', () => {
     for (const c of [
-      // sed is a script language with both a write command and (GNU) an exec command.
+      // sed is a script language with both a write command and (GNU) an exec command —
+      // read grants only the narrow `-n '<num>,<num>p'` line-range shape (Ship 5), so
+      // anything else sed-shaped still denies.
       "sed -n 'w /tmp/p/c' src.txt",
       'sed -n -i "" -e "s/a/b/" /etc/hosts',
-      "sed -n '1,20p' src.txt",
+      "sed '1,20p' src.txt", // no -n: prints the range AND every other line, unenumerated
+      "sed -n '1,20,30p' src.txt",
       'sort -o /tmp/p/d src.txt',
       'sort --output=/tmp/p/d src.txt',
       'sort -uo /tmp/p/d src.txt',
@@ -287,6 +290,8 @@ describe('the read group cannot execute a program', () => {
       'find . -name "*.log" -mtime +7 -size +1M',
       'find . -type f -print0',
       'find . -name x -newer /etc/hosts -ls',
+      "sed -n '1,20p' src.txt", // Ship 5: narrow line-range read, see the deny list above
+      "sed -n '380,560p' src.txt",
       'sort -u /etc/hosts',
       'sort -rn',
       'sort -k 2,2 -t : /etc/passwd',
