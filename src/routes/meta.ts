@@ -401,69 +401,66 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.end(JSON.stringify({ rules: rows }));
   });
 
+  function scopeLabelFor(scope: PersistedRuleScope): string {
+    return scope === 'global' ? 'global'
+      : 'project' in scope ? `project=${scope.project}`
+      : `action=${scope.action}`;
+  }
+
   // Revokes a persisted grant (global, project, or action scope). Session-scoped rules are
-  // never listed here (they die with the session).
+  // never listed here (they die with the session). Allowlist.removeRule delegates to
+  // ActionsStore for action scope, so this needs no scope branch of its own.
   server.route('DELETE', '/api/allowlist/rules/:id', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/allowlist\/rules\/([A-Za-z0-9_-]+)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const decoded = decodeRuleId(m[1]!);
     if (!decoded) { res.statusCode = 400; res.end('malformed rule id'); return; }
-    if (typeof decoded.scope === 'object' && 'action' in decoded.scope) {
-      const removed = actionsStore.removeRule(decoded.scope.action, decoded.kind, decoded.value);
-      if (!removed) { res.statusCode = 404; res.end('rule not found'); return; }
-      console.log(`[api] allowlist[action=${decoded.scope.action}]: removed ${decoded.kind} rule ${JSON.stringify(decoded.value)}`);
-      res.statusCode = 200;
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
     const removed = allowlist.removeRule(decoded.kind, decoded.value, decoded.scope as RuleScope);
     if (!removed) { res.statusCode = 404; res.end('rule not found'); return; }
     if (decoded.scope === 'global') {
-      // Project-file persistence lives inside Allowlist.removeRule; the global
-      // file is owned by the daemon, so re-serialize it here (same atomic-rename
-      // shape as the POST /api/allowlist/rules handler).
+      // Project- and action-scoped persistence live inside Allowlist.removeRule /
+      // ActionsStore.removeRule; the global file is owned by the daemon, so re-serialize it
+      // here (same atomic-rename shape as the POST /api/allowlist/rules handler).
       const tmp = `${allowlistPath}.tmp`;
       writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
       renameSync(tmp, allowlistPath);
     }
-    const scopeLabel = decoded.scope === 'global' ? 'global' : `project=${(decoded.scope as { project: string }).project}`;
-    console.log(`[api] allowlist[${scopeLabel}]: removed ${decoded.kind} rule ${JSON.stringify(decoded.value)}`);
+    console.log(`[api] allowlist[${scopeLabelFor(decoded.scope)}]: removed ${decoded.kind} rule ${JSON.stringify(decoded.value)}`);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ ok: true }));
   });
 
-  // Edit-in-place for a persisted grant: lint the NEW value before touching anything, then
-  // remove-then-add on the same scope and kind. A refused edit must leave the original rule
-  // untouched, never delete it out from under the user. The id encodes the value, so a
-  // successful edit returns a NEW id; the old one 404s after.
-  function putActionRule(
-    action: string, kind: RuleKind, oldValue: string, newValue: string,
-  ): { ok: true } | { ok: false; status: number; error: string } {
-    if (!actionsStore.removeRule(action, kind, oldValue)) {
-      return { ok: false, status: 404, error: 'rule not found' };
-    }
-    try {
-      actionsStore.addRule(action, kind, newValue);
-    } catch (e) {
-      actionsStore.addRule(action, kind, oldValue);
-      return { ok: false, status: 400, error: `invalid pattern: ${(e as Error).message}` };
-    }
-    console.log(`[api] allowlist[action=${action}]: edited ${kind} rule ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
-    return { ok: true };
+  function fieldForKind(kind: RuleKind): keyof AllowlistConfig {
+    return kind === 'tool' ? 'alwaysAllow'
+      : kind === 'bash' ? 'alwaysAllowBashPatterns'
+      : kind === 'mcp' ? 'alwaysAllowMcpPatterns'
+      : 'alwaysAllowPathPatterns';
   }
 
-  function putGlobalOrProjectRule(
-    scope: RuleScope, kind: RuleKind, oldValue: string, newValue: string,
+  function existingValuesFor(scope: PersistedRuleScope, kind: RuleKind): string[] {
+    const cfg = typeof scope === 'object' && 'action' in scope
+      ? actionsStore.get(scope.action).allowlist
+      : allowlist.toConfig(scope as 'global' | { project: string });
+    return (cfg[fieldForKind(kind)] ?? []) as string[];
+  }
+
+  // Edit-in-place for a persisted grant: remove-then-add on the same scope and kind, via the
+  // same Allowlist facade the DELETE route uses (so action scope is no special case here
+  // either). A refused edit must leave the original rule untouched, never delete it out from
+  // under the user — callers must lint (and check for a same-kind collision) BEFORE calling
+  // this. The id encodes the value, so a successful edit returns a NEW id; the old one 404s.
+  function applyRuleEdit(
+    scope: PersistedRuleScope, kind: RuleKind, oldValue: string, newValue: string,
   ): { ok: true } | { ok: false; status: number; error: string } {
-    if (!allowlist.removeRule(kind, oldValue, scope)) {
+    const ruleScope = scope as RuleScope;
+    if (!allowlist.removeRule(kind, oldValue, ruleScope)) {
       return { ok: false, status: 404, error: 'rule not found' };
     }
     try {
-      allowlist.addRule(kind, newValue, scope);
+      allowlist.addRule(kind, newValue, ruleScope);
     } catch (e) {
-      allowlist.addRule(kind, oldValue, scope);
+      allowlist.addRule(kind, oldValue, ruleScope);
       return { ok: false, status: 400, error: `invalid pattern: ${(e as Error).message}` };
     }
     if (scope === 'global') {
@@ -471,8 +468,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
       renameSync(tmp, allowlistPath);
     }
-    const scopeLabel = scope === 'global' ? 'global' : `project=${(scope as { project: string }).project}`;
-    console.log(`[api] allowlist[${scopeLabel}]: edited ${kind} rule ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
+    console.log(`[api] allowlist[${scopeLabelFor(scope)}]: edited ${kind} rule ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
     return { ok: true };
   }
 
@@ -488,14 +484,17 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       res.statusCode = 400; res.end('body must be { value: <1..500 char string> }'); return;
     }
     if (value === decoded.value) { res.statusCode = 400; res.end('no change'); return; }
+    // A collision with another rule of the same kind/scope would make removeRule+addRule
+    // silently merge two rules into one — refuse it rather than reporting a merge as an edit.
+    if (existingValuesFor(decoded.scope, decoded.kind).includes(value)) {
+      res.statusCode = 400; res.end('a rule with this value already exists for this scope and kind'); return;
+    }
 
     // Lint BEFORE any removal: a refused edit must be a no-op, not a deletion.
     const lint = lintPermissionRule(decoded.kind, value, false);
     if (!lint.ok) { res.statusCode = 400; res.end(lint.reason ?? 'rule refused'); return; }
 
-    const result = typeof decoded.scope === 'object' && 'action' in decoded.scope
-      ? putActionRule(decoded.scope.action, decoded.kind, decoded.value, value)
-      : putGlobalOrProjectRule(decoded.scope as RuleScope, decoded.kind, decoded.value, value);
+    const result = applyRuleEdit(decoded.scope, decoded.kind, decoded.value, value);
     if (!result.ok) { res.statusCode = result.status; res.end(result.error); return; }
 
     const newId = encodeRuleId(decoded.kind, value, decoded.scope);
@@ -663,40 +662,37 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   server.route('POST', '/api/mcp/catalog/apply', handlePostMcpCatalogApply);
 
   // The recorded tool input is what a user reads to judge a denial's verdict — the suggested
-  // rule alone doesn't say what actually ran. Truncated so one oversized payload (a giant
-  // --body-file draft, say) can't blow up this route's response.
-  function truncatedDenialCommand(toolName: string, toolInput: unknown): string {
+  // rule alone doesn't say what actually ran. `null` is a distinct, honest answer from an empty
+  // or one-word command: it tells the client the payload isn't there to show, rather than
+  // shipping a value (`toolName` alone, or a stray `"undefined"`) indistinguishable from a real
+  // single-word command. Truncated so one oversized payload can't blow up this route's response.
+  function truncatedDenialCommand(toolName: string, toolInput: unknown): string | null {
+    if (toolName === 'Bash') {
+      const cmd = (toolInput as { command?: unknown } | null | undefined)?.command;
+      return typeof cmd === 'string' ? cmd.slice(0, 200) : null;
+    }
+    if (toolInput === undefined) return null;
     try {
-      if (toolName === 'Bash') {
-        const cmd = (toolInput as { command?: unknown } | null)?.command;
-        if (typeof cmd === 'string') return cmd.slice(0, 200);
-      }
-      return JSON.stringify(toolInput).slice(0, 200);
+      const json = JSON.stringify(toolInput);
+      return typeof json === 'string' ? json.slice(0, 200) : null;
     } catch {
-      return toolName;
+      return null;
     }
   }
 
-  interface PendingMcpEntry { server: string; unclassified: number }
   interface PendingDenialEntry {
-    action: string; id: string; tool: string; command: string;
+    action: string; id: string; tool: string; command: string | null;
     suggested: { kind: string; value: string } | null; count: number; at: number;
   }
 
-  // Composes two endpoints' worth of "needs a decision" into one, cross-action payload — counts
-  // only for MCP (the client deep-links to GET /api/mcp/catalog for the per-tool detail, which
-  // does the expensive part: this route reuses the same listTools/proposeForServer probes, but
-  // ships only a count per server instead of every placement) and every unresolved denial across
-  // every action (there is no other endpoint that isn't scoped to one action at a time).
-  async function handleGetPermissionsPending(_req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const merged = mergeMcpServers(mcpConfigPath);
-    const mcp: PendingMcpEntry[] = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
-      const result = await listTools(name, cfg);
-      const proposal = proposeForServer(result, permissionGroups);
-      const unclassified = proposal.placements.filter((p) => p.group === null).length;
-      return { server: name, unclassified };
-    }));
-
+  // Every unresolved denial across every action, in one cross-action payload — there's no
+  // other endpoint that isn't scoped to one action at a time. Deliberately does NOT fold in
+  // GET /api/mcp/catalog's unclassified-tool counts: that route's `listTools` does a live
+  // network probe per configured server (up to MCP_PROBE_TIMEOUT_MS each on a hung one), and
+  // this route's whole reason to exist is a fast, synchronous first paint for the Permissions
+  // page. The MCP panel calls /api/mcp/catalog itself, on its own schedule, so a slow or
+  // unreachable server only ever delays that one panel — never this one, and never denials.
+  function handleGetPermissionsPending(_req: IncomingMessage, res: ServerResponse): void {
     const denials: PendingDenialEntry[] = [];
     for (const action of Object.keys(denialsStore.all())) {
       for (const d of denialsStore.unresolved(action)) {
@@ -711,7 +707,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
 
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ mcp, denials }));
+    res.end(JSON.stringify({ denials }));
   }
 
   server.route('GET', '/api/permissions/pending', handleGetPermissionsPending);

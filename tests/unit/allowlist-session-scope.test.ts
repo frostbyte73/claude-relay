@@ -3,6 +3,7 @@ import { mkdtempSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Allowlist } from '../../src/permissions/allowlist.js';
+import { ActionsStore } from '../../src/storage/actions-store.js';
 import { encodeRuleId, decodeRuleId } from '../../src/routes/meta.js';
 
 function empty(): Allowlist {
@@ -81,9 +82,23 @@ describe('Allowlist — removeRule', () => {
     expect(a.allows('Bash', { command: 'first thing' })).toBe(false);
   });
 
-  it('refuses action scope (managed via the action editor)', () => {
-    const a = empty();
+  // F4 fix round: removeRule now delegates action scope to ActionsStore.removeRule (which
+  // exists — the old comment predated it), the same way addRule already delegates addition.
+  it('delegates action scope to ActionsStore', () => {
+    const store = new ActionsStore(join(mkdtempSync(join(tmpdir(), 'al-rm-action-')), 'actions.json'));
+    const a = new Allowlist(
+      { alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [] },
+      { actionsStore: store },
+    );
+    a.addRule('tool', 'X', { action: 'read.investigate' });
+    expect(a.removeRule('tool', 'X', { action: 'read.investigate' })).toBe(true);
+    expect(store.get('read.investigate').allowlist.alwaysAllow).not.toContain('X');
     expect(a.removeRule('tool', 'X', { action: 'read.investigate' })).toBe(false);
+  });
+
+  it('throws for action scope with no actionsStore configured, same as addRule', () => {
+    const a = empty();
+    expect(() => a.removeRule('tool', 'X', { action: 'read.investigate' })).toThrow(/actionsStore/);
   });
 });
 

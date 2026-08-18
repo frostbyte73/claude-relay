@@ -3,7 +3,6 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { createServer, type IncomingMessage as HttpIncomingMessage, type Server as HttpServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { registerMetaRoutes, type MetaRoutesDeps } from '../../src/routes/meta.js';
 import type { Server } from '../../src/server.js';
@@ -11,42 +10,6 @@ import { ActionRegistry } from '../../src/actions/index.js';
 import type { PermissionGroupMap } from '../../src/actions/types.js';
 import { PermissionGroupRevisionsStore } from '../../src/storage/permission-group-revisions-store.js';
 import { DenialsStore, type ActionDenial } from '../../src/storage/denials-store.js';
-import { freePort } from '../e2e/harness/port.js';
-
-// --- minimal MCP server, same handshake as mcp-onboarding-route.test.ts ---
-
-function readReqBody(req: HttpIncomingMessage): Promise<{ method: string }> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', (c) => (raw += c));
-    req.on('end', () => {
-      try { resolve(JSON.parse(raw)); } catch (e) { reject(e); }
-    });
-  });
-}
-
-async function listenMcp(tools: Array<{ name: string; description?: string }>): Promise<{ server: HttpServer; url: string }> {
-  const server = createServer(async (req, res) => {
-    const body = await readReqBody(req);
-    res.setHeader('content-type', 'application/json');
-    if (body.method === 'initialize') { res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} })); return; }
-    if (body.method === 'notifications/initialized') { res.statusCode = 202; res.end(); return; }
-    if (body.method === 'tools/list') { res.end(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools } })); return; }
-    res.statusCode = 500;
-    res.end();
-  });
-  const port = await freePort();
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
-  return { server, url: `http://127.0.0.1:${port}/mcp` };
-}
-
-// A read tool (classifies to pull) and a tool with no classifiable effect at all — no vendor
-// write-verb match, no description hinting a mutation — so it lands as `group: null`, i.e.
-// "unclassified" from a human's perspective.
-const MIXED_TOOLS = [
-  { name: 'get_widget', description: 'Fetch a widget' },
-  { name: 'frobnicate', description: 'does a thing to the thing' },
-];
 
 interface Captured { status: number; body: string }
 
@@ -76,8 +39,7 @@ let permissionGroups: PermissionGroupMap;
 let registry: ActionRegistry;
 let revisions: PermissionGroupRevisionsStore;
 let denialsStore: DenialsStore;
-let getPending: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
-let mcpServer: HttpServer | undefined;
+let getPending: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void;
 
 function writeMcpConfig(servers: Record<string, { url: string }>): void {
   writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: servers }));
@@ -94,7 +56,7 @@ function mountRoutes(): void {
     actionRegistry: registry, permissionGroups, permissionGroupsPath: groupsPath,
     groupRevisions: revisions, mcpConfigPath, denialsStore,
   } as MetaRoutesDeps);
-  getPending = routes.get('GET /api/permissions/pending')! as (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+  getPending = routes.get('GET /api/permissions/pending')!;
 }
 
 function recordDenial(overrides: Partial<Parameters<DenialsStore['record']>[0]> = {}): ActionDenial {
@@ -114,7 +76,9 @@ beforeEach(() => {
   mkdirSync(actionsDir, { recursive: true });
   mcpConfigPath = join(root, 'daemon-mcp.json');
   groupsPath = join(root, 'permission-groups.json');
-  writeMcpConfig({});
+  // A server that accepts the connection and never replies — MCP_PROBE_TIMEOUT_MS (2.5s) if
+  // this route ever touches it. Present in every test to prove the route ignores it outright.
+  writeMcpConfig({ hung: { url: 'http://127.0.0.1:1/mcp' } });
 
   homeDir = mkdtempSync(join(tmpdir(), 'outpost-permissions-pending-home-'));
   originalHome = process.env.HOME;
@@ -132,8 +96,7 @@ beforeEach(() => {
   mountRoutes();
 });
 
-afterEach(async () => {
-  if (mcpServer) { await new Promise<void>((resolve) => mcpServer!.close(() => resolve())); mcpServer = undefined; }
+afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
   rmSync(root, { recursive: true, force: true });
   rmSync(homeDir, { recursive: true, force: true });
@@ -167,22 +130,20 @@ describe('GET /api/permissions/pending', () => {
     expect(body.denials.find((d) => d.id === d3.id)!.action).toBe('write.other');
   });
 
-  it('reports unclassified MCP counts without blocking on a probe that fails', async () => {
-    const listening = await listenMcp(MIXED_TOOLS);
-    mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url }, ghost: { url: 'http://127.0.0.1:1/mcp' } });
-    mountRoutes();
-
+  // F1 fix round: this route used to re-run GET /api/mcp/catalog's live `tools/list` probes
+  // (up to MCP_PROBE_TIMEOUT_MS per hung server) just to ship a count. It must now answer
+  // instantly and carry no `mcp` field at all — the MCP panel calls /api/mcp/catalog itself.
+  it('never touches the network — answers fast with no mcp field, even with an unreachable server configured', async () => {
+    const started = Date.now();
     const { res, out } = fakeRes();
     await getPending(fakeReq('/api/permissions/pending'), res);
+    const elapsed = Date.now() - started;
 
     expect(out.status).toBe(200);
-    const body = JSON.parse(out.body) as { mcp: Array<{ server: string; unclassified: number }> };
-    const acme = body.mcp.find((s) => s.server === 'acme');
-    expect(acme?.unclassified).toBe(1); // 'frobnicate' has no classifiable effect
-
-    const ghost = body.mcp.find((s) => s.server === 'ghost');
-    expect(ghost === undefined || ghost.unclassified === 0).toBe(true);
+    expect(elapsed).toBeLessThan(200);
+    const body = JSON.parse(out.body) as Record<string, unknown>;
+    expect(body.mcp).toBeUndefined();
+    expect(Array.isArray(body.denials)).toBe(true);
   });
 
   it('truncates a long command rather than shipping the whole payload', async () => {
@@ -192,8 +153,26 @@ describe('GET /api/permissions/pending', () => {
     await getPending(fakeReq('/api/permissions/pending'), res);
 
     expect(out.status).toBe(200);
-    const body = JSON.parse(out.body) as { denials: Array<{ command: string }> };
+    const body = JSON.parse(out.body) as { denials: Array<{ command: string | null }> };
     expect(body.denials).toHaveLength(1);
-    expect(body.denials[0]!.command.length).toBeLessThanOrEqual(200);
+    expect(body.denials[0]!.command).not.toBeNull();
+    expect(body.denials[0]!.command!.length).toBeLessThanOrEqual(200);
+  });
+
+  // F2 fix round: a missing/unusable payload used to come back as the literal string "Bash" —
+  // indistinguishable from a genuine one-word command. It must now be `null` so the client can
+  // tell the user the payload isn't available, rather than showing a plausible lie.
+  it('reports a missing tool-input payload as null, not the tool name', async () => {
+    recordDenial({ toolName: 'Bash', toolInput: undefined });
+    recordDenial({ actionName: 'read.other', toolName: 'SomeTool', toolInput: undefined });
+
+    const { res, out } = fakeRes();
+    await getPending(fakeReq('/api/permissions/pending'), res);
+
+    expect(out.status).toBe(200);
+    const body = JSON.parse(out.body) as { denials: Array<{ tool: string; command: string | null }> };
+    for (const d of body.denials) {
+      expect(d.command).toBeNull();
+    }
   });
 });

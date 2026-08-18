@@ -127,6 +127,23 @@ describe('PUT /api/allowlist/rules/:id', () => {
     expect(out.status).toBe(400);
     expect(out.body).toMatch(/no change/);
   });
+
+  // F3 fix round: editing one rule onto a value that ANOTHER rule of the same kind/scope
+  // already holds used to silently delete the target's original entry (remove-then-add just
+  // merged the two) while reporting 200 — a narrowing, but a lie about what happened.
+  it('refuses an edit that collides with another rule of the same kind, rather than silently merging them', async () => {
+    seedGlobalConfig({ alwaysAllowBashPatterns: ['^ls(\\s|$)', '^cat(\\s|$)'] });
+    const id = encodeRuleId('bash', '^ls(\\s|$)', 'global');
+    mountRoutes();
+
+    const { res, out } = fakeRes();
+    await putRule(fakeReq(`/api/allowlist/rules/${id}`, 'PUT', { value: '^cat(\\s|$)' }), res);
+
+    expect(out.status).toBe(400);
+    expect(allowlist.toConfig('global').alwaysAllowBashPatterns).toEqual(['^ls(\\s|$)', '^cat(\\s|$)']);
+    const onDisk = JSON.parse(readFileSync(allowlistPath, 'utf8')) as AllowlistConfig;
+    expect(onDisk.alwaysAllowBashPatterns).toEqual(['^ls(\\s|$)', '^cat(\\s|$)']);
+  });
 });
 
 describe('DELETE /api/allowlist/rules/:id (action scope)', () => {

@@ -555,9 +555,8 @@ export class Allowlist {
   // Returns false when the rule wasn't present.
   removeRule(kind: RuleKind, value: string, scope: RuleScope = 'global'): boolean {
     if (typeof scope === 'object' && 'action' in scope) {
-      // Action-scoped rules persist via ActionsStore, which has no removal API yet —
-      // they're managed through the action editor flow instead.
-      return false;
+      if (!this.actionsStore) throw new Error('action scope requires actionsStore');
+      return this.actionsStore.removeRule(scope.action, kind, value);
     }
     const target = scope === 'global' ? this.global
       : 'session' in scope ? this.sessionRules.get(scope.session)
