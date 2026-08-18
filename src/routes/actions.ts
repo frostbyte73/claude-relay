@@ -16,6 +16,7 @@ import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denia
 import type { Allowlist } from '../permissions/allowlist.js';
 import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
 import { classifyBashCommand } from '../permissions/tool-classify.js';
+import { splitShellClauses } from '../permissions/shell-split.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import {
   forgetEdit, loadPersistedEdits, persistEdit,
@@ -51,20 +52,25 @@ export interface ActionsRoutesDeps {
 const DEFAULT_SCORECARD_WINDOW = '30d';
 
 // Shell builtins/non-commands a denied Bash call's suggested rule can name — never a real
-// binary. Kept as an exact enumerated set (not derived from tool-classify's own BUILTINS_UNKNOWN,
-// which also carries `source`/`set`) because this list is what silently removes a denial from
-// human and improver review, and Ship 6's brief is explicit about which eight qualify.
-const SHELL_ARTIFACT_BINARIES: readonly string[] = [
-  'cd', 'env', 'export', 'if', 'true', 'func', 'command', 'echo',
-];
+// binary. `env`, `command` and `if` are deliberately absent even though `classifyClause`
+// (tool-classify.ts) also calls them `unknown`: all three are wrappers that take a REAL
+// command in the same clause (`env FOO=1 curl -X POST …`, `command rm -rf …`,
+// `if curl -X POST … ; then …`) and `classifyClause` only inspects the first token, so it never
+// sees what follows. Routing those to fix-action would silently drop a genuine permission gap
+// with no trace (Ship 6 Ruling P3) — this is a Task 2 gate fix, not a Ship 3 classifier fix,
+// because widening `classifyClause` to look past the first token is a different change with a
+// different blast radius. The remaining five cannot carry a following command into the same
+// clause.
+const SHELL_ARTIFACT_BINARIES: readonly string[] = ['cd', 'export', 'true', 'func', 'echo'];
 
 // A denied Bash call this shape stamps `fix-action` immediately at record time: malformed
 // shell or an action reaching for a builtin is never a permission gap, so it shouldn't consume
-// a review cycle. Deliberately conservative on both axes — the suggested rule must name one of
-// the enumerated builtins/artifacts AND the whole command must classify `unknown` (a compound
-// command like `cd /tmp && curl -X POST …` classifies as the worse `external-write` and is left
-// alone) — because a wrong hit here silently drops a real permission gap from the improvement
-// pack with no user-visible trace.
+// a review cycle. Three gates, all conservative: the suggested rule must name one of the
+// enumerated builtins/artifacts; the whole command must classify `unknown` (a compound command
+// like `cd /tmp && curl -X POST …` classifies as the worse `external-write` and is left alone);
+// and no clause anywhere in the command may carry a file-creating redirect — `echo x > /etc/passwd`
+// or `true > some/file` classify `unknown` too (classifyClause never looks at redirects), but are
+// real local writes, not artifacts.
 export function shellArtifactVerdict(
   toolName: string,
   toolInput: unknown,
@@ -75,6 +81,8 @@ export function shellArtifactVerdict(
   const binary = SHELL_ARTIFACT_BINARIES.find((b) => suggested.value === `^${b}(\\s|$)`);
   if (!binary) return null;
   const cmd = (toolInput as { command?: string } | null)?.command ?? '';
+  const clauses = splitShellClauses(cmd);
+  if (!clauses || clauses.some((c) => c.writeTargets.length > 0)) return null;
   if (classifyBashCommand(cmd).effect !== 'unknown') return null;
   return {
     disposition: 'fix-action',

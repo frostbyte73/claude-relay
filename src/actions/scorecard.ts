@@ -82,6 +82,7 @@ export function buildScorecard(
   const windowMs = opts.windowMs ?? null;
   const cutoff = windowMs === null ? -Infinity : opts.now - windowMs;
   const inWindow = rows.filter((r) => r.startedAt >= cutoff).sort((a, b) => b.startedAt - a.startedAt);
+  const unresolvedDenials = denials.filter((d) => !d.verdict);
 
   const outcomes = emptyOutcomes();
   for (const r of inWindow) if (r.outcome) outcomes[r.outcome] += 1;
@@ -108,9 +109,11 @@ export function buildScorecard(
     duration: { avgMs: mean(durations), p50Ms: median(durations) },
     cost: { totalUsd: costed.reduce((a, b) => a + b, 0), avgUsd: mean(costed) },
     denials: {
-      total: denials.reduce((a, d) => a + d.count, 0),
-      distinct: denials.length,
-      top: [...denials]
+      // A verdicted denial is resolved — counting it here would make the scorecard disagree
+      // with the improvement pack's `denials` list (Task 3), which already excludes them.
+      total: unresolvedDenials.reduce((a, d) => a + d.count, 0),
+      distinct: unresolvedDenials.length,
+      top: [...unresolvedDenials]
         .sort((a, b) => b.count - a.count)
         .slice(0, 5)
         .map(({ toolName, suggested, count }) => ({ toolName, suggested, count })),
