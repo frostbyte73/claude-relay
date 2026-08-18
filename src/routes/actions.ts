@@ -16,7 +16,7 @@ import type { ActionRunsStore } from '../storage/action-runs-store.js';
 import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denials-store.js';
 import type { Allowlist, RuleKind } from '../permissions/allowlist.js';
 import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
-import { classifyBashCommand } from '../permissions/tool-classify.js';
+import { binaryOf, classifyClause } from '../permissions/tool-classify.js';
 import { splitShellClauses } from '../permissions/shell-split.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
 import type { GroupApplier } from './meta.js';
@@ -73,11 +73,19 @@ const SHELL_ARTIFACT_BINARIES: readonly string[] = ['cd', 'export', 'true', 'fun
 
 // A denied Bash call this shape stamps `fix-action` immediately at record time: malformed
 // shell or an action reaching for a builtin is never a permission gap, so it shouldn't consume
-// a review cycle. Three gates, all conservative: the suggested rule must name one of the
-// enumerated builtins/artifacts; the whole command must classify `unknown` (a compound command
-// like `cd /tmp && curl -X POST …` classifies as the worse `external-write` and is left alone);
-// and no clause anywhere in the command may carry a file-creating redirect — `echo x > /etc/passwd`
-// or `true > some/file` classify `unknown` too (classifyClause never looks at redirects), but are
+// a review cycle. Four gates, all conservative: the suggested rule must name one of the
+// enumerated builtins/artifacts; EVERY clause in the command must independently classify as
+// `read` or as one of the enumerated builtins/artifacts — this used to be a whole-command
+// maximum (`classifyBashCommand(cmd).effect !== 'unknown'`), on the theory that a compound like
+// `cd /tmp && curl -X POST …` classifies as the worse `external-write` and is caught. That's
+// true only for binaries the tables happen to recognise: an unrecognized binary also classifies
+// `unknown` (tool-classify.ts's default case), the SAME severity as a shell builtin, so
+// `cd /repo && ./deploy.sh --prod` or `cd … && protoc …` never raised the maximum above
+// `unknown` and auto-routed anyway, silently filing a genuine permission gap. `classifyClause`
+// returning `unknown` means "I could not tell", not "harmless", so a single clause it doesn't
+// recognise as an enumerated artifact must block auto-routing, not pass it; and no clause
+// anywhere in the command may carry a file-creating redirect — `echo x > /etc/passwd` or
+// `true > some/file` classify `unknown` too (classifyClause never looks at redirects), but are
 // real local writes, not artifacts.
 export function shellArtifactVerdict(
   toolName: string,
@@ -90,8 +98,13 @@ export function shellArtifactVerdict(
   if (!binary) return null;
   const cmd = (toolInput as { command?: string } | null)?.command ?? '';
   const clauses = splitShellClauses(cmd);
-  if (!clauses || clauses.some((c) => c.writeTargets.length > 0)) return null;
-  if (classifyBashCommand(cmd).effect !== 'unknown') return null;
+  if (!clauses || clauses.length === 0 || clauses.some((c) => c.writeTargets.length > 0)) return null;
+  const everyClauseIsSafe = clauses.every((c) => {
+    const verdict = classifyClause(c.text);
+    if (verdict.effect === 'read') return true;
+    return verdict.effect === 'unknown' && SHELL_ARTIFACT_BINARIES.includes(binaryOf(c.text));
+  });
+  if (!everyClauseIsSafe) return null;
   return {
     disposition: 'fix-action',
     decidedBy: 'improver',
@@ -560,31 +573,6 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // An action with no recorded runs answers 200 with a zeroed card, not 404 — a
   // freshly-created action should render "no runs yet", not an error.
   server.route('GET', '/api/actions/:name/scorecard', handleScorecard);
-
-  // Dismiss a single denial entry (after the user adds the rule, or just ignores it).
-  server.route('DELETE', '/api/actions/:name/denials/:denialId', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials\/([^/?]+)/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const name = decodeURIComponent(m[1]!);
-    const denialId = decodeURIComponent(m[2]!);
-    if (denialsStore.dismiss(name, denialId)) {
-      try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
-    }
-    res.statusCode = 204;
-    res.end();
-  });
-
-  // Clear all denials for an action at once.
-  server.route('DELETE', '/api/actions/:name/denials', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials(?:\?|$)/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const name = decodeURIComponent(m[1]!);
-    if (denialsStore.clear(name)) {
-      try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
-    }
-    res.statusCode = 204;
-    res.end();
-  });
 
   // Record a verdict on a denial — `never`/`fix-action` just record; `promote` applies the
   // rule through applyGroup (see resolveDenialVerdict). This is the only endpoint that can

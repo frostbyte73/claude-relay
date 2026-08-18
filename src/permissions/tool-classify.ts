@@ -413,12 +413,15 @@ function firstToken(text: string): string {
   return m ? m[1]! : '';
 }
 
-function binaryOf(text: string): string {
+// Exported so a caller that needs to reason clause-by-clause (rather than take
+// classifyBashCommand's whole-command maximum) can tell an artifact clause from a genuinely
+// unrecognized binary — both classify `unknown`, but only one of them is safe to auto-route.
+export function binaryOf(text: string): string {
   const tok = firstToken(text);
   return tok.split('/').pop() ?? tok;
 }
 
-function classifyClause(text: string): ToolVerdict {
+export function classifyClause(text: string): ToolVerdict {
   const toks = text.trim().split(/\s+/);
   const binary = binaryOf(text);
 

@@ -110,23 +110,6 @@ export class DenialsStore {
     return true;
   }
 
-  dismiss(action: string, id: string): boolean {
-    const list = this.byAction.get(action);
-    if (!list) return false;
-    const next = list.filter((d) => d.id !== id);
-    if (next.length === list.length) return false;
-    if (next.length === 0) this.byAction.delete(action);
-    else this.byAction.set(action, next);
-    this.persist();
-    return true;
-  }
-
-  clear(action: string): boolean {
-    if (!this.byAction.delete(action)) return false;
-    this.persist();
-    return true;
-  }
-
   private persist(): void {
     atomicWrite(this.path, JSON.stringify({ byAction: Object.fromEntries(this.byAction) }, null, 2) + '\n');
   }

@@ -69,9 +69,36 @@ describe('shellArtifactVerdict', () => {
     expect(v).toBeNull();
   });
 
+  // These are stopped by gate 2 (none of these binaries is in SHELL_ARTIFACT_BINARIES) before
+  // classification is ever consulted — see the compound shapes below for the case that actually
+  // exercises the classification gate.
   for (const binary of ['sed', 'protoc', 'git', 'gh', 'kubectl']) {
     it(`does NOT auto-verdict for a real binary (${binary})`, () => {
       const v = shellArtifactVerdict('Bash', { command: `${binary} something` }, bashRule(binary), AT);
+      expect(v).toBeNull();
+    });
+  }
+
+  // The real shape a compound command takes: the FIRST clause is a genuine artifact (so gate 2
+  // passes on the suggested rule) and a LATER clause is an unrecognized real binary. Both
+  // classify `unknown` (tool-classify.ts gives an unrecognized binary the same severity as a
+  // shell builtin), so classifyBashCommand's whole-command maximum never rises above `unknown`
+  // and used to let all of these through — the exact bug a previous round shipped for `env`.
+  const compoundRealBinaries: Array<[string, string, string]> = [
+    ['cd', 'cd /repo && ./deploy.sh --prod', 'unrecognized deploy script'],
+    ['cd', 'cd /repo && ansible-playbook prod.yml', 'unrecognized ansible-playbook'],
+    ['echo', 'echo start; ./release.sh', 'unrecognized release script'],
+    ['export', 'export FOO=1 && ./push-to-prod', 'unrecognized push script'],
+    [
+      'cd',
+      'cd /w/packages/javascript && PATH=$PATH:/x protoc --es_out ./gen ./a.proto',
+      'the live protoc shape',
+    ],
+  ];
+
+  for (const [binary, cmd, label] of compoundRealBinaries) {
+    it(`does NOT auto-verdict a real binary riding behind ${binary} (${label})`, () => {
+      const v = shellArtifactVerdict('Bash', { command: cmd }, bashRule(binary), AT);
       expect(v).toBeNull();
     });
   }
