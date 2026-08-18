@@ -140,6 +140,37 @@ describe('proposeForServer — reconciling against existing grants', () => {
     expect(p.ungatedElsewhere).toBeUndefined();
     expect(proposal.rules).toHaveLength(0);
   });
+
+  it('a write tool granted only by push has no ungatedElsewhere (nothing non-gated leaks it)', () => {
+    const groups: PermissionGroupMap = {
+      pull: emptyGroup(),
+      push: { ...emptyGroup(), alwaysAllowMcpPatterns: ['^mcp__github__(merge_pull_request)$'] },
+    };
+    const proposal = proposeForServer(ok('github', [{ name: 'merge_pull_request' }]), groups);
+    const p = proposal.placements[0]!;
+    expect(p).toMatchObject({ effect: 'external-write', group: 'push', alreadyGranted: true });
+    expect(p.ungatedElsewhere).toBeUndefined();
+    expect(proposal.rules).toHaveLength(0);
+  });
+
+  // ungatedElsewhere must be computed independently of alreadyGranted: push ALSO covering the
+  // write says nothing about whether it's ALSO reachable ungated through another group, and a
+  // write reachable both ways is worse than one reachable only ungated — the gate creates an
+  // appearance of control that the other group quietly bypasses. Guarding ungatedElsewhere on
+  // `!alreadyGranted` would hide exactly this case.
+  it('a write tool granted by BOTH pull and push is alreadyGranted true AND still reports ungatedElsewhere', () => {
+    const groups: PermissionGroupMap = {
+      pull: { ...emptyGroup(), alwaysAllowMcpPatterns: ['^mcp__github__(merge_pull_request)$'] },
+      push: { ...emptyGroup(), alwaysAllowMcpPatterns: ['^mcp__github__(merge_pull_request)$'] },
+    };
+    const proposal = proposeForServer(ok('github', [{ name: 'merge_pull_request' }]), groups);
+    const p = proposal.placements[0]!;
+    expect(p).toMatchObject({
+      effect: 'external-write', group: 'push', alreadyGranted: true, ungatedElsewhere: 'pull',
+    });
+    // push already covers it, so no new rule is proposed despite the ungated leak being flagged.
+    expect(proposal.rules).toHaveLength(0);
+  });
 });
 
 describe('proposeForServer — rule shape', () => {

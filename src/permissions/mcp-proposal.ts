@@ -109,9 +109,12 @@ export function proposeForServer(result: CatalogResult, groups: PermissionGroupM
     }
 
     const alreadyGranted = isGrantedByGroup(fullName, groups[group]);
-    const ungatedElsewhere = !alreadyGranted && group === 'push'
-      ? findUngatedGrantingGroup(fullName, groups, group)
-      : undefined;
+    // Independent of alreadyGranted on purpose: whether push ALSO covers this write says
+    // nothing about whether it's ALSO reachable through a non-gated group. A write gated by
+    // push but also reachable ungated via pull is strictly worse than one reachable only
+    // ungated — the gate here creates an appearance of control that pull quietly bypasses —
+    // so short-circuiting on push's own coverage would hide exactly that case.
+    const ungatedElsewhere = group === 'push' ? findUngatedGrantingGroup(fullName, groups, group) : undefined;
     return {
       tool: fullName,
       effect: verdict.effect,
