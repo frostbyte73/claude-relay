@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { lintPermissionRule } from '../permissions/write-shape.js';
 
 export interface ResolutionRecord {
   cwd: string;
@@ -98,15 +99,24 @@ export class RecurrenceTracker {
     else if (counts.last7d >= TRIGGER_7D) { triggerWindow = '7d'; matchCount = counts.last7d; }
     if (!triggerWindow) return null;
 
-    if (toolName === 'Bash') {
-      const cmd = (toolInput as { command?: string })?.command;
-      const re = typeof cmd === 'string' ? deriveBashRegex(cmd) : null;
-      if (!re) return null;
-      return { kind: 'bash', suggestedValue: re, matchCount, triggerWindow };
-    }
-    if (toolName.startsWith('mcp__')) {
-      return { kind: 'mcp', suggestedValue: `^${toolName}$`, matchCount, triggerWindow };
-    }
-    return { kind: 'tool', suggestedValue: toolName, matchCount, triggerWindow };
+    const suggestion = ((): Suggestion | null => {
+      if (toolName === 'Bash') {
+        const cmd = (toolInput as { command?: string })?.command;
+        const re = typeof cmd === 'string' ? deriveBashRegex(cmd) : null;
+        if (!re) return null;
+        return { kind: 'bash', suggestedValue: re, matchCount, triggerWindow };
+      }
+      if (toolName.startsWith('mcp__')) {
+        return { kind: 'mcp', suggestedValue: `^${toolName}$`, matchCount, triggerWindow };
+      }
+      return { kind: 'tool', suggestedValue: toolName, matchCount, triggerWindow };
+    })();
+    if (!suggestion) return null;
+
+    // A rule `addRule` would refuse can never be installed — offering it anyway is what
+    // surfaced as "Promotion failed — try again" with no explanation. This suggestion always
+    // targets a non-gated destination, so `gated: false` here is not a guess.
+    if (!lintPermissionRule(suggestion.kind, suggestion.suggestedValue, false).ok) return null;
+    return suggestion;
   }
 }

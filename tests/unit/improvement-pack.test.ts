@@ -244,10 +244,27 @@ describe('buildImprovementPack', () => {
     expect(pack.previousReview).toEqual({ at: NOW - 3 * HOUR, rationale: 'all clean' });
   });
 
-  it('drops one-off denials and keeps recurring ones', () => {
-    const d = deps({ denialsFor: () => [denial({ id: 'once', count: 1 }), denial({ id: 'again', count: 5 })] });
+  it('includes a one-off denial in the pack, newest first', () => {
+    // Pack contents and election ask different questions (see selectActionToImprove —
+    // ignores a one-off denial, above): a single denial can't elect an action for review, but
+    // once an action is already being reviewed it belongs in the evidence.
+    const d = deps({
+      denialsFor: () => [
+        denial({ id: 'once', count: 1, at: NOW - HOUR }),
+        denial({ id: 'again', count: 5, at: NOW - 2 * HOUR }),
+      ],
+    });
     const pack = buildImprovementPack('read.investigate', d);
-    expect(pack.denials.map((x) => x.count)).toEqual([5]);
+    expect(pack.denials.map((x) => x.id)).toEqual(['once', 'again']);
+  });
+
+  it('caps the denials list and states the cap rather than truncating silently', () => {
+    const many = Array.from({ length: 25 }, (_, i) => denial({ id: `d${i}`, count: 1, at: NOW - i * HOUR }));
+    const pack = buildImprovementPack('read.investigate', deps({ denialsFor: () => many }));
+    expect(pack.denials).toHaveLength(20);
+    expect(pack.denials[0]).toMatchObject({ id: 'd0' });
+    expect(pack.denialsCap).toBe(20);
+    expect(pack.denialsTotal).toBe(25);
   });
 
   it('excludes a verdicted denial and carries the id of an unresolved one', () => {
