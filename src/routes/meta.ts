@@ -8,9 +8,7 @@ import type { ActionRegistry } from '../actions/index.js';
 import { GATED_GROUPS } from '../actions/registry.js';
 import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import { Allowlist, type AllowlistConfig, type RuleKind, type RuleScope } from '../permissions/allowlist.js';
-import {
-  classifyHttpWriteShape, classifyInterpreterShape, classifyRuleShape,
-} from '../permissions/write-shape.js';
+import { lintPermissionRule } from '../permissions/write-shape.js';
 import type { GroupAuthor, PermissionGroupRevisionsStore } from '../storage/permission-group-revisions-store.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
@@ -147,20 +145,12 @@ export function validateGroupUpdate(name: string, group: PermissionGroup): Group
     ...(group.alwaysAllowPathPatterns ?? []).map((v) => ['path', v] as [RuleKind, string]),
   ];
   for (const [kind, value] of entries) {
-    const interp = classifyInterpreterShape(kind, value);
-    if (interp.writeShaped) return { ok: false, error: `${value}: ${interp.reason}` };
-    for (const shape of [classifyRuleShape(kind, value), classifyHttpWriteShape(kind, value)]) {
-      if (!shape.writeShaped) continue;
-      if (shape.reason.includes('does not compile')) {
-        return { ok: false, error: `${value}: ${shape.reason}` };
-      }
-      if (!gated) {
-        return {
-          ok: false,
-          error: `${value}: ${shape.reason} — a write rule may only live in a gated group `
-            + `(${[...GATED_GROUPS].join(', ')})`,
-        };
-      }
+    const verdict = lintPermissionRule(kind, value, gated);
+    if (!verdict.ok) {
+      const suffix = verdict.ungatedWrite
+        ? ` — a write rule may only live in a gated group (${[...GATED_GROUPS].join(', ')})`
+        : '';
+      return { ok: false, error: `${value}: ${verdict.reason}${suffix}` };
     }
   }
   return { ok: true };

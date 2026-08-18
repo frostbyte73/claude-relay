@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape } from '../../src/permissions/write-shape.js';
+import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape, assertNotWriteShaped } from '../../src/permissions/write-shape.js';
 
 const shaped = (kind: 'tool' | 'bash' | 'mcp' | 'path', v: string) =>
   classifyRuleShape(kind, v).writeShaped;
@@ -334,5 +334,14 @@ describe('classifyHttpWriteShape', () => {
       '^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|'
       + 'workflow view|workflow list|repo view|issue view|issue list|search|release view|'
       + 'release list|label list|cache list|browse)(\\s|$)')).toBe(false);
+  });
+});
+
+describe('MCP_WRITE_PROBES pins the Grafana proxy', () => {
+  // Verb-agnostic HTTP proxy to the Grafana API — reaches every Grafana write behind one
+  // tool name. Pin it so deleting the MCP_WRITE_PROBES entry fails this test rather than
+  // silently re-opening the hole (see write-shape.ts's module header on that ruling).
+  it('refuses a grant of the raw Grafana API request tool', () => {
+    expect(() => assertNotWriteShaped('mcp', '^mcp__grafana__grafana_api_request$')).toThrow();
   });
 });

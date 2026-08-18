@@ -286,19 +286,27 @@ export class Allowlist {
 
   // Every rule set that applies to this call, in no particular order — the checks
   // below are an OR across them.
+  //
+  // An action's declared permission groups are the whole of what it may do. Global and
+  // project scope accumulate from interactive approvals, which no action participated in
+  // and no action's frontmatter declares — consulting them silently widens every action
+  // past its own declaration. Session scope stays: it is explicitly granted in-session and
+  // dies with it.
   private scopesFor(projectCwd?: string, actionName?: string, sessionId?: string): CompiledRules[] {
-    const scopes: CompiledRules[] = [this.global];
-    if (projectCwd) scopes.push(this.loadProject(projectCwd));
-    if (sessionId) {
-      const rules = this.sessionRules.get(sessionId);
-      if (rules) scopes.push(rules);
-    }
+    const scopes: CompiledRules[] = [];
     if (actionName) {
       // Bundled action defaults come first (colocated allowlist.json under actions/).
       const action = this.actionRegistry?.getAction(actionName);
       if (action) scopes.push(compileFromConfig(action.allowlist));
       // Then hot-added user overrides (~/.outpost/actions.json).
       if (this.actionsStore) scopes.push(compileFromConfig(this.actionsStore.get(actionName).allowlist));
+    } else {
+      scopes.push(this.global);
+      if (projectCwd) scopes.push(this.loadProject(projectCwd));
+    }
+    if (sessionId) {
+      const rules = this.sessionRules.get(sessionId);
+      if (rules) scopes.push(rules);
     }
     return scopes;
   }
