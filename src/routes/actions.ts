@@ -12,9 +12,10 @@ import { actionDirFor, ACTION_CATEGORIES } from '../actions/registry.js';
 import { buildScorecard } from '../actions/scorecard.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRunsStore } from '../storage/action-runs-store.js';
-import type { ActionDenial, DenialsStore } from '../storage/denials-store.js';
+import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denials-store.js';
 import type { Allowlist } from '../permissions/allowlist.js';
-import { suggestRule } from '../permissions/denial-suggestion.js';
+import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
+import { classifyBashCommand } from '../permissions/tool-classify.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import {
   forgetEdit, loadPersistedEdits, persistEdit,
@@ -48,6 +49,40 @@ export interface ActionsRoutesDeps {
 }
 
 const DEFAULT_SCORECARD_WINDOW = '30d';
+
+// Shell builtins/non-commands a denied Bash call's suggested rule can name — never a real
+// binary. Kept as an exact enumerated set (not derived from tool-classify's own BUILTINS_UNKNOWN,
+// which also carries `source`/`set`) because this list is what silently removes a denial from
+// human and improver review, and Ship 6's brief is explicit about which eight qualify.
+const SHELL_ARTIFACT_BINARIES: readonly string[] = [
+  'cd', 'env', 'export', 'if', 'true', 'func', 'command', 'echo',
+];
+
+// A denied Bash call this shape stamps `fix-action` immediately at record time: malformed
+// shell or an action reaching for a builtin is never a permission gap, so it shouldn't consume
+// a review cycle. Deliberately conservative on both axes — the suggested rule must name one of
+// the enumerated builtins/artifacts AND the whole command must classify `unknown` (a compound
+// command like `cd /tmp && curl -X POST …` classifies as the worse `external-write` and is left
+// alone) — because a wrong hit here silently drops a real permission gap from the improvement
+// pack with no user-visible trace.
+export function shellArtifactVerdict(
+  toolName: string,
+  toolInput: unknown,
+  suggested: RuleSuggestion,
+  decidedAt: number,
+): DenialVerdict | null {
+  if (toolName !== 'Bash' || suggested.kind !== 'bash') return null;
+  const binary = SHELL_ARTIFACT_BINARIES.find((b) => suggested.value === `^${b}(\\s|$)`);
+  if (!binary) return null;
+  const cmd = (toolInput as { command?: string } | null)?.command ?? '';
+  if (classifyBashCommand(cmd).effect !== 'unknown') return null;
+  return {
+    disposition: 'fix-action',
+    decidedBy: 'improver',
+    reason: `"${binary}" is a shell builtin/artifact, not a permission gap — fix the action's command instead of granting it`,
+    decidedAt,
+  };
+}
 
 // Hook-facing handlers the daemon wires into HookServer/MCP after this factory
 // runs. The action-edit + denial state they close over lives here so the whole
@@ -254,6 +289,10 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       actionName, sessionId, toolName, toolInput, suggested,
       runId: actionRunLedger.noteDenial(sessionId),
     });
+    if (!denial.verdict) {
+      const autoVerdict = shellArtifactVerdict(toolName, toolInput, suggested, Date.now());
+      if (autoVerdict) denialsStore.setVerdict(actionName, denial.id, autoVerdict);
+    }
     console.log(`[deny] ${actionName} ${toolName} → suggest ${suggested.kind}:${suggested.value} (count ${denial.count})`);
     try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
   };
