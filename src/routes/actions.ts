@@ -188,6 +188,33 @@ export function resolveDenialVerdict(
   return { ok: true, status: 200, denial };
 }
 
+// Installs an approved proposal's allowlistAdds — except when `author` is 'improver'. That
+// mechanism installs an action-scoped rule, which bypasses the group editor's
+// destination-gating, lint, and revision history a denial verdict goes through; the
+// improvement loop's own SKILL.md now says it has no legitimate use there (Ship 6). A
+// write-shaped rule is still refused for every author by `assertNotWriteShaped` (via
+// `actionsStore.addRule`, unchanged); this only declines the non-write-shaped remainder,
+// specifically for the improvement loop, since "wrong destination" is wrong even when it
+// isn't a security hole. A user-authored proposal is unaffected. Exported standalone so it's
+// testable against a real ActionsStore without a Server.
+export function applyAllowlistAdds(
+  actionsStore: Pick<ActionsStore, 'addRule'>,
+  author: ActionAuthor,
+  actionName: string,
+  rules: ActionProposal['allowlistAdds'] | undefined,
+): ActionProposal['allowlistAdds'] {
+  const applied: ActionProposal['allowlistAdds'] = [];
+  for (const rule of rules ?? []) {
+    if (author === 'improver') {
+      console.warn(`[action-edit] skipping improver-proposed allowlistAdds ${rule.kind}=${rule.value}: use a denial verdict instead`);
+      continue;
+    }
+    try { if (actionsStore.addRule(actionName, rule.kind, rule.value)) applied.push(rule); }
+    catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
+  }
+  return applied;
+}
+
 // Hook-facing handlers the daemon wires into HookServer/MCP after this factory
 // runs. The action-edit + denial state they close over lives here so the whole
 // action-authoring surface is one module rather than scattered across daemon.ts.
@@ -717,11 +744,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       // Rules land before the write so the revision can record exactly which ones were new:
       // addRule answers false for a duplicate, and only genuinely-new rules are safe for a
       // later revert to remove.
-      const allowlistAdds: ActionProposal['allowlistAdds'] = [];
-      for (const rule of proposal.allowlistAdds ?? []) {
-        try { if (actionsStore.addRule(name, rule.kind, rule.value)) allowlistAdds.push(rule); }
-        catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
-      }
+      const allowlistAdds = applyAllowlistAdds(actionsStore, author, name, proposal.allowlistAdds);
       actionRevisionsStore.applyWrite({
         action: name,
         dir,
