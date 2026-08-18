@@ -16,6 +16,7 @@ import type { WorktreeManager } from '../git/worktree-manager.js';
 import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import { readJsonObject } from './util.js';
+import { readMcpServersFile, transportOf, type McpServerConfig } from '../integrations/mcp-config.js';
 
 export interface MetaRoutesDeps {
   actionRegistry: ActionRegistry;
@@ -84,28 +85,6 @@ function isEmptyConfig(cfg: AllowlistConfig): boolean {
     && cfg.alwaysAllowBashPatterns.length === 0
     && cfg.alwaysAllowMcpPatterns.length === 0
     && (cfg.alwaysAllowPathPatterns ?? []).length === 0;
-}
-
-interface McpServerConfig {
-  type?: string;
-  url?: string;
-  command?: string;
-  headers?: Record<string, string>;
-}
-
-function readMcpServersFile(path: string): Record<string, McpServerConfig> {
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as { mcpServers?: Record<string, McpServerConfig> };
-    return raw.mcpServers ?? {};
-  } catch {
-    return {};
-  }
-}
-
-function transportOf(cfg: McpServerConfig): 'http' | 'sse' | 'stdio' {
-  if (cfg.type === 'sse') return 'sse';
-  if (cfg.type === 'stdio' || (!cfg.url && !!cfg.command)) return 'stdio';
-  return 'http';
 }
 
 const MCP_PROBE_TIMEOUT_MS = 2500;
