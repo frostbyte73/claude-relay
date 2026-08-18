@@ -44,12 +44,17 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 
 ## Step 2 — Merge the base branch
 
-The base is `origin/main` unless `boundNote` names a different one:
+The base is `origin/main` unless `boundNote` names a different one — write whichever ref
+applies **literally** into the `git merge` command below, in place of `origin/main`. Never
+store it in a shell variable and pass that to `git merge` (e.g. `BASE=...; git merge "$BASE"`):
+the allowlist only recognizes a literal ref in the command text, a shell variable's value is
+opaque to it, and `boundNote` is not a trusted constant — a flag-shaped override (`-s ours`,
+`--no-verify`, `-Xtheirs`) is parsed by git as a merge option rather than a ref, and quoting
+the variable does not stop that.
 
 ```bash
-BASE=origin/main    # override only if boundNote says so
-git fetch origin    # skip this line if boundNote named a LOCAL branch — nothing to fetch
-git merge "$BASE"
+git fetch origin        # skip this line if the base is a LOCAL branch — nothing to fetch
+git merge origin/main   # replace `origin/main` here with the literal ref, if boundNote names one
 ```
 
 - **Merge succeeds cleanly:** go to Step 3.

@@ -149,4 +149,21 @@ describe('the edit group git rule is an anchored whitelist, not a verb prefix', 
       'git merge --abort',
     ]) expect(allows(c), c).toBe(true);
   });
+
+  // Re-review, round 3: a rule was briefly widened to also accept a quoted shell variable
+  // (`"$BASE"`) so code.resolve-conflicts's old SKILL.md text could stay unchanged. Live
+  // testing showed that was the actual hole, not a narrower version of it — bash quoting
+  // stops word-splitting, not git's own flag recognition, so `BASE="-s ours"` (or
+  // `--no-verify`, `-Xtheirs`) reaches `git merge` as an option every bit as much unquoted
+  // as quoted. `boundNote` can set `BASE` to anything, so it is not a trusted constant. The
+  // fix is in the SKILL.md, not the allowlist: the base ref is now written literally into
+  // the command, never carried through a variable, so nothing the allowlist cannot see ever
+  // reaches `git merge`. These pin that no variable form is reachable, quoted or not.
+  it('never accepts a shell variable as the merge ref, quoted or bare', () => {
+    for (const c of [
+      'git merge "$BASE"',
+      "git merge '$BASE'",
+      'git merge $BASE',
+    ]) expect(allows(c), c).toBe(false);
+  });
 });

@@ -20,12 +20,13 @@ const CASES: Array<[string, string]> = [
   ['code.post-pr-review', 'gh api --method POST "repos/{owner}/{repo}/pulls/12/reviews" --input /tmp/outpost-review-12.json'],
   ['code.reply-pr-comments', 'gh api "repos/{owner}/{repo}/pulls/12/comments" --paginate --jq \'.[] | "\\(.node_id)"\''],
   ['code.reply-pr-comments', 'gh pr comment 12 --body-file /tmp/outpost-reply-9.md'],
-  ['code.resolve-conflicts', 'BASE=origin/main'],
-  // A trailing comment is not part of the command the shell runs.
-  ['code.resolve-conflicts', 'BASE=origin/main    # override only if boundNote says so'],
   ['code.fix-ci', 'gh pr checks 12 --watch=false  # one shot, no polling'],
   ['code.resolve-conflicts', 'git fetch origin'],
-  ['code.resolve-conflicts', 'git merge "$BASE"'],
+  // Ship 5 re-review: the SKILL.md was rewritten to write the base ref literally into the
+  // merge command rather than through a shell variable — `git merge "$BASE"` let a
+  // flag-shaped `boundNote` override (`-s ours`, `-Xtheirs`) reach git as a merge option,
+  // which quoting the variable does nothing to stop. This is the corrected literal form.
+  ['code.resolve-conflicts', 'git merge origin/main'],
   ['code.submit-pr-verdict', 'gh pr review 12 --approve --body-file /tmp/outpost-verdict-12.md'],
   ['write.add-project', 'gh repo clone acme/example /Users/dc/acme/example'],
   ['write.add-project', 'git clone https://github.com/acme/example.git /Users/dc/acme/example'],
