@@ -16,6 +16,10 @@ import { MCP_WRITE_TOOLS } from './tool-classify.js';
 export interface ShapeVerdict {
   writeShaped: boolean;
   reason: string;
+  // The rule is malformed rather than merely broad — it does not compile, or it isn't shaped
+  // like a rule of its kind at all. A gated group is a home for a write, not for a rule that
+  // silently grants nothing, so `lintPermissionRule` refuses these regardless of gating.
+  structural?: boolean;
 }
 
 // Real external writes, several lifted verbatim from denials the Allow button offered to
@@ -137,6 +141,126 @@ function compile(pattern: string): RegExp | null {
   try { return new RegExp(pattern); } catch { return null; }
 }
 
+// Path-scoped tools whose grant authorises a file write. A `Read:`/`Glob:`/`Grep:` pattern
+// grants no write however broad it is, so confinement is not this lint's business there —
+// refusing those would break `read` without closing anything.
+const PATH_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+]);
+
+// The roots a path rule may confine a write to. A whitelist rather than a structural rule
+// (absolute, ends at a `/`, two segments deep, ...) because every such rule reads `/Users/`
+// and `/tmp/` as the same shape, and only one of them is scratch. Writes anywhere else are
+// reachable without a rule at all — a session's own worktree auto-allows via session scope
+// (see `allows()` in allowlist.ts) — so the rule vocabulary needs no spelling for them.
+// `/private/...` spellings are accepted because rules are hand-written and macOS answers to
+// both, even though `canonicalPath` normalises the probe onto the short form.
+const WRITE_SAFE_ROOTS: readonly string[] = [
+  '/tmp/', '/private/tmp/', '/var/tmp/', '/private/var/tmp/',
+  '/var/folders/', '/private/var/folders/',
+];
+
+// A `..` segment in the pattern text, escaped (`\.\.`, a literal traversal) or not (`..`, two
+// wildcard characters that read as one). Neither actually escapes the root — `canonicalPath`
+// collapses the probe before any rule sees it, so a literal `..` matches nothing and a
+// wildcard `..` stays under the prefix — but both mean the author is reading the pattern as a
+// path rather than a regex, and that misreading is what the confinement judgement rests on.
+const TRAVERSAL_SEGMENT = /(?:^|\/)\\?\.\\?\.(?:\/|$)/;
+
+// A `|` outside every group and character class turns the pattern into "either side matches",
+// and only the left side carries the literal prefix — `^/tmp/|/` is confined to nothing.
+// Alternation *inside* a group (`^/tmp/(a|b)`) can only narrow what the prefix already pins.
+function hasTopLevelAlternation(rest: string): boolean {
+  let depth = 0;
+  let inClass = false;
+  let i = 0;
+  while (i < rest.length) {
+    const c = rest[i]!;
+    if (c === '\\') { i += 2; continue; }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      i++;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    else if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '|' && depth <= 0) return true;
+    i++;
+  }
+  return false;
+}
+
+// Whether the pattern's matched set is confined to a scratch root. The whole judgement rests
+// on the literal prefix being a *mandatory* prefix of every match, which holds only while
+// nothing past it can broaden the set: a quantifier can make the prefix's own last character
+// optional (`^/tmp/?` matches `/tmpevil/x`), and a top-level `|` discards the prefix outright.
+// Everything else past the prefix — groups, classes, `$` — can only narrow, so a tail is fine
+// once the prefix ends at a directory boundary. A prefix that stops mid-segment is refused
+// whatever follows it: `^/tmp(?:/[^/]+)+$` reads as confined and `^/tmp(?:x|/a)` does not, and
+// deciding which is which means interpreting the tail rather than the prefix.
+function pathPrefixConfined(tool: string, pattern: string): ShapeVerdict {
+  const refuse = (reason: string): ShapeVerdict => ({ writeShaped: true, reason: `${tool} rule ${reason}` });
+
+  const lit = literalPrefix(pattern);
+  if (lit === null) {
+    return refuse('is not `^`-anchored, so it matches anywhere in the path — `Write:/tmp/` '
+      + 'admits `/Users/you/tmp/`; anchor it and name the root');
+  }
+  const rest = pattern.slice(lit.end);
+  const next = rest[0];
+  if (next === '?' || next === '*' || next === '{') {
+    return refuse('ends its literal prefix with a quantifier, which makes that character '
+      + 'optional — `^/tmp/?` admits `/tmpevil/x`');
+  }
+  if (hasTopLevelAlternation(rest)) {
+    return refuse('has a top-level `|`, so the anchored prefix constrains only one branch');
+  }
+
+  const prefix = lit.prefix;
+  if (!prefix.startsWith('/')) {
+    return refuse('does not begin at an absolute path, so it pins no root');
+  }
+  if (TRAVERSAL_SEGMENT.test(pattern)) {
+    return refuse('contains a `..` segment — write it as the path it resolves to');
+  }
+  if (!prefix.endsWith('/')) {
+    return refuse('has a literal prefix that stops mid-segment (`' + prefix + '`) — end it at a '
+      + '`/` so the directory it confines to is the one it names');
+  }
+  if (!WRITE_SAFE_ROOTS.some((root) => prefix.startsWith(root))) {
+    return refuse(`grants writes under \`${prefix}\`, which is not a scratch root `
+      + `(${WRITE_SAFE_ROOTS.join(', ')}) — a session already writes its own worktree without a rule`);
+  }
+  return { writeShaped: false, reason: '' };
+}
+
+// A path rule is `<ToolName>:<regex>`, matched against the tool call's path argument. The
+// question here is not the bash lint's ("does this pattern span a known write?") but "does
+// this pattern's matched set escape the scratch roots?" — a `Write:` grant is a write no
+// matter which path it names, so a probe corpus has nothing to say about it.
+export function classifyPathShape(value: string): ShapeVerdict {
+  const idx = value.indexOf(':');
+  if (idx <= 0 || idx === value.length - 1) {
+    return {
+      writeShaped: true,
+      structural: true,
+      reason: `path rule must be shaped \`<ToolName>:<regex>\`: ${value}`,
+    };
+  }
+  const tool = value.slice(0, idx);
+  const pattern = value.slice(idx + 1);
+  if (compile(pattern) === null) {
+    return {
+      writeShaped: true,
+      structural: true,
+      reason: `pattern does not compile as a regex: ${pattern}`,
+    };
+  }
+  if (!PATH_WRITE_TOOLS.has(tool)) return { writeShaped: false, reason: '' };
+  return pathPrefixConfined(tool, pattern);
+}
+
 export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind === 'tool') {
     // A whole-tool Bash grant is every external write at once — gatedMatch already treats
@@ -146,11 +270,11 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
       : { writeShaped: false, reason: '' };
   }
 
-  if (kind === 'path') return { writeShaped: false, reason: '' };
+  if (kind === 'path') return classifyPathShape(value);
 
   const re = compile(value);
   if (!re) {
-    return { writeShaped: true, reason: `pattern does not compile as a regex: ${value}` };
+    return { writeShaped: true, structural: true, reason: `pattern does not compile as a regex: ${value}` };
   }
 
   const probes = kind === 'mcp' ? MCP_WRITE_PROBES : WRITE_PROBES;
@@ -375,7 +499,7 @@ export function lintPermissionRule(kind: RuleKind, value: string, gated: boolean
   if (interp.writeShaped) return { ok: false, reason: interp.reason };
   for (const shape of [classifyRuleShape(kind, value), classifyHttpWriteShape(kind, value)]) {
     if (!shape.writeShaped) continue;
-    if (shape.reason.includes('does not compile')) return { ok: false, reason: shape.reason };
+    if (shape.structural) return { ok: false, reason: shape.reason };
     if (!gated) return { ok: false, reason: shape.reason, ungatedWrite: true };
   }
   return { ok: true };

@@ -119,6 +119,7 @@ export class ActionRegistry {
     for (const v of extras.alwaysAllow) assertNotWriteShaped('tool', v);
     for (const v of extras.alwaysAllowBashPatterns) assertNotWriteShaped('bash', v);
     for (const v of extras.alwaysAllowMcpPatterns) assertNotWriteShaped('mcp', v);
+    for (const v of extras.alwaysAllowPathPatterns) assertNotWriteShaped('path', v);
     const { allowlist, gated } = this.resolvePermissions(fm, extras);
 
     return {

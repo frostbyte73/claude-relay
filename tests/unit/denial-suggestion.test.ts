@@ -42,11 +42,22 @@ describe('suggestRule — Bash', () => {
 
   it('suggests the write grant only once the command itself would pass', () => {
     const al = checker();
-    const s = bash(al, 'cat /etc/hosts > /var/log/outpost.log');
-    expect(s).toEqual({ kind: 'path', value: 'Write:^/var/log/' });
+    const s = bash(al, 'cat /etc/hosts > /var/tmp/outpost.log');
+    expect(s).toEqual({ kind: 'path', value: 'Write:^/var/tmp/' });
 
     al.addRule('path', s.value);
-    expect(al.allows('Bash', { command: 'cat /etc/hosts > /var/log/outpost.log' })).toBe(true);
+    expect(al.allows('Bash', { command: 'cat /etc/hosts > /var/tmp/outpost.log' })).toBe(true);
+  });
+
+  it('suggests a write grant the path lint will refuse to persist', () => {
+    // The suggestion answers "what rule would unblock this", which is not the same question as
+    // "may that rule exist" — a `Write:` grant outside a scratch root is refused at every
+    // ungated scope (write-shape.ts). Both halves are wanted: the denial record still names
+    // the missing grant, and the verdict route lints it before anything is written.
+    const al = checker();
+    const s = bash(al, 'cat /etc/hosts > /var/log/outpost.log');
+    expect(s).toEqual({ kind: 'path', value: 'Write:^/var/log/' });
+    expect(() => al.addRule('path', s.value)).toThrow(/scratch root/);
   });
 
   it('offers nothing for a redirect target no grant can name', () => {
