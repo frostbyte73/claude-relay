@@ -9,34 +9,17 @@
   padding: var(--gap-6) var(--detail-pad-x) var(--detail-pad-bottom);
 }
 
-.cockpit-hdr {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: var(--gap-2);
-}
-.cockpit-greeting {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 22px;
-  letter-spacing: -0.01em;
-  color: var(--text);
-}
-.cockpit-date {
-  font-size: 12px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.cockpit-sub {
-  margin-bottom: var(--gap-6);
+/* An empty inbox is the expected state most of the time — one quiet line, not a
+   stack of "nothing here" boxes. */
+.cockpit-quiet {
+  padding: var(--gap-6) 0;
   font-size: 13px;
   color: var(--text-mute);
 }
 
 .cockpit-group { margin-bottom: var(--gap-6); }
+.cockpit-group.collapsed .cockpit-group-body { display: none; }
+.cockpit-group.collapsed .o-group-hdr { cursor: pointer; }
 .cockpit-group:last-child { margin-bottom: 0; }
 
 .cockpit-empty {
@@ -49,18 +32,4 @@
   text-align: center;
 }
 
-/* Pill tone variants used by vm/cockpit.js that primitives.css's shared set
-   doesn't cover (primitives ships review/warn/investigate/pr/ok/danger/code —
-   cockpit is the only P2 consumer of these extra tones, so they live here
-   rather than growing the shared file). "action"/"kind" intentionally fall
-   through to .o-pill's neutral default. */
-.o-pill.gate   { background: var(--warn-soft);     color: var(--warn); }
-.o-pill.accent { background: var(--accent-soft);   color: var(--accent); }
-.o-pill.purple { background: var(--accent-2-soft); color: var(--accent-2); }
-
-/* Mobile: the shell's list-root header (mobile-shell/header.js's
-   renderListRoot) already shows the greeting + "N need you · N running" —
-   this surface's own .cockpit-hdr/.cockpit-sub would just repeat it. */
-html[data-layout="mobile"] .cockpit-hdr,
-html[data-layout="mobile"] .cockpit-sub { display: none; }
 html[data-layout="mobile"] .cockpit-group:first-child { margin-top: 0; }

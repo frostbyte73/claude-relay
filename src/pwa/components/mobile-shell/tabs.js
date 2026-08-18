@@ -4,7 +4,10 @@
 
 import { approvals } from '../../state/approvals.js';
 import { work } from '../../state/work.js';
-import { cockpitGroups } from '../../vm/cockpit.js';
+import { actions } from '../../state/actions.js';
+import { schedulesStore } from '../../state/schedules.js';
+import { runs } from '../../state/runs.js';
+import { cockpitInbox } from '../../vm/cockpit.js';
 
 export const PRIMARY_SURFACES = ['cockpit', 'tracked', 'sessions', 'schedules'];
 export const MORE_SURFACES = ['skills', 'runs', 'settings'];
@@ -26,14 +29,19 @@ export function tabForSurface(surface) {
   return 'cockpit';
 }
 
-// Cockpit tab badge: same "waiting on you" count the Cockpit surface itself
-// leads with — one derivation (vm/cockpit.js), two presentations (badge vs.
-// group header).
+// Cockpit tab badge: everything the Cockpit surface itself counts as needing the
+// user — one derivation (vm/cockpit.js), two presentations (badge vs. section
+// headers). It must be fed the SAME stores the surface reads, or the badge
+// silently under-reports exactly the items with no other notification (a pending
+// action proposal is the whole reason the surface exists).
 export function waitingOnYouCount() {
-  const groups = cockpitGroups({
+  const inbox = cockpitInbox({
     pendingApprovals: approvals.get().pending,
     jobs: work.get().jobs,
+    actionEdits: actions.get().edits,
+    scheduleDrafts: schedulesStore.get().draftBySession,
+    runs: runs.get().runs,
     now: Date.now(),
   });
-  return groups.waiting.length;
+  return inbox.decide.length + inbox.broken.length;
 }

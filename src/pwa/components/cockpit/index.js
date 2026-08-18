@@ -1,36 +1,34 @@
-// Cockpit surface (main-only layout) — the home/triage view. Renders the four
-// fixed-order groups from vm/cockpit.js fed by approvals + work + sessions +
-// schedules + runs, all of which are already loaded at boot (see app.js).
+// Cockpit surface (main-only layout) — the "where am I needed" inbox. Renders the
+// three sections from vm/cockpit.js: decisions parked on the user, things that
+// broke, and a collapsed tail of what resolved without them.
 //
 // Re-render strategy: every subscribed store notifies far more often than the
-// cockpit's own content actually changes (sessions.js in particular mutates on
-// every streamed token while a session is thinking). Store ticks are coalesced
-// into one paint per animation frame, and each of the four sections compares a
-// content signature (excludes the volatile `time` field) against its last
-// paint — a tick that doesn't change what a group contains never touches the
-// DOM. Row timestamps are refreshed independently on a 30s interval so "3m
-// ago" labels don't go stale between content changes.
+// cockpit's own content actually changes. Store ticks are coalesced into one paint
+// per animation frame, and each section compares a content signature (excludes the
+// volatile `time` field) against its last paint — a tick that doesn't change what a
+// section contains never touches the DOM. Row timestamps are refreshed
+// independently on a 30s interval so "3m ago" labels don't go stale between
+// content changes.
 
-import { cockpitGroups, sentimentSummary } from '../../vm/cockpit.js';
+import { cockpitInbox } from '../../vm/cockpit.js';
 import { approvals } from '../../state/approvals.js';
 import { work } from '../../state/work.js';
-import { sessions } from '../../state/sessions.js';
 import { schedulesStore } from '../../state/schedules.js';
 import { runs } from '../../state/runs.js';
+import { actions } from '../../state/actions.js';
 import { nav } from '../../state/nav.js';
 import { openScheduleDetail, openRunDetail } from '../../app-bridge.js';
 import { escapeHtml } from '../../util.js';
-import { relPast, relFuture } from '../../utils/formatting.js';
+import { relPast } from '../../utils/formatting.js';
 import { bindRowActivation } from '../../utils/row-activation.js';
 
-const GROUP_DEFS = [
-  { key: 'waiting', label: 'Waiting on you', empty: 'Nothing waiting on you.' },
-  { key: 'inFlight', label: 'In flight', empty: 'Nothing running right now.' },
-  { key: 'upcoming', label: 'Upcoming', empty: 'Nothing scheduled.' },
-  { key: 'finished', label: 'Recently finished', empty: 'Nothing finished in the last 24h.' },
+const SECTION_DEFS = [
+  { key: 'decide', label: 'Decide', empty: 'No decisions waiting.' },
+  { key: 'broken', label: 'Broken', empty: 'Nothing broken.' },
+  { key: 'cleared', label: 'Recently cleared', empty: 'Nothing cleared in the last 24h.', collapsed: true },
 ];
 
-const TONE_GLYPH = { hot: '●', warn: '◆', busy: '▶', ok: '✓', idle: '↻' };
+const TONE_GLYPH = { hot: '●', warn: '✕', ok: '✓' };
 
 const TIME_REFRESH_MS = 30_000;
 
@@ -42,65 +40,45 @@ function glyphFor(tone) {
   return TONE_GLYPH[tone] ?? '○';
 }
 
+// Not every item has an honest timestamp — a schedule draft arrives over WS with no
+// postedAt at all — and relPast(0) renders it as decades ago. No time beats a wrong one.
 function fmtRowTime(t, now) {
   if (!t) return '';
-  return (t > now ? relFuture(t, now) : relPast(t, now)) ?? '';
+  return relPast(t, now) ?? '';
 }
 
-function greeting() {
-  const h = new Date().getHours();
-  if (h < 5) return 'Working late';
-  if (h < 12) return 'Good morning';
-  if (h < 18) return 'Good afternoon';
-  return 'Good evening';
-}
-
-function fmtDate(d) {
-  const day = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  const clock = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  return `${day} · ${clock}`;
-}
-
-function pillHtml(p) {
-  return `<span class="o-pill ${escapeHtml(p.variant ?? '')}">${escapeHtml(p.label ?? '')}</span>`;
-}
-
-function rowHtml(row, now) {
-  const ref = row.ref ? `<span class="o-ref">${escapeHtml(row.ref)}</span>` : '';
-  const pills = (row.pills ?? []).map(pillHtml).join('');
+function rowHtml(item, now) {
+  const ref = item.ref ? `<span class="o-ref">${escapeHtml(item.ref)}</span>` : '';
+  const detail = item.detail ? `<div class="o-row-sub">${escapeHtml(item.detail)}</div>` : '';
   return `
-    <div class="o-row" data-row-id="${escapeHtml(row.id)}" role="button" tabindex="0">
-      <span class="o-row-icon ${escapeHtml(row.tone ?? '')}">${glyphFor(row.tone)}</span>
+    <div class="o-row" data-row-id="${escapeHtml(item.key)}" role="button" tabindex="0">
+      <span class="o-row-icon ${escapeHtml(item.tone ?? '')}">${glyphFor(item.tone)}</span>
       <div>
-        <div class="o-row-title">${ref}${escapeHtml(row.title ?? '')}</div>
-        ${pills ? `<div class="o-row-sub">${pills}</div>` : ''}
+        <div class="o-row-title">${ref}${escapeHtml(item.title ?? '')}</div>
+        ${detail}
       </div>
-      <div class="o-row-time" data-time="${row.time ?? 0}">${escapeHtml(fmtRowTime(row.time, now))}</div>
+      <div class="o-row-time" data-time="${item.time ?? 0}">${escapeHtml(fmtRowTime(item.time, now))}</div>
     </div>`;
 }
 
-// Excludes `time` on purpose — session/job rows recompute `time` as
-// `Date.now()` on every paint, which would defeat any signature comparison.
-function rowSignature(row) {
-  return [row.id, row.tone, row.title, row.ref, JSON.stringify(row.pills)].join('|');
+// Excludes `time` on purpose — it moves on every paint for live items, which would
+// defeat the comparison.
+function rowSignature(item) {
+  return [item.key, item.tone, item.title, item.ref, item.detail].join('|');
 }
 
-function handleRowClick(row) {
-  if (!row) return;
-  if (row.kind === 'schedule') { openScheduleDetail(row.open?.id ?? null); return; }
-  if (row.kind === 'run') { openRunDetail(row.raw ?? null); return; }
-  if (row.open?.surface) nav.select(row.open.surface, row.open.id);
+function handleRowClick(item) {
+  if (!item) return;
+  if (item.kind === 'cleared-run') { openRunDetail(item.raw ?? null); return; }
+  if (item.open?.surface === 'schedules') { openScheduleDetail(item.open.id ?? null); return; }
+  if (item.open?.surface) nav.select(item.open.surface, item.open.id);
 }
 
 function buildSkeleton() {
   return `
-    <div class="cockpit-hdr">
-      <h1 class="cockpit-greeting"></h1>
-      <span class="cockpit-date"></span>
-    </div>
-    <div class="cockpit-sub"></div>
-    ${GROUP_DEFS.map((def) => `
-      <div class="cockpit-group" data-group="${def.key}">
+    <div class="cockpit-quiet" hidden>Nothing needs you.</div>
+    ${SECTION_DEFS.map((def) => `
+      <div class="cockpit-group${def.collapsed ? ' collapsed' : ''}" data-group="${def.key}">
         <div class="o-group-hdr">
           <h2>${escapeHtml(def.label)}</h2>
           <span class="o-group-count"></span>
@@ -117,18 +95,18 @@ function refreshSectionTimes(bodyEl, now) {
   });
 }
 
-function renderSection(state, rows, now) {
-  state.rowsById = new Map(rows.map((r) => [r.id, r]));
-  state.countEl.textContent = rows.length ? String(rows.length) : '';
+function renderSection(state, items, now) {
+  state.itemsByKey = new Map(items.map((i) => [i.key, i]));
+  state.countEl.textContent = items.length ? String(items.length) : '';
 
-  const nextSig = rows.map(rowSignature).join('\n');
+  const nextSig = items.map(rowSignature).join('\n');
   if (state.sig === nextSig) {
     refreshSectionTimes(state.bodyEl, now);
     return;
   }
   state.sig = nextSig;
-  state.bodyEl.innerHTML = rows.length
-    ? `<div class="o-row-group">${rows.map((r) => rowHtml(r, now)).join('')}</div>`
+  state.bodyEl.innerHTML = items.length
+    ? `<div class="o-row-group">${items.map((i) => rowHtml(i, now)).join('')}</div>`
     : `<div class="cockpit-empty">${escapeHtml(state.emptyText)}</div>`;
 }
 
@@ -139,45 +117,51 @@ export function renderDetail(mount) {
   root.innerHTML = buildSkeleton();
   mount.appendChild(root);
 
-  const greetingEl = root.querySelector('.cockpit-greeting');
-  const dateEl = root.querySelector('.cockpit-date');
-  const subEl = root.querySelector('.cockpit-sub');
+  const quietEl = root.querySelector('.cockpit-quiet');
 
-  const sections = new Map(GROUP_DEFS.map((def) => {
+  const sections = new Map(SECTION_DEFS.map((def) => {
     const groupEl = root.querySelector(`[data-group="${def.key}"]`);
     const state = {
       emptyText: def.empty,
+      groupEl,
       countEl: groupEl.querySelector('.o-group-count'),
       bodyEl: groupEl.querySelector('.cockpit-group-body'),
-      rowsById: new Map(),
+      itemsByKey: new Map(),
       sig: null,
     };
     state.bodyEl.addEventListener('click', (e) => {
       const rowEl = e.target.closest('.o-row');
       if (!rowEl) return;
-      handleRowClick(state.rowsById.get(rowEl.dataset.rowId));
+      handleRowClick(state.itemsByKey.get(rowEl.dataset.rowId));
     });
     bindRowActivation(state.bodyEl);
+    if (def.collapsed) {
+      groupEl.querySelector('.o-group-hdr').addEventListener('click', () => {
+        groupEl.classList.toggle('collapsed');
+      });
+    }
     return [def.key, state];
   }));
 
-  function paintHeader() {
-    greetingEl.textContent = greeting();
-    dateEl.textContent = fmtDate(new Date());
-  }
-
   function paint() {
     const now = Date.now();
-    const groups = cockpitGroups({
+    const inbox = cockpitInbox({
       pendingApprovals: approvals.get().pending,
       jobs: work.get().jobs,
-      sessionsById: sessions.get().sessionsById,
-      schedules: schedulesStore.get().schedules,
+      actionEdits: actions.get().edits,
+      scheduleDrafts: schedulesStore.get().draftBySession,
       runs: runs.get().runs,
       now,
     });
-    subEl.textContent = sentimentSummary(groups);
-    for (const def of GROUP_DEFS) renderSection(sections.get(def.key), groups[def.key] ?? [], now);
+    // The empty inbox is the common case, not an error state — say so once and let
+    // the sections collapse away rather than showing three "nothing here" boxes.
+    const quiet = inbox.decide.length === 0 && inbox.broken.length === 0;
+    quietEl.hidden = !quiet;
+    for (const def of SECTION_DEFS) {
+      const state = sections.get(def.key);
+      state.groupEl.hidden = quiet && def.key !== 'cleared';
+      renderSection(state, inbox[def.key] ?? [], now);
+    }
   }
 
   let scheduled = false;
@@ -187,18 +171,16 @@ export function renderDetail(mount) {
     raf(() => { scheduled = false; paint(); });
   }
 
-  paintHeader();
   paint();
 
   const unsubs = [
     approvals.subscribe(scheduleRender),
     work.subscribe(scheduleRender),
-    sessions.subscribe(scheduleRender),
     schedulesStore.subscribe(scheduleRender),
     runs.subscribe(scheduleRender),
+    actions.subscribe(scheduleRender),
   ];
   const timer = setInterval(() => {
-    paintHeader();
     for (const state of sections.values()) refreshSectionTimes(state.bodyEl, Date.now());
   }, TIME_REFRESH_MS);
 

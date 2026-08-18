@@ -874,6 +874,10 @@ installNotifyHandlers({
     // guarded), so this is just a warm boot preload, not the only load path.
     import('./state/runs.js').then(({ runs }) => runs.load());
     import('./state/schedules.js').then(({ schedulesStore }) => schedulesStore.load());
+    // Cockpit counts pending action proposals, and a proposal posted before this tab
+    // opened fires no actions_changed — without this the inbox misses it until the
+    // Library surface is visited, which is the exact blind spot the surface exists to close.
+    import('./state/actions.js').then(({ actions }) => actions.load());
   },
 });
 openNotifyWs();

@@ -13,6 +13,8 @@ import { work } from '../../state/work.js';
 import { approvals } from '../../state/approvals.js';
 import { sessions } from '../../state/sessions.js';
 import { schedulesStore } from '../../state/schedules.js';
+import { actions } from '../../state/actions.js';
+import { runs } from '../../state/runs.js';
 import { openSession } from '../../app-bridge.js';
 import { renderDetail as renderCockpitDetail } from '../cockpit/index.js';
 import { renderList as renderTrackedList, renderDetail as renderTrackedDetail } from '../tracked/index.js';
@@ -469,6 +471,10 @@ export function mountMobileShell(root) {
     approvals.subscribe(paint),
     sessions.subscribe(paint),
     schedulesStore.subscribe(paint),
+    // The cockpit tab badge counts action proposals and routine failures too, so the
+    // stores those come from have to repaint the tab bar like every other input.
+    actions.subscribe(paint),
+    runs.subscribe(paint),
   ];
   if (!schedulesStore.get().loaded && !schedulesStore.get().loading) schedulesStore.load();
 
