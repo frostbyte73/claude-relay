@@ -257,6 +257,51 @@ describe('POST /api/mcp/catalog/apply', () => {
     expect(revisions.list('pull')).toHaveLength(0);
   });
 
+  it('a batch spanning both groups is all-or-nothing: a corrupt push blocks pull too, leaving it untouched on disk with no revision', async () => {
+    const listening = await listenMcp(ACME_TOOLS);
+    mcpServer = listening.server;
+    writeMcpConfig({ acme: { url: listening.url } });
+    // Pre-existing corruption in `push` only — `pull` starts clean.
+    permissionGroups.push!.alwaysAllowMcpPatterns.push('^mcp__broken__(unterminated');
+    mountRoutes();
+
+    const { res, out } = fakeRes();
+    await applyCatalog(fakeReq('/api/mcp/catalog/apply', {
+      server: 'acme', rules: [ACME_PULL_RULE, ACME_PUSH_RULE],
+    }), res);
+
+    expect(out.status).toBe(400);
+    // The whole batch must be validated before anything is written — pull's rule is valid on
+    // its own, but the batch is rejected as a unit, so pull must show no trace of it: neither
+    // in memory, nor on disk, nor as a revision.
+    expect(permissionGroups.pull!.alwaysAllowMcpPatterns).toEqual([]);
+    const onDisk = JSON.parse(readFileSync(groupsPath, 'utf8')) as PermissionGroupMap;
+    expect(onDisk.pull!.alwaysAllowMcpPatterns).toEqual([]);
+    expect(revisions.list('pull')).toHaveLength(0);
+    expect(revisions.list('push')).toHaveLength(0);
+  });
+
+  it('a valid batch spanning both groups applies both and records a revision for each', async () => {
+    const listening = await listenMcp(ACME_TOOLS);
+    mcpServer = listening.server;
+    writeMcpConfig({ acme: { url: listening.url } });
+    mountRoutes();
+
+    const { res, out } = fakeRes();
+    await applyCatalog(fakeReq('/api/mcp/catalog/apply', {
+      server: 'acme', rules: [ACME_PULL_RULE, ACME_PUSH_RULE],
+    }), res);
+
+    expect(out.status).toBe(200);
+    expect(permissionGroups.pull!.alwaysAllowMcpPatterns).toContain(ACME_PULL_RULE.value);
+    expect(permissionGroups.push!.alwaysAllowMcpPatterns).toContain(ACME_PUSH_RULE.value);
+    const onDisk = JSON.parse(readFileSync(groupsPath, 'utf8')) as PermissionGroupMap;
+    expect(onDisk.pull!.alwaysAllowMcpPatterns).toContain(ACME_PULL_RULE.value);
+    expect(onDisk.push!.alwaysAllowMcpPatterns).toContain(ACME_PUSH_RULE.value);
+    expect(revisions.list('pull')).toHaveLength(1);
+    expect(revisions.list('push')).toHaveLength(1);
+  });
+
   it('404s for a server that is not configured', async () => {
     const { res, out } = fakeRes();
     await applyCatalog(fakeReq('/api/mcp/catalog/apply', { server: 'nope', rules: [ACME_PULL_RULE] }), res);

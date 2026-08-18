@@ -520,8 +520,11 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       }
     }
 
-    // One group edit per group touched, each through applyGroup — validated, atomically
-    // written, registry-reloaded, and revisioned. Never write permissionGroups[...] directly.
+    // A batch spanning both groups must be all-or-nothing: build every touched group's
+    // post-merge state and lint ALL of them before writing ANY of them. Without this pass, a
+    // rule for an already-healthy group would land (write + reload + revision) before a second
+    // rule's group was found to be invalid — a 400 response the caller reasonably reads as
+    // "nothing happened", while the first group had in fact already changed on disk.
     const byGroup = new Map<'pull' | 'push', string[]>();
     for (const rule of rules) {
       const values = byGroup.get(rule.group) ?? [];
@@ -529,7 +532,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       byGroup.set(rule.group, values);
     }
 
-    const applied: Array<{ group: string; value: string }> = [];
+    const nextByGroup = new Map<'pull' | 'push', PermissionGroup>();
     for (const [groupName, values] of byGroup) {
       const current = permissionGroups[groupName];
       const base: PermissionGroup = current ? structuredClone(current) : {
@@ -540,9 +543,22 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       for (const v of values) if (!nextPatterns.includes(v)) nextPatterns.push(v);
       const next: PermissionGroup = { ...base, alwaysAllowMcpPatterns: nextPatterns };
 
+      const verdict = validateGroupUpdate(groupName, next);
+      if (!verdict.ok) { res.statusCode = 400; res.end(verdict.error); return; }
+      nextByGroup.set(groupName, next);
+    }
+
+    // This pre-validation removes the one failure mode that's actually reachable from this
+    // route (a bad rule). It does NOT make the loop below transactional: applyGroup can still
+    // fail at the disk-write or registry-reload stage on a later group after an earlier one has
+    // already landed. That residual window is accepted deliberately — each applyGroup call
+    // rolls back its OWN group on such a failure, and building a cross-group transaction for a
+    // disk/reload fault (as opposed to a bad rule, which is now caught above) is out of scope.
+    const applied: Array<{ group: string; value: string }> = [];
+    for (const [groupName, next] of nextByGroup) {
       const applyResult = applyGroup(groupName, next, 'user', `mcp onboarding: ${server}`, undefined);
       if (!applyResult.ok) { res.statusCode = applyResult.status; res.end(applyResult.error); return; }
-      for (const v of values) applied.push({ group: groupName, value: v });
+      for (const v of byGroup.get(groupName)!) applied.push({ group: groupName, value: v });
     }
 
     res.statusCode = 200;
