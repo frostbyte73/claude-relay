@@ -885,7 +885,7 @@ async function main() {
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
     actionsStore, actionsStorePath: join(RUNTIME_DIR, 'actions.json'), projectRegistry, worktreeManager,
-    journalStore, mcpConfigPath,
+    journalStore, denialsStore, mcpConfigPath,
     permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });

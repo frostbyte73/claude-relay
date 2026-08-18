@@ -15,6 +15,7 @@ import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
+import type { DenialsStore } from '../storage/denials-store.js';
 import { readJsonObject } from './util.js';
 import { readMcpServersFile, transportOf, type McpServerConfig } from '../integrations/mcp-config.js';
 import { listTools } from '../integrations/mcp-catalog.js';
@@ -31,6 +32,7 @@ export interface MetaRoutesDeps {
   projectRegistry: ProjectRegistry;
   worktreeManager: WorktreeManager;
   journalStore: JournalStore;
+  denialsStore: DenialsStore;
   mcpConfigPath: string;
   permissionGroupsPath: string;
   groupRevisions: PermissionGroupRevisionsStore;
@@ -220,8 +222,8 @@ export function createGroupApplier(deps: GroupApplierDeps): GroupApplier {
 export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   const {
     actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
-    actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, mcpConfigPath,
-    permissionGroupsPath, groupRevisions,
+    actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, denialsStore,
+    mcpConfigPath, permissionGroupsPath, groupRevisions,
   } = deps;
 
   const applyGroup = createGroupApplier({ actionRegistry, permissionGroups, permissionGroupsPath, groupRevisions });
@@ -659,6 +661,60 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   }
 
   server.route('POST', '/api/mcp/catalog/apply', handlePostMcpCatalogApply);
+
+  // The recorded tool input is what a user reads to judge a denial's verdict — the suggested
+  // rule alone doesn't say what actually ran. Truncated so one oversized payload (a giant
+  // --body-file draft, say) can't blow up this route's response.
+  function truncatedDenialCommand(toolName: string, toolInput: unknown): string {
+    try {
+      if (toolName === 'Bash') {
+        const cmd = (toolInput as { command?: unknown } | null)?.command;
+        if (typeof cmd === 'string') return cmd.slice(0, 200);
+      }
+      return JSON.stringify(toolInput).slice(0, 200);
+    } catch {
+      return toolName;
+    }
+  }
+
+  interface PendingMcpEntry { server: string; unclassified: number }
+  interface PendingDenialEntry {
+    action: string; id: string; tool: string; command: string;
+    suggested: { kind: string; value: string } | null; count: number; at: number;
+  }
+
+  // Composes two endpoints' worth of "needs a decision" into one, cross-action payload — counts
+  // only for MCP (the client deep-links to GET /api/mcp/catalog for the per-tool detail, which
+  // does the expensive part: this route reuses the same listTools/proposeForServer probes, but
+  // ships only a count per server instead of every placement) and every unresolved denial across
+  // every action (there is no other endpoint that isn't scoped to one action at a time).
+  async function handleGetPermissionsPending(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const merged = mergeMcpServers(mcpConfigPath);
+    const mcp: PendingMcpEntry[] = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
+      const result = await listTools(name, cfg);
+      const proposal = proposeForServer(result, permissionGroups);
+      const unclassified = proposal.placements.filter((p) => p.group === null).length;
+      return { server: name, unclassified };
+    }));
+
+    const denials: PendingDenialEntry[] = [];
+    for (const action of Object.keys(denialsStore.all())) {
+      for (const d of denialsStore.unresolved(action)) {
+        denials.push({
+          action, id: d.id, tool: d.toolName,
+          command: truncatedDenialCommand(d.toolName, d.toolInput),
+          suggested: d.suggested.kind === 'none' ? null : { kind: d.suggested.kind, value: d.suggested.value },
+          count: d.count, at: d.at,
+        });
+      }
+    }
+
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ mcp, denials }));
+  }
+
+  server.route('GET', '/api/permissions/pending', handleGetPermissionsPending);
 
   server.route('GET', '/api/files', (req, res) => {
     const url = new URL(req.url ?? '', 'http://internal');
