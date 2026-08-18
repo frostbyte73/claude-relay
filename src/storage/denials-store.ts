@@ -7,6 +7,20 @@ import { randomUUID } from 'node:crypto';
 // action's permissions or its instructions are wrong, so these outlive the process
 // that observed them — they used to be a Map that died with every daemon restart.
 
+export type DenialDisposition = 'promote' | 'never' | 'fix-action';
+
+// What we decided to do about a denial, once. `never` is why this is a stored verdict
+// rather than a deletion — "we decided no" has to survive so the next improvement cycle
+// does not re-propose the same grant.
+export interface DenialVerdict {
+  disposition: DenialDisposition;
+  group?: string;                                                    // set when disposition === 'promote'
+  rule?: { kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string };  // ditto
+  reason: string;
+  decidedAt: number;
+  decidedBy: 'user' | 'improver';
+}
+
 export interface ActionDenial {
   id: string;
   actionName: string;
@@ -20,6 +34,7 @@ export interface ActionDenial {
   at: number;
   count: number;
   runId?: string;
+  verdict?: DenialVerdict;
 }
 
 interface Persisted {
@@ -80,6 +95,20 @@ export class DenialsStore {
   list(action: string): ActionDenial[] { return this.byAction.get(action) ?? []; }
 
   all(): Record<string, ActionDenial[]> { return Object.fromEntries(this.byAction); }
+
+  // Denials with no verdict yet — what an improvement cycle or the user still has to act on.
+  // Keyed on verdict PRESENCE, not disposition: an applied `promote` is just as resolved as a
+  // `never`, and keying on disposition would have the model re-propose a grant that already
+  // exists every cycle.
+  unresolved(action: string): ActionDenial[] { return this.list(action).filter((d) => !d.verdict); }
+
+  setVerdict(action: string, id: string, verdict: DenialVerdict): boolean {
+    const denial = this.byAction.get(action)?.find((d) => d.id === id);
+    if (!denial) return false;
+    denial.verdict = verdict;
+    this.persist();
+    return true;
+  }
 
   dismiss(action: string, id: string): boolean {
     const list = this.byAction.get(action);
