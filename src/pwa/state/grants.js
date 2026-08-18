@@ -2,10 +2,14 @@ import { createStore } from './create-store.js';
 import { metaApi } from '../net/meta.js';
 
 // Backs the Settings > Permissions and Settings > MCP connections sections.
-// Groups and allowlist rules are effectively static at runtime (they change
-// only when a checkout's config/allowlist.json is hand-edited or a new
-// action is added) so they're loaded once and cached; MCP status is a live
-// probe and reloads every time (mount, and the section's refresh button).
+// Groups and allowlist rules change rarely, so the load* entry points are
+// cached for the tab's lifetime; MCP status is a live probe and reloads every
+// time (mount, and the section's refresh button).
+//
+// The Permissions page edits groups and rules, so it needs the uncached
+// reload* pair: a save repaints from what the server actually persisted, never
+// from a local guess at what the PUT did — the daemon normalizes the group and
+// can refuse part of an edit, so optimistic state is a lie waiting to happen.
 
 const store = createStore({
   groups: [],

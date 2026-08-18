@@ -144,9 +144,34 @@ function compile(pattern: string): RegExp | null {
 // Path-scoped tools whose grant authorises a file write. A `Read:`/`Glob:`/`Grep:` pattern
 // grants no write however broad it is, so confinement is not this lint's business there —
 // refusing those would break `read` without closing anything.
-const PATH_WRITE_TOOLS: ReadonlySet<string> = new Set([
+export const PATH_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
 ]);
+
+// Every tool the checker will actually path-scope — allowlist.ts's PATH_INPUT_FIELDS keys,
+// pinned to them by a test rather than imported, since allowlist.ts imports this module and a
+// value import back would cycle. A rule naming anything else (`LS:`, `Bash:`, a misspelling,
+// a stray space) can never fire, because `rulesAllow` compares the tool half exactly. It is
+// refused rather than accepted: a dead rule that answers 200 is a grant the user believes they
+// made, which on a page built for editing these by hand is worse than an error.
+export const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set([
+  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep',
+]);
+
+// A ceiling on how much backtracking a hand-written pattern can buy. Both checks below are
+// bounds, not proofs — deciding whether an arbitrary regex backtracks catastrophically is
+// undecidable in general, so this refuses two cheap proxies for it and no more:
+//
+//   1. Length. A confinement rule is a path prefix; the shipped ones are ten characters. A
+//      pattern this long is not one someone wrote to name a directory.
+//   2. A quantified group whose body is itself quantified (`(?:a+)+`, `(a*)*`, `(a+)*`). This
+//      is the classic catastrophic shape: `Write:^/tmp/(?:a+)+$` against a session-supplied
+//      `/tmp/aaaa…!` took 216ms at 26 characters and did not return at 40 — inside the
+//      synchronous PreToolUse gate every tool call funnels through.
+//
+// A pattern that backtracks badly some other way still gets through. The mitigation for that
+// is that a path rule is a prefix, not a parser: nothing here needs a nested quantifier.
+const MAX_PATH_PATTERN_LENGTH = 200;
 
 // The roots a path rule may confine a write to. A whitelist rather than a structural rule
 // (absolute, ends at a `/`, two segments deep, ...) because every such rule reads `/Users/`
@@ -166,6 +191,62 @@ const WRITE_SAFE_ROOTS: readonly string[] = [
 // wildcard `..` stays under the prefix — but both mean the author is reading the pattern as a
 // path rather than a regex, and that misreading is what the confinement judgement rests on.
 const TRAVERSAL_SEGMENT = /(?:^|\/)\\?\.\\?\.(?:\/|$)/;
+
+// A group's opener when it isn't a capture: `(?:`, `(?=`, `(?!`, `(?<=`, `(?<!`, `(?<name>`.
+// Skipped before scanning a group body so `(?:x)+` doesn't read as "a `?` inside a `+` group".
+const GROUP_MARKER = /^\?(?::|=|!|<=|<!|<[A-Za-z_$][\w$]*>)/;
+
+function containsQuantifier(body: string): boolean {
+  const marker = GROUP_MARKER.exec(body);
+  let i = marker ? marker[0].length : 0;
+  let inClass = false;
+  while (i < body.length) {
+    const c = body[i]!;
+    if (c === '\\') { i += 2; continue; }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      i++;
+      continue;
+    }
+    if (c === '[') { inClass = true; i++; continue; }
+    if (c === '*' || c === '+' || c === '?' || c === '{') return true;
+    i++;
+  }
+  return false;
+}
+
+// A repeated group whose body can itself repeat — the shape that turns a failed match into
+// exponential backtracking. See MAX_PATH_PATTERN_LENGTH above for why this is a bound and not
+// a decision procedure. `?` counts as an inner quantifier (`(a?b?)+` blows up the same way)
+// but not as an outer one: matching a group at most once repeats nothing.
+function hasNestedQuantifier(pattern: string): boolean {
+  const stack: number[] = [];
+  let inClass = false;
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i]!;
+    if (c === '\\') { i += 2; continue; }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      i++;
+      continue;
+    }
+    if (c === '[') { inClass = true; i++; continue; }
+    if (c === '(') { stack.push(i); i++; continue; }
+    if (c === ')') {
+      const start = stack.pop();
+      const next = pattern[i + 1];
+      if (start !== undefined && (next === '*' || next === '+' || next === '{')
+        && containsQuantifier(pattern.slice(start + 1, i))) {
+        return true;
+      }
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return false;
+}
 
 // A `|` outside every group and character class turns the pattern into "either side matches",
 // and only the left side carries the literal prefix — `^/tmp/|/` is confined to nothing.
@@ -250,12 +331,23 @@ export function classifyPathShape(value: string): ShapeVerdict {
   }
   const tool = value.slice(0, idx);
   const pattern = value.slice(idx + 1);
+  const structural = (reason: string): ShapeVerdict => ({ writeShaped: true, structural: true, reason });
+
+  if (!PATH_SCOPED_TOOLS.has(tool)) {
+    return structural(`\`${tool}\` is not a path-scoped tool, so this rule can never match `
+      + `anything — one of ${[...PATH_SCOPED_TOOLS].join(', ')}, spelled exactly`);
+  }
+  if (pattern.length > MAX_PATH_PATTERN_LENGTH) {
+    return structural(`pattern is ${pattern.length} characters — a path rule names a directory, `
+      + `and the checker runs it against a session-supplied path on every tool call (max `
+      + `${MAX_PATH_PATTERN_LENGTH})`);
+  }
   if (compile(pattern) === null) {
-    return {
-      writeShaped: true,
-      structural: true,
-      reason: `pattern does not compile as a regex: ${pattern}`,
-    };
+    return structural(`pattern does not compile as a regex: ${pattern}`);
+  }
+  if (hasNestedQuantifier(pattern)) {
+    return structural('pattern repeats a group whose body also repeats (`(?:a+)+`), which can '
+      + 'backtrack exponentially on a path the session chooses — write the prefix plainly');
   }
   if (!PATH_WRITE_TOOLS.has(tool)) return { writeShaped: false, reason: '' };
   return pathPrefixConfined(tool, pattern);
@@ -265,9 +357,22 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind === 'tool') {
     // A whole-tool Bash grant is every external write at once — gatedMatch already treats
     // it that way (see the alwaysAllow.has('Bash') shortcut in allowlist.ts).
-    return value === 'Bash'
-      ? { writeShaped: true, reason: 'a whole-tool `Bash` grant permits every external write' }
-      : { writeShaped: false, reason: '' };
+    if (value === 'Bash') {
+      return { writeShaped: true, reason: 'a whole-tool `Bash` grant permits every external write' };
+    }
+    // `alwaysAllow: ['Write']` is `Write:^/` spelled in five characters, and it reaches further
+    // than the path rule does: `rulesAllow` answers on the tool name before it ever looks at a
+    // path, so it also satisfies the redirect and file-op gates that ask "could this caller have
+    // written that path with Write?" — `echo x > ~/.zshrc` included. Same list the path lint
+    // confines, so neither can be widened without the other.
+    if (PATH_WRITE_TOOLS.has(value)) {
+      return {
+        writeShaped: true,
+        reason: `a whole-tool \`${value}\` grant writes any path on the machine — scope it to a `
+          + `path rule instead (\`${value}:^/tmp/\`)`,
+      };
+    }
+    return { writeShaped: false, reason: '' };
   }
 
   if (kind === 'path') return classifyPathShape(value);

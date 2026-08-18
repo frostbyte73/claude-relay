@@ -671,7 +671,9 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
       const cmd = (toolInput as { command?: unknown } | null | undefined)?.command;
       return typeof cmd === 'string' ? cmd.slice(0, 200) : null;
     }
-    if (toolInput === undefined) return null;
+    // `null` is an absent payload too — stringifying it ships the client the four-character
+    // command `null`, which renders as a call that was made rather than one nobody recorded.
+    if (toolInput === undefined || toolInput === null) return null;
     try {
       const json = JSON.stringify(toolInput);
       return typeof json === 'string' ? json.slice(0, 200) : null;

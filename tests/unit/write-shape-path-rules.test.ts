@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { Allowlist } from '../../src/permissions/allowlist.js';
+import { Allowlist, PATH_INPUT_FIELDS } from '../../src/permissions/allowlist.js';
 import {
   assertNotWriteShaped, classifyPathShape, classifyRuleShape, lintPermissionRule,
+  PATH_SCOPED_TOOLS, PATH_WRITE_TOOLS,
 } from '../../src/permissions/write-shape.js';
 
 const shaped = (v: string) => classifyPathShape(v).writeShaped;
@@ -42,7 +43,9 @@ describe('classifyPathShape refuses a write rule that is not confined', () => {
     expect(shaped('Write:^/tmp(?:/[^/]+)+$')).toBe(true);
     expect(shaped('Write:^/tmp(?:x|/a)')).toBe(true);
     expect(shaped('Write:^/tmp')).toBe(true);
-    expect(classifyPathShape('Write:^/tmp(?:/[^/]+)+$').reason).toMatch(/mid-segment/);
+    // The survivor is refused twice over — its `(?:…+)+` also fails the backtracking bound,
+    // which runs first — so pin the mid-segment reason on the group-free spelling.
+    expect(classifyPathShape('Write:^/tmp').reason).toMatch(/mid-segment/);
   });
 
   it('refuses a quantifier that makes the prefix’s own last character optional', () => {
@@ -102,7 +105,7 @@ describe('classifyPathShape accepts what the product actually ships', () => {
   });
 
   it('accepts every read-tool pattern, however broad', () => {
-    for (const v of ['Read:^/', 'Read:.*', 'Glob:^/Users/', 'Grep:^/etc/', 'LS:^/']) {
+    for (const v of ['Read:^/', 'Read:.*', 'Glob:^/Users/', 'Grep:^/etc/']) {
       expect(shaped(v), v).toBe(false);
     }
   });
@@ -166,15 +169,107 @@ describe('the shipped permission groups still lint clean', () => {
   });
 });
 
-// The lint keys on the tool half of the rule, and so does the checker. If they ever disagreed
-// on what counts as `Write`, the disagreement would be a grant nobody linted.
-describe('a casing dodge past the lint grants nothing either', () => {
-  it('leaves a lowercase tool name dead at the checker', () => {
-    expect(shaped('write:^/')).toBe(false);
+// The lint keys on the tool half of the rule, and so does the checker: `rulesAllow` compares
+// `r.tool === toolName` exactly, and the redirect/file-op gates ask for the literal `'Write'`.
+// A rule whose tool half is misspelled therefore grants nothing — it fails closed, but it also
+// answers 200 to a user who believes they made a grant, so it is refused rather than accepted.
+describe('a tool name the checker will never match is refused, not silently dead', () => {
+  it('refuses every near-spelling of a real tool', () => {
+    for (const v of ['write:^/tmp/', 'WRITE:^/tmp/', ' Write:^/tmp/', 'Write :^/tmp/',
+      'Bash:^/', 'LS:^/', 'NotebookEdits:^/tmp/']) {
+      expect(classifyPathShape(v).structural, v).toBe(true);
+      expect(lintPermissionRule('path', v, true).ok, v).toBe(false);
+    }
+  });
+
+  it('proves the dead-rule claim those refusals rest on', () => {
     const al = new Allowlist({
       alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [],
       alwaysAllowPathPatterns: ['write:^/'],
     });
     expect(al.allows('Write', { file_path: '/Users/you/.zshrc' })).toBe(false);
+  });
+
+  it('accepts exactly the tools the checker path-scopes', () => {
+    // The two lists live in different modules — allowlist.ts imports this one, so importing
+    // back would cycle. This is the pin that keeps them from drifting apart.
+    expect([...PATH_SCOPED_TOOLS].sort()).toEqual(Object.keys(PATH_INPUT_FIELDS).sort());
+    for (const tool of PATH_WRITE_TOOLS) expect(PATH_SCOPED_TOOLS.has(tool)).toBe(true);
+  });
+});
+
+// `alwaysAllow: ['Write']` is `Write:^/` in five characters, through the same four doors the
+// path lint guards. It reaches further than the path rule, too: `rulesAllow` answers on the
+// tool name before it looks at a path, so a whole-tool grant also satisfies the redirect and
+// file-op gates, which ask whether the caller could have written that path with `Write`.
+describe('a whole-tool write grant is refused like the path rule it stands in for', () => {
+  const wholeTool = (tool: string) => new Allowlist({
+    alwaysAllow: [tool], alwaysAllowBashPatterns: ['^echo '],
+    alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
+  });
+
+  it('refuses every path-write tool, not just Bash', () => {
+    expect(classifyRuleShape('tool', 'Bash').writeShaped).toBe(true);
+    // Failing here means a tool was dropped from PATH_WRITE_TOOLS: the set drives both this
+    // refusal and the path lint's confinement, so neither can be narrowed on its own.
+    for (const tool of PATH_WRITE_TOOLS) {
+      expect(classifyRuleShape('tool', tool).writeShaped, tool).toBe(true);
+      expect(lintPermissionRule('tool', tool, false).ok, tool).toBe(false);
+      expect(() => assertNotWriteShaped('tool', tool)).toThrow();
+      // Gated is still gated: `push` may hold one, the pin decides per call.
+      expect(lintPermissionRule('tool', tool, true).ok, tool).toBe(true);
+    }
+  });
+
+  it('leaves the read tools and the rest of the catalog alone', () => {
+    for (const tool of ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch',
+      'ToolSearch', 'ListMcpResourcesTool', 'ReadMcpResourceTool']) {
+      expect(classifyRuleShape('tool', tool).writeShaped, tool).toBe(false);
+    }
+  });
+
+  it('is refusing a grant that really does reach outside any scratch root', () => {
+    const al = wholeTool('Write');
+    for (const p of ['/Users/dc/.ssh/authorized_keys', '/Users/dc/Library/LaunchAgents/evil.plist',
+      '/etc/crontab']) {
+      expect(al.allows('Write', { file_path: p }), p).toBe(true);
+    }
+    // The half a path-only lint would never have seen: the redirect gate resolves through the
+    // same whole-tool grant.
+    expect(al.allows('Bash', { command: 'echo x > /Users/dc/.zshrc' })).toBe(true);
+  });
+});
+
+// Undecidable in general, so this is a bound: refuse the classic catastrophic shape and cap
+// the length. The pattern runs synchronously inside the PreToolUse gate, against a path the
+// session chose.
+describe('a path pattern that can backtrack exponentially is refused', () => {
+  it('refuses a repeated group whose body also repeats', () => {
+    for (const v of ['Write:^/tmp/(?:a+)+$', 'Write:^/tmp/(a*)*', 'Write:^/tmp/(a+)*',
+      'Read:^/tmp/(?:a?b?)+$', 'Write:^/tmp/((x+))+', 'Write:^/tmp/(?:[^/]+/)+x']) {
+      expect(classifyPathShape(v).structural, v).toBe(true);
+      expect(lintPermissionRule('path', v, true).ok, v).toBe(false);
+    }
+  });
+
+  it('leaves an ordinary group or a single quantifier alone', () => {
+    for (const v of ['Write:^/tmp/(a|b)', 'Write:^/tmp/[^/]+\\.json$', 'Write:^/tmp/.*',
+      'Write:^/tmp/(?:outpost)?', 'Write:^/tmp/(x)+']) {
+      expect(shaped(v), v).toBe(false);
+    }
+  });
+
+  it('caps the pattern length', () => {
+    const long = `Write:^/tmp/${'a'.repeat(300)}/`;
+    expect(classifyPathShape(long).structural).toBe(true);
+    expect(shaped(`Write:^/tmp/${'a'.repeat(150)}/`)).toBe(false);
+  });
+
+  it('answers in bounded time for the pattern that used to hang', () => {
+    // 26 characters took 216ms before the refusal; 40 did not return in 300s.
+    expect(() => assertNotWriteShaped('path', 'Write:^/tmp/(?:a+)+$')).toThrow(/backtrack/);
+    const started = Date.now();
+    classifyPathShape('Write:^/tmp/(?:a+)+$');
+    expect(Date.now() - started).toBeLessThan(100);
   });
 });

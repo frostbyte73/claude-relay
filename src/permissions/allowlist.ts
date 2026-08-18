@@ -39,7 +39,7 @@ interface CompiledRules {
 }
 
 // Tools whose input has a file-path-ish field that path rules apply to.
-const PATH_INPUT_FIELDS: Record<string, ReadonlyArray<string>> = {
+export const PATH_INPUT_FIELDS: Record<string, ReadonlyArray<string>> = {
   Read:         ['file_path'],
   Write:        ['file_path'],
   Edit:         ['file_path'],
