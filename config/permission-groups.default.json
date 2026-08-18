@@ -47,7 +47,7 @@
     "alwaysAllowPathPatterns": []
   },
   "edit": {
-    "description": "Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, npm/yarn/pnpm/go/pytest/cargo/turbo, mage limited to its two evidenced targets, npx limited to the one evidenced typecheck invocation, docker limited to a status check, git rebase/checkout --. node/tsx/vitest/jest/playwright/eslint/prettier/make dropped as bare grants — none had evidenced direct use, and a bare npx/make can't be anchored safely (the danger is in the target, not the command line); see permission-group-edit.test.ts.",
+    "description": "Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, npm/yarn/pnpm/go/pytest/cargo/turbo, mage limited to its two evidenced targets, npx limited to the one evidenced typecheck invocation, docker limited to a status check, local git as an anchored whitelist (git rebase <ref> with no --exec/-x, git checkout -- <path>, git merge <ref>/--abort, git add -A/<path> — no -C <path> prefix, no stash/reset/restore/cherry-pick/revert/clean/switch/apply/mv/rm; none evidenced by any edit-inheriting SKILL.md, see permission-group-edit-ceiling.test.ts). node/tsx/vitest/jest/playwright/eslint/prettier/make dropped as bare grants — none had evidenced direct use, and a bare npx/make can't be anchored safely (the danger is in the target, not the command line); see permission-group-edit.test.ts.",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
       "^mage$",
@@ -63,7 +63,11 @@
       "^turbo (format|lint|test|build)(\\s|$)",
       "^docker info$",
       "^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\\s|$)",
-      "^git (-C [^-\\s]\\S* )?(rebase|checkout|merge|stash|add|reset|restore|cherry-pick|revert|clean|switch|apply|mv|rm)(\\s|$)"
+      "^git checkout --(?:\\s+[A-Za-z0-9_./-]+)+$",
+      "^git rebase\\s+[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "^git merge\\s+(?:--abort|[A-Za-z0-9][A-Za-z0-9._/-]*)$",
+      "^git add\\s+-A$",
+      "^git add(?:\\s+[A-Za-z0-9_./-]+)+$"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": [

@@ -1361,6 +1361,23 @@ describe('code.implement grants the long tail its own SKILL.md and denial log ev
     expect(allows('protoc --descriptor_set_out=/tmp/out.desc livekit_models.proto')).toBe(false);
   });
 
+  // Ship 5's final whole-branch review: --es_out/-I/--proto_path were anchored on the trailing
+  // `.proto` but the destination itself was `\S+` — free to point anywhere. `mkdir` (unscoped,
+  // Ship 5 round 4) plus an absolute --es_out is a real write path to anywhere on the machine.
+  // The evidenced call's own `-I=../../protobufs` needs relative traversal, so the fix bars an
+  // absolute destination and $/~ expansion, not `..` itself.
+  it('does not let --es_out/-I/--proto_path point at an absolute destination', () => {
+    expect(allows(
+      'protoc --es_out /Users/x/evil --es_opt target=dts+js -I=../../protobufs ../../protobufs/livekit_models.proto',
+    )).toBe(false);
+    expect(allows(
+      'protoc --es_out src/gen --es_opt target=dts+js --proto_path=/Users/x ../../protobufs/livekit_models.proto',
+    )).toBe(false);
+    expect(allows(
+      'protoc --es_out $HOME/evil --es_opt target=dts+js -I=../../protobufs ../../protobufs/livekit_models.proto',
+    )).toBe(false);
+  });
+
   it('prints an lkctl-rendered manifest but cannot reach any other lkctl subcommand', () => {
     expect(allows('lkctl jkube print clusters/staging/oashburn1a/kube/unified-testing.jsonnet')).toBe(true);
     expect(allows('lkctl jkube apply clusters/staging/oashburn1a/kube/unified-testing.jsonnet')).toBe(false);

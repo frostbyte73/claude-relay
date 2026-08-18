@@ -2,7 +2,7 @@
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
     "^protoc --version$",
-    "^protoc(?:[ \\t]+--es_out(?:=|[ \\t])\\S+|[ \\t]+--es_opt(?:=|[ \\t])\\S+|[ \\t]+-I=\\S+|[ \\t]+--proto_path(?:=|[ \\t])\\S+)+[ \\t]+\\S+\\.proto$",
+    "^protoc(?:[ \\t]+--es_out(?:=|[ \\t])(?!/)[A-Za-z0-9._/-]+|[ \\t]+--es_opt(?:=|[ \\t])\\S+|[ \\t]+-I=(?!/)[A-Za-z0-9._/-]+|[ \\t]+--proto_path(?:=|[ \\t])(?!/)[A-Za-z0-9._/-]+)+[ \\t]+\\S+\\.proto$",
     "^lkctl jkube print[ \\t]+[A-Za-z0-9._/-]+$"
   ],
   "alwaysAllowMcpPatterns": [],
