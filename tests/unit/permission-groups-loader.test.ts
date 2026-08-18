@@ -103,4 +103,108 @@ describe('loadRuntimePermissionGroups', () => {
 
     expect(result.push!.alwaysAllowBashPatterns).toEqual(['^git commit', '^gh workflow run']);
   });
+
+  // --- CRITICAL 1: a group-editor removal must survive a restart ---
+
+  it('a removal survives a restart when the default is unchanged', () => {
+    const { live, seeded } = paths();
+    const original: PermissionGroupMap = { read: G(['^ls', '^rg(\\s|$)']) };
+    writeFileSync(seeded, JSON.stringify(original));
+    // The user deleted `^rg(\s|$)` via the group editor.
+    writeFileSync(live, JSON.stringify({ read: G(['^ls']) }));
+
+    const result = loadRuntimePermissionGroups(live, seeded, original);
+
+    expect(result.read!.alwaysAllowBashPatterns).toEqual(['^ls']);
+    expect(JSON.parse(readFileSync(live, 'utf8')).read.alwaysAllowBashPatterns).toEqual(['^ls']);
+  });
+
+  it('a removal survives a restart where the default gained an unrelated rule', () => {
+    const { live, seeded } = paths();
+    const originalDefault: PermissionGroupMap = { read: G(['^ls', '^rg(\\s|$)']) };
+    writeFileSync(seeded, JSON.stringify(originalDefault));
+    // The user deleted `^rg(\s|$)` via the group editor.
+    writeFileSync(live, JSON.stringify({ read: G(['^ls']) }));
+    // Meanwhile the default gained a new, unrelated rule.
+    const newDefault: PermissionGroupMap = { read: G(['^ls', '^rg(\\s|$)', '^grep(\\s|$)']) };
+
+    const result = loadRuntimePermissionGroups(live, seeded, newDefault);
+
+    expect(result.read!.alwaysAllowBashPatterns).toEqual(['^ls', '^grep(\\s|$)']);
+    expect(result.read!.alwaysAllowBashPatterns).not.toContain('^rg(\\s|$)');
+  });
+
+  it('a removed rule that the default independently tightens yields only the tightened form', () => {
+    const { live, seeded } = paths();
+    const originalDefault: PermissionGroupMap = { edit: G(['^(yarn|pnpm)(\\s|$)']) };
+    writeFileSync(seeded, JSON.stringify(originalDefault));
+    // The user deleted the loose rule outright (not just relying on the default to replace it).
+    writeFileSync(live, JSON.stringify({ edit: G([]) }));
+    // The default has since replaced it with a narrower rule — a different string, so it is
+    // not covered by the removal set, and lands anyway (see mergePermissionGroups header).
+    const newDefault: PermissionGroupMap = { edit: G(['^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)']) };
+
+    const result = loadRuntimePermissionGroups(live, seeded, newDefault);
+
+    expect(result.edit!.alwaysAllowBashPatterns).toEqual(['^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)']);
+  });
+
+  // --- CRITICAL 2: the loader must lint local additions ---
+
+  it('drops a write-shaped local addition into a non-gated group and warns', () => {
+    const { live, seeded } = paths();
+    writeFileSync(seeded, JSON.stringify({ pull: G([]) }));
+    // Hand-added directly to the gitignored live file — never went through the PUT editor.
+    writeFileSync(live, JSON.stringify({ pull: G(['^gh pr merge']) }));
+
+    const warn = console.warn;
+    const messages: string[] = [];
+    console.warn = (msg: string) => { messages.push(msg); };
+    let result: PermissionGroupMap;
+    try {
+      result = loadRuntimePermissionGroups(live, seeded, { pull: G([]) });
+    } finally {
+      console.warn = warn;
+    }
+
+    expect(result.pull!.alwaysAllowBashPatterns).not.toContain('^gh pr merge');
+    expect(messages.some((m) => m.includes('pull') && m.includes('^gh pr merge'))).toBe(true);
+  });
+
+  it('keeps the same write-shaped rule when hand-added to the gated push group', () => {
+    const { live, seeded } = paths();
+    writeFileSync(seeded, JSON.stringify({ push: G([]) }));
+    writeFileSync(live, JSON.stringify({ push: G(['^gh pr merge']) }));
+
+    const result = loadRuntimePermissionGroups(live, seeded, { push: G([]) });
+
+    expect(result.push!.alwaysAllowBashPatterns).toContain('^gh pr merge');
+  });
+
+  it('drops an interpreter-shaped local addition even into the gated push group', () => {
+    const { live, seeded } = paths();
+    writeFileSync(seeded, JSON.stringify({ push: G([]) }));
+    writeFileSync(live, JSON.stringify({ push: G(['^node(\\s|$)']) }));
+
+    const warn = console.warn;
+    console.warn = () => {};
+    let result: PermissionGroupMap;
+    try {
+      result = loadRuntimePermissionGroups(live, seeded, { push: G([]) });
+    } finally {
+      console.warn = warn;
+    }
+
+    expect(result.push!.alwaysAllowBashPatterns).not.toContain('^node(\\s|$)');
+  });
+
+  it('keeps a benign local addition like the livekit-docs MCP pattern', () => {
+    const { live, seeded } = paths();
+    writeFileSync(seeded, JSON.stringify({ pull: G([], ['^mcp__github__get_']) }));
+    writeFileSync(live, JSON.stringify({ pull: G([], ['^mcp__github__get_', '^mcp__livekit-docs__']) }));
+
+    const result = loadRuntimePermissionGroups(live, seeded, { pull: G([], ['^mcp__github__get_']) });
+
+    expect(result.pull!.alwaysAllowMcpPatterns).toContain('^mcp__livekit-docs__');
+  });
 });

@@ -369,6 +369,31 @@ export function assertNotWriteShaped(kind: RuleKind, value: string): void {
   }
 }
 
+export interface RuleLintVerdict {
+  ok: boolean;
+  reason?: string;
+  // True only when the sole problem is that a write-shaped rule sits in a non-gated group —
+  // i.e. it would clear this check in a gated one. False for a compile error or an
+  // interpreter shape, both of which are refused regardless of gating.
+  ungatedWrite?: boolean;
+}
+
+// The one policy for "may this rule live in this group", shared by the group-editor PUT
+// route (`validateGroupUpdate` in routes/meta.ts) and the runtime permission-groups loader's
+// lint of local additions. `gated` is passed in rather than looked up via GATED_GROUPS here,
+// so this module stays free of a dependency on actions/registry.ts (which already imports
+// this module for assertNotWriteShaped — importing back would cycle).
+export function lintPermissionRule(kind: RuleKind, value: string, gated: boolean): RuleLintVerdict {
+  const interp = classifyInterpreterShape(kind, value);
+  if (interp.writeShaped) return { ok: false, reason: interp.reason };
+  for (const shape of [classifyRuleShape(kind, value), classifyHttpWriteShape(kind, value)]) {
+    if (!shape.writeShaped) continue;
+    if (shape.reason.includes('does not compile')) return { ok: false, reason: shape.reason };
+    if (!gated) return { ok: false, reason: shape.reason, ungatedWrite: true };
+  }
+  return { ok: true };
+}
+
 export function classifyInterpreterShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind !== 'bash') return { writeShaped: false, reason: '' };
 
