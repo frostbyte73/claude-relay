@@ -151,7 +151,10 @@ export function resolveDenialVerdict(
   if (!denial) return { ok: false, status: 404, error: 'no such denial' };
 
   const reason = typeof payload.reason === 'string' ? payload.reason : '';
-  const decidedBy: DenialVerdict['decidedBy'] = payload.decidedBy === 'improver' ? 'improver' : 'user';
+  // Fail closed: an absent or malformed decidedBy must land on the UNPRIVILEGED value, since
+  // the whole point of the check below is that only an explicit 'user' may promote into a
+  // gated group. Trusting an absent field to mean 'user' would make omission the exploit.
+  const decidedBy: DenialVerdict['decidedBy'] = payload.decidedBy === 'user' ? 'user' : 'improver';
 
   if (disposition === 'promote') {
     const group = typeof payload.group === 'string' ? payload.group : '';

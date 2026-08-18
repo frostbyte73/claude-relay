@@ -122,11 +122,37 @@ describe('resolveDenialVerdict', () => {
 
   it('fix-action records the verdict and writes nothing else', () => {
     const denial = recordDenial();
+    // No decidedBy supplied — fix-action doesn't gate on it, so the failed-closed default
+    // ('improver') is fine to record here; this is just proving nothing else got touched.
     const r = resolve('read.thing', denial.id, { disposition: 'fix-action', reason: 'malformed command' });
     expect(r).toMatchObject({ ok: true, status: 200 });
-    expect(denial.verdict).toMatchObject({ disposition: 'fix-action', decidedBy: 'user' });
+    expect(denial.verdict).toMatchObject({ disposition: 'fix-action', decidedBy: 'improver' });
     expect(permissionGroups.pull).toEqual(expect.objectContaining({ alwaysAllowBashPatterns: ['^gh pr view '] }));
     expect(revisions.list('pull')).toHaveLength(0);
+  });
+
+  it('treats an absent decidedBy as improver, so a gated promote is refused by default', () => {
+    const denial = recordDenial({ toolInput: { command: 'gh pr merge 12 --squash' }, suggested: { kind: 'bash', value: '^gh pr merge ' } });
+    const r = resolve('read.thing', denial.id, {
+      disposition: 'promote', group: 'push',
+      rule: { kind: 'bash', value: '^gh pr merge [0-9]+ --squash$' },
+      reason: 'recurring merge',
+      // decidedBy omitted entirely — must fail closed, not default to the privileged 'user'.
+    });
+    expect(r).toMatchObject({ ok: false, status: 403 });
+    expect(permissionGroups.push!.alwaysAllowBashPatterns).toEqual([]);
+    expect(revisions.list('push')).toHaveLength(0);
+    expect(denial.verdict).toBeUndefined();
+  });
+
+  it('treats a malformed decidedBy the same as absent — improver, refused for a gated promote', () => {
+    const denial = recordDenial({ toolInput: { command: 'gh pr merge 12 --squash' }, suggested: { kind: 'bash', value: '^gh pr merge ' } });
+    const r = resolve('read.thing', denial.id, {
+      disposition: 'promote', group: 'push',
+      rule: { kind: 'bash', value: '^gh pr merge [0-9]+ --squash$' },
+      reason: 'recurring merge', decidedBy: 'Bob',
+    });
+    expect(r).toMatchObject({ ok: false, status: 403 });
   });
 
   it('refuses a promote into push from the improver, writing nothing', () => {

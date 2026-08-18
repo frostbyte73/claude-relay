@@ -23,21 +23,8 @@
     },
     "evidence": {
       "type": "array",
-      "description": "Cited observations backing the proposal, each naming the runs or counts it rests on. At least two distinct runIds per instruction change.",
+      "description": "Cited observations backing the proposal, each naming the runs or counts it rests on. At least two distinct runIds per instruction change; a denial verdict belongs here too, cited by its `id`.",
       "items": { "type": "string" }
-    },
-    "allowlistAdds": {
-      "type": "array",
-      "description": "Rules for recurring denials in the pack, scoped as narrowly as the blocked call needs.",
-      "items": {
-        "type": "object",
-        "required": ["kind", "value"],
-        "properties": {
-          "kind": { "enum": ["tool", "bash", "mcp", "path"] },
-          "value": { "type": "string" }
-        },
-        "additionalProperties": false
-      }
     }
   }
 }
