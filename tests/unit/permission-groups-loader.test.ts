@@ -89,4 +89,18 @@ describe('loadRuntimePermissionGroups', () => {
       expect.arrayContaining(['^git commit', '^gh workflow run', '^gh pr merge local-draft']),
     );
   });
+
+  it('does not duplicate a rule that is both a local addition and a newly-synced default entry', () => {
+    const { live, seeded } = paths();
+    writeFileSync(seeded, JSON.stringify({ push: G(['^git commit']) }));
+    // Live picked up `gh workflow run` locally (e.g. hand-synced) before the default caught up —
+    // relative to `seeded`, it's a local addition.
+    writeFileSync(live, JSON.stringify({ push: G(['^git commit', '^gh workflow run']) }));
+    // The default has since caught up and now also contains the same rule.
+    const newDefault: PermissionGroupMap = { push: G(['^git commit', '^gh workflow run']) };
+
+    const result = loadRuntimePermissionGroups(live, seeded, newDefault);
+
+    expect(result.push!.alwaysAllowBashPatterns).toEqual(['^git commit', '^gh workflow run']);
+  });
 });

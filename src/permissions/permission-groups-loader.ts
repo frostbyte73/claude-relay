@@ -32,6 +32,9 @@ export function diffPermissionGroups(minuend: PermissionGroupMap, subtrahend: Pe
 
 // `base` (current default) with `additions` (local-only rules) appended per array field.
 // A group that exists only in `additions` (a fully local group) is carried through as-is.
+// Deduped, base order preserved: a local addition can converge with a rule the default just
+// caught up on (e.g. dc hand-added `gh workflow run` live before the default synced it) — that
+// must land once, not twice, in the file the checker (and the next diff) reads.
 export function mergePermissionGroups(base: PermissionGroupMap, additions: PermissionGroupMap): PermissionGroupMap {
   const merged: PermissionGroupMap = {};
   for (const name of new Set([...Object.keys(base), ...Object.keys(additions)])) {
@@ -40,7 +43,14 @@ export function mergePermissionGroups(base: PermissionGroupMap, additions: Permi
     if (!baseGroup) { merged[name] = addGroup!; continue; }
     const mergedGroup = { ...baseGroup };
     for (const field of ARRAY_FIELDS) {
-      mergedGroup[field] = [...(baseGroup[field] ?? []), ...(addGroup?.[field] ?? [])];
+      const baseList = baseGroup[field] ?? [];
+      const seen = new Set(baseList);
+      const newOnly = (addGroup?.[field] ?? []).filter((rule) => {
+        if (seen.has(rule)) return false;
+        seen.add(rule);
+        return true;
+      });
+      mergedGroup[field] = [...baseList, ...newOnly];
     }
     merged[name] = mergedGroup;
   }
