@@ -129,8 +129,44 @@ export interface VerdictRequestBody {
 }
 
 export type VerdictOutcome =
-  | { ok: true; status: 200; denial: ActionDenial }
+  | { ok: true; status: 200; denial: ActionDenial; editSessionId?: string }
   | { ok: false; status: number; error: string };
+
+// Starts (or reuses) a meta.build-action edit session for the action, seeded with the denial as
+// feedback — what makes `fix-action` an actual queued fix rather than a stamp. Injected so
+// resolveDenialVerdict stays testable without a SessionManager.
+export type FixStarter = (
+  actionName: string, feedback: string,
+) => { ok: true; sessionId: string } | { ok: false; status: number; error: string };
+
+// The feedback a `fix-action` verdict hands the action builder. It names the exact blocked call
+// and states the one thing the builder must not conclude on its own: that the answer is a wider
+// grant. Only a user-approved group edit can widen anything (see resolveDenialVerdict), so a
+// builder that "fixes" this by asking for permissions produces a proposal nobody can apply.
+export function fixActionFeedback(denial: ActionDenial, reason: string): string {
+  const call = denial.toolName === 'Bash'
+    ? (denial.toolInput as { command?: string } | null)?.command ?? '(command not recorded)'
+    : `${denial.toolName} ${JSON.stringify(denial.toolInput ?? null)}`;
+  const seen = denial.count > 1 ? ` (blocked ${denial.count} times)` : '';
+  const lines = [
+    `A permission denial on this action was classified "fix the action"${seen} — the call below is`,
+    'not something to grant, it is something the action should stop doing.',
+    '',
+    `Blocked call: ${call.slice(0, 500)}`,
+    denial.suggested.kind === 'none'
+      ? `No rule could unblock this call: ${denial.suggested.value}`
+      : `A rule that WOULD have unblocked it — deliberately not granted: ${denial.suggested.kind} ${denial.suggested.value}`,
+  ];
+  if (reason) lines.push('', `The user's reason: ${reason}`);
+  lines.push(
+    '',
+    'Revise SKILL.md so the action achieves its goal without this call — a different command,',
+    'a tool it already has, or dropping the step. Do NOT propose allowlist additions: widening a',
+    "permission group is a separate, user-approved action on Settings > Permissions. If the call is",
+    'genuinely necessary and no alternative exists, say so in your rationale and propose no change.',
+  );
+  return lines.join('\n');
+}
 
 const RULE_KINDS: readonly RuleKind[] = ['tool', 'bash', 'mcp', 'path'];
 
@@ -157,8 +193,19 @@ function addRuleToGroup(current: PermissionGroup | undefined, kind: RuleKind, va
 // (in its evidence, ahead of this route ever being called), but only a human's 'user' verdict
 // may apply it — a gated group means nothing if a model can grant into it. Exported standalone
 // (not a closure inside registerActionsRoutes) so it's testable without standing up a Server.
+//
+// A verdict is stamped LAST in every branch. Both the non-`never` dispositions have a side
+// effect that can fail (a group edit, an edit-session spawn), and stamping first would resolve
+// the denial — deleting it from the only evidence meta.improve-actions reads — on the strength
+// of work that then didn't happen.
 export function resolveDenialVerdict(
-  deps: { denialsStore: DenialsStore; permissionGroups: PermissionGroupMap; applyGroup: GroupApplier },
+  deps: {
+    denialsStore: DenialsStore;
+    permissionGroups: PermissionGroupMap;
+    applyGroup: GroupApplier;
+    inheritedGroups: (actionName: string) => string[] | undefined;
+    startFix: FixStarter;
+  },
   actionName: string,
   denialId: string,
   payload: VerdictRequestBody,
@@ -184,6 +231,29 @@ export function resolveDenialVerdict(
     if (!group || typeof value !== 'string' || !value || !RULE_KINDS.includes(kind as RuleKind)) {
       return { ok: false, status: 400, error: 'promote requires group and rule: { kind, value }' };
     }
+
+    // An action's grants are core ∪ the groups it declares (ActionRegistry.resolvePermissions),
+    // so promoting into a group it does NOT declare is strictly worse than doing nothing: it
+    // resolves the denial, widens that group for every other action that does declare it, and
+    // leaves this call blocked exactly as it was. Refuse instead of answering 200 to a no-op —
+    // the two honest fixes are a group the action actually inherits, or fix-action.
+    const inherited = deps.inheritedGroups(actionName);
+    if (!inherited) {
+      return {
+        ok: false, status: 409,
+        error: `${actionName} is not in the action catalog, so no group can unblock it — record "never" instead`,
+      };
+    }
+    if (!inherited.includes(group)) {
+      return {
+        ok: false, status: 400,
+        error: `${actionName} does not inherit "${group}", so promoting there would widen that group `
+          + `for other actions and still leave this call blocked. It inherits: `
+          + `${inherited.join(', ') || '(no groups)'}. To give it a group it doesn't declare, change its `
+          + `permissions with "Fix the action".`,
+      };
+    }
+
     const gated = GATED_GROUPS.has(group);
     // The standing rule: a gated group is only gated if nothing but a human can grant into it.
     if (gated && decidedBy !== 'user') {
@@ -202,6 +272,25 @@ export function resolveDenialVerdict(
     };
     deps.denialsStore.setVerdict(actionName, denialId, verdict);
     return { ok: true, status: 200, denial };
+  }
+
+  // A user's `fix-action` is a claim that the action's own instructions are wrong, so it has to
+  // queue the fix. Stamping it alone would delete the denial from the improvement loop's
+  // evidence (unresolved() keys on verdict presence) while asking nobody to do anything — the
+  // retired "Dismiss" button under a better name. The spawn runs BEFORE the stamp so a failure
+  // leaves the evidence intact rather than swallowing it.
+  //
+  // The improver's own `fix-action` verdicts (including shellArtifactVerdict's auto-stamp at
+  // record time) deliberately queue nothing: those say "this was never a permission gap", the
+  // improver already has its own proposal channel, and spawning a builder session per malformed
+  // `cd` would be a session storm no user asked for.
+  if (disposition === 'fix-action' && decidedBy === 'user') {
+    const started = deps.startFix(actionName, fixActionFeedback(denial, reason));
+    if (!started.ok) return { ok: false, status: started.status, error: started.error };
+    deps.denialsStore.setVerdict(actionName, denialId, {
+      disposition, reason, decidedAt: Date.now(), decidedBy,
+    });
+    return { ok: true, status: 200, denial, editSessionId: started.sessionId };
   }
 
   deps.denialsStore.setVerdict(actionName, denialId, { disposition, reason, decidedAt: Date.now(), decidedBy });
@@ -581,21 +670,29 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // freshly-created action should render "no runs yet", not an error.
   server.route('GET', '/api/actions/:name/scorecard', handleScorecard);
 
-  // Record a verdict on a denial — `never`/`fix-action` just record; `promote` applies the
-  // rule through applyGroup (see resolveDenialVerdict). This is the only endpoint that can
-  // resolve a denial now that the Library panel's Dismiss button is gone.
+  // Record a verdict on a denial — `never` just records; `promote` applies the rule through
+  // applyGroup, and a user's `fix-action` opens a meta.build-action edit session (see
+  // resolveDenialVerdict). This is the only endpoint that can resolve a denial now that the
+  // Library panel's Dismiss button is gone.
   server.route('POST', '/api/actions/:name/denials/:denialId/verdict', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials\/([^/?]+)\/verdict(?:\?|$)/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const name = decodeURIComponent(m[1]!);
     const denialId = decodeURIComponent(m[2]!);
     const payload = await readJsonBody<VerdictRequestBody>(req);
-    const result = resolveDenialVerdict({ denialsStore, permissionGroups, applyGroup }, name, denialId, payload ?? {});
+    const result = resolveDenialVerdict({
+      denialsStore, permissionGroups, applyGroup,
+      inheritedGroups: (action) => actionRegistry.inheritedGroups(action),
+      startFix: startActionEdit,
+    }, name, denialId, payload ?? {});
     res.statusCode = result.status;
     if (result.ok) {
       try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ ok: true, denial: result.denial }));
+      res.end(JSON.stringify({
+        ok: true, denial: result.denial,
+        ...(result.editSessionId ? { editSessionId: result.editSessionId } : {}),
+      }));
     } else {
       res.end(result.error);
     }
@@ -651,17 +748,19 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     res.end(JSON.stringify({ sessionId, actionName: proposedName || null }));
   });
 
-  server.route('POST', '/api/actions/:name/edit', async (req, res) => {
-    const parts = (req.url ?? '').split('?')[0]!.split('/');
-    const name = decodeURIComponent(parts[parts.length - 2] ?? '');
-    if (!name) { res.statusCode = 400; res.end('missing name'); return; }
+  // Starts or reuses the meta.build-action edit session for `name`. Extracted from
+  // POST /api/actions/:name/edit so the denial-verdict route's `fix-action` goes through the
+  // exact same path — a second spawn site would drift from this one's reuse handling and leave
+  // two builder sessions racing on one SKILL.md.
+  function startActionEdit(
+    name: string, feedback: string,
+  ): { ok: true; sessionId: string; reused?: boolean } | { ok: false; status: number; error: string } {
+    if (!name) return { ok: false, status: 400, error: 'missing name' };
     let dir: string;
     try { ({ dir } = actionDirFor(outpostActionsDir, name)); }
-    catch (e) { res.statusCode = 400; res.end(`invalid action name: ${(e as Error).message}`); return; }
+    catch (e) { return { ok: false, status: 400, error: `invalid action name: ${(e as Error).message}` }; }
     try { if (!lstatSync(dir).isDirectory()) throw new Error('not a dir'); }
-    catch { res.statusCode = 404; res.end('no such action'); return; }
-    const payload = await readJsonBody<{ feedback?: string }>(req);
-    const feedback = (payload?.feedback ?? '').trim();
+    catch { return { ok: false, status: 404, error: 'no such action' }; }
     const key = editKey(name, '');
 
     // If an edit is already running for this action, treat this as proposal-feedback —
@@ -679,9 +778,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
         ? `Replacement feedback from the user:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (skill_md_before may be stale if you already applied a draft) and post a new proposal.`
         : 'Replan with no new feedback — refresh the proposal.';
       manager.sendOrResume(existing.sessionId, dir, { type: 'user', message: { role: 'user', content: followup } }, actionEditEnv(existing.sessionId, join(RUNTIME_DIR, 'action-edits', existing.sessionId, 'envelope.json'), name));
-      res.statusCode = 200; res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ sessionId: existing.sessionId, reused: true }));
-      return;
+      return { ok: true, sessionId: existing.sessionId, reused: true };
     }
 
     const sessionId = randomUUID();
@@ -710,8 +807,17 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       startedAt: Date.now(),
       feedback,
     });
+    return { ok: true, sessionId };
+  }
+
+  server.route('POST', '/api/actions/:name/edit', async (req, res) => {
+    const parts = (req.url ?? '').split('?')[0]!.split('/');
+    const name = decodeURIComponent(parts[parts.length - 2] ?? '');
+    const payload = await readJsonBody<{ feedback?: string }>(req);
+    const started = startActionEdit(name, (payload?.feedback ?? '').trim());
+    if (!started.ok) { res.statusCode = started.status; res.end(started.error); return; }
     res.statusCode = 200; res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ sessionId }));
+    res.end(JSON.stringify({ sessionId: started.sessionId, ...(started.reused ? { reused: true } : {}) }));
   });
 
   // Approve the pending proposal: write SKILL.md, add allowlist rules, close session.

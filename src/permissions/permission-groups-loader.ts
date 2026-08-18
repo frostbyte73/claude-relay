@@ -23,7 +23,10 @@ export function writeJsonAtomic(path: string, data: unknown): void {
   renameSync(tmp, path);
 }
 
-// Per group, per array field: entries present in `minuend` but not `subtrahend`.
+// Per group, per array field: entries present in `minuend` but not `subtrahend`. Plus the
+// description when it differs — it's a scalar, so it has no "extra entries", but it IS locally
+// editable through PUT /api/permission-groups/:name. Leaving it out of the diff made it
+// default-owned, which silently reverted every description edit at the next boot.
 export function diffPermissionGroups(minuend: PermissionGroupMap, subtrahend: PermissionGroupMap): PermissionGroupMap {
   const result: PermissionGroupMap = {};
   for (const [name, group] of Object.entries(minuend)) {
@@ -35,12 +38,17 @@ export function diffPermissionGroups(minuend: PermissionGroupMap, subtrahend: Pe
       extra[field] = (group[field] ?? []).filter((rule) => !baseSet.has(rule));
       if (extra[field].length > 0) hasExtra = true;
     }
+    if ((group.description ?? '') !== (base?.description ?? '')) {
+      extra.description = group.description ?? '';
+      hasExtra = true;
+    }
     if (hasExtra) result[name] = extra;
   }
   return result;
 }
 
-// `base` (current default) with `additions` (local-only rules) appended per array field, minus
+// `base` (current default) with `additions` (local-only rules and description) applied per array
+// field, minus
 // `removals` (default-derived rules the user deleted) filtered out of `base` first. A group
 // that exists only in `additions` (a fully local group) is carried through as-is. Deduped, base
 // order preserved: a local addition can converge with a rule the default just caught up on
@@ -71,6 +79,11 @@ export function mergePermissionGroups(
       });
       mergedGroup[field] = [...baseList, ...newOnly];
     }
+    // A locally-edited description wins over the default's, the same way a local rule addition
+    // does. A default that also rewords its description therefore loses to the user's edit —
+    // deliberate: prose is theirs to own once they've touched it, and unlike a rule it grants
+    // nothing, so there is no security cost to preferring it.
+    if (addGroup?.description !== undefined) mergedGroup.description = addGroup.description;
     merged[name] = mergedGroup;
   }
   return merged;

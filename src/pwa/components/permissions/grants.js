@@ -5,7 +5,10 @@ import { grantRows, groupCards, GATED_GROUP_NAMES, KIND_ORDER, KIND_LABEL } from
 
 // The Grants block of the Permissions page: every global/project/action-scoped allowlist rule,
 // laid out by kind (same taxonomy the group editor uses) rather than nested under a group —
-// a grant here isn't scoped to any group, it's what an unbound interactive call falls back to.
+// a grant here belongs to no group. Global and project rules are what an unbound interactive
+// call falls back to; an `action · <name>` row is narrower and NOT inert — `scopesFor` still
+// consults actionsStore for an action-bound call, so that row is a real grant to that one
+// action, on top of its groups. Rows of both kinds are revocable here; see index.js's subtitle.
 //
 // This block is NOT a second door into a permission group. "Promote..." hands the exact
 // (kind, value) to the Groups block's own inline editor via `deps.promoteToGroup` and stops
@@ -18,6 +21,9 @@ export function renderGrantsBlock(mount, deps) {
     editingId: null,
     editValue: '',
     saving: false,
+    revokingId: null,  // id of the row with an in-flight DELETE — the id encodes the value, so
+                       // a second click on the same row re-sends a request the first one already
+                       // made dead and the row renders the resulting 404 as if it had failed
     error: null,       // { id, message } — message is the server's text, unmodified
     promotingId: null, // id of the row whose group picker is open
     promoteGroup: '',
@@ -62,6 +68,7 @@ export function renderGrantsBlock(mount, deps) {
   function rowHtml(row) {
     const isEditing = state.editingId === row.id;
     const isPromoting = state.promotingId === row.id;
+    const isRevoking = state.revokingId === row.id;
     const err = !isEditing && state.error && state.error.id === row.id ? state.error.message : null;
     return `
       <div class="allow-row" data-id="${escapeHtml(row.id)}" data-kind="${row.kind}" data-editable="${row.editable}">
@@ -75,9 +82,9 @@ export function renderGrantsBlock(mount, deps) {
           ${err ? `<div class="permgroup-rule-error">${escapeHtml(err)}</div>` : ''}
         </div>
         <div class="allow-row-actions">
-          ${!isEditing && row.editable ? '<button type="button" class="o-btn o-btn--ghost sm allow-edit">Edit</button>' : ''}
-          ${!isEditing ? '<button type="button" class="o-btn o-btn--ghost sm allow-promote">Promote…</button>' : ''}
-          ${!isEditing ? '<button type="button" class="o-btn o-btn--default sm allow-row-revoke">Revoke</button>' : ''}
+          ${!isEditing && row.editable ? `<button type="button" class="o-btn o-btn--ghost sm allow-edit"${isRevoking ? ' disabled' : ''}>Edit</button>` : ''}
+          ${!isEditing ? `<button type="button" class="o-btn o-btn--ghost sm allow-promote"${isRevoking ? ' disabled' : ''}>Promote…</button>` : ''}
+          ${!isEditing ? `<button type="button" class="o-btn o-btn--default sm allow-row-revoke"${isRevoking ? ' disabled' : ''}>${isRevoking ? 'Revoking…' : 'Revoke'}</button>` : ''}
         </div>
       </div>
     `;
@@ -134,12 +141,18 @@ export function renderGrantsBlock(mount, deps) {
   }
 
   async function revoke(id, pattern) {
+    if (state.revokingId) return;
     if (!confirm(`Revoke "${pattern}"? Anything relying on this grant loses it immediately.`)) return;
     state.error = null;
+    state.revokingId = id;
+    paint();
     try {
       await metaApi.deleteAllowlistRule(id);
+      state.revokingId = null;
+      // reloadRules repaints via the store subscription; the row is gone by then.
       await grantsStore.reloadRules();
     } catch (e) {
+      state.revokingId = null;
       state.error = { id, message: e.body || e.message };
       paint();
     }

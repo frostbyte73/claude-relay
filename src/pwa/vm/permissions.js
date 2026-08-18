@@ -39,6 +39,15 @@ export function groupCards(groups = []) {
     }));
 }
 
+// The groups a denied call may be promoted into: the intersection of the loaded groups with the
+// ones its action INHERITS (`denial.groups`, from /api/permissions/pending). An action's grants
+// are core ∪ the groups it declares, so a rule in any other group reaches a different set of
+// actions and leaves this call blocked — the server refuses that promote, and offering it here
+// would be offering a guaranteed error. Empty means promote isn't available for this row at all.
+export function promotableGroupCards(groups = [], inherited = []) {
+  return groupCards(groups).filter((c) => inherited.includes(c.name));
+}
+
 // `index` is the rule's position within its own kind array — the PUT body rebuilds the whole
 // group, so an editor needs to address a rule by where it sits, not by its text (two identical
 // patterns in one kind would otherwise be indistinguishable).

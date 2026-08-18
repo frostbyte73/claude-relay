@@ -239,6 +239,10 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
   font-size: 12px;
 }
 .perm-pending-gated-note { color: var(--warn); flex-basis: 100%; margin: 0; }
+/* Sits above the select on its own row: the picker only lists the groups the action inherits,
+   and naming them is what explains a short list (or an empty one) instead of leaving it looking
+   like a load failure. */
+.perm-pending-inherit-note { flex-basis: 100%; margin: 0; }
 
 /* ── Grants ───────────────────────────────────────────────────────────── */
 /* The single most load-bearing sentence on the Permissions page (see index.js) — a callout,
@@ -252,6 +256,9 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
   font-size: 12px;
 }
 .perm-grants-subtitle strong { color: var(--accent); }
+/* The subtitle names the `action · name` scope literally, so it carries inline code at callout
+   size — inherit it rather than letting the global code size break the line rhythm. */
+.perm-grants-subtitle code { font-size: inherit; font-family: var(--font-mono); }
 .allow-kind + .allow-kind { margin-top: var(--gap-4); }
 .allow-kind h4 { margin: 0 0 var(--gap-2); }
 .allow-row {

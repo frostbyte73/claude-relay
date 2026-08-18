@@ -38,6 +38,32 @@ describe('loadRuntimePermissionGroups', () => {
     expect(result.pull!.alwaysAllowBashPatterns).toContain('^kubectl get');
   });
 
+  // The merge reconciled only the four pattern arrays, so `description` came straight off the
+  // default and a description edited through PUT /api/permission-groups/:name silently reverted
+  // at the next daemon boot — with the revision log still claiming the edit had been applied.
+  it('a locally-edited description survives the next boot', () => {
+    const { live, seeded } = paths();
+    const originalDefault: PermissionGroupMap = { pull: { ...G(['^kubectl get']), description: 'shipped wording' } };
+    writeFileSync(seeded, JSON.stringify(originalDefault));
+    writeFileSync(live, JSON.stringify({ pull: { ...G(['^kubectl get']), description: "dc's wording" } }));
+
+    const result = loadRuntimePermissionGroups(live, seeded, originalDefault);
+    expect(result.pull!.description).toBe("dc's wording");
+    // And it has to be in the file too, or the boot after this one reverts it.
+    expect(JSON.parse(readFileSync(live, 'utf8')).pull.description).toBe("dc's wording");
+  });
+
+  it('an untouched description still tracks the default', () => {
+    const { live, seeded } = paths();
+    const originalDefault: PermissionGroupMap = { pull: { ...G([]), description: 'old wording' } };
+    writeFileSync(seeded, JSON.stringify(originalDefault));
+    writeFileSync(live, JSON.stringify(originalDefault));
+    const newDefault: PermissionGroupMap = { pull: { ...G([]), description: 'reworded upstream' } };
+
+    const result = loadRuntimePermissionGroups(live, seeded, newDefault);
+    expect(result.pull!.description).toBe('reworded upstream');
+  });
+
   it('drops a superseded default rule once the snapshot exists', () => {
     const { live, seeded } = paths();
     const originalDefault: PermissionGroupMap = { edit: G(['^(yarn|pnpm)(\\s|$)']) };

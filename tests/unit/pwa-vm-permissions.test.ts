@@ -1,5 +1,5 @@
 // @ts-expect-error — plain-JS PWA module
-import { groupCards, groupContents, grantRows, pendingRows, groupWithRule, groupWithoutRule, errorTarget } from '../../src/pwa/vm/permissions.js';
+import { groupCards, groupContents, grantRows, pendingRows, promotableGroupCards, groupWithRule, groupWithoutRule, errorTarget } from '../../src/pwa/vm/permissions.js';
 import { describe, it, expect } from 'vitest';
 
 const GROUPS = [
@@ -83,6 +83,27 @@ describe('grantRows', () => {
 
   it('keeps the server id — revoke and edit both address the rule by it', () => {
     expect(grantRows(RULES)[0].id).toBe('a1');
+  });
+});
+
+// The picker used to offer every loaded group. Promoting a read.investigate denial into `edit`
+// then answered 200: the denial left Pending, `edit` was widened for the four actions that DO
+// inherit it, and the original call stayed blocked.
+describe('promotableGroupCards', () => {
+  it('offers only the groups the action inherits', () => {
+    expect(promotableGroupCards(GROUPS, ['read']).map((c: any) => c.name)).toEqual(['read']);
+  });
+
+  it('offers nothing when the action inherits nothing — e.g. it has left the catalog', () => {
+    expect(promotableGroupCards(GROUPS, [])).toEqual([]);
+  });
+
+  it('ignores an inherited group that is not loaded rather than inventing a card for it', () => {
+    expect(promotableGroupCards(GROUPS, ['read', 'core']).map((c: any) => c.name)).toEqual(['read']);
+  });
+
+  it('keeps the gated flag, so the sign-off still triggers', () => {
+    expect(promotableGroupCards(GROUPS, ['push'])[0].gated).toBe(true);
   });
 });
 

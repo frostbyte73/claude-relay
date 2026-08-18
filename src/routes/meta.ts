@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
-import { GATED_GROUPS } from '../actions/registry.js';
+import { GATED_GROUPS, groupNamesForAction } from '../actions/registry.js';
 import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import { Allowlist, type AllowlistConfig, type RuleKind, type RuleScope } from '../permissions/allowlist.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
@@ -36,19 +36,6 @@ export interface MetaRoutesDeps {
   mcpConfigPath: string;
   permissionGroupsPath: string;
   groupRevisions: PermissionGroupRevisionsStore;
-}
-
-// Same group-name resolution ActionRegistry.resolvePermissions uses internally
-// (core implied for claude runners, explicit "core" in the list is a no-op) —
-// duplicated here rather than exported from the registry since it's the only
-// other place that needs it.
-function groupNamesForAction(fm: { outpost: { runner: string; permissions?: string[] } }): string[] {
-  const names: string[] = [];
-  if (fm.outpost.runner === 'claude') names.push('core');
-  for (const g of fm.outpost.permissions ?? []) {
-    if (g !== 'core') names.push(g);
-  }
-  return names;
 }
 
 // Matches claude code's projects-dir sanitization (also duplicated in
@@ -685,6 +672,12 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   interface PendingDenialEntry {
     action: string; id: string; tool: string; command: string | null;
     suggested: { kind: string; value: string } | null; count: number; at: number;
+    // The groups this action inherits — the ONLY destinations a promote can unblock it from
+    // (see ActionRegistry.inheritedGroups). Without this the picker offered all five groups,
+    // and choosing a non-inherited one widened that group for every other action while leaving
+    // the denied call blocked. Empty means nothing can be promoted: either the action is gone
+    // from the catalog, or it declares no groups at all.
+    groups: string[];
   }
 
   // Every unresolved denial across every action, in one cross-action payload — there's no
@@ -697,12 +690,13 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   function handleGetPermissionsPending(_req: IncomingMessage, res: ServerResponse): void {
     const denials: PendingDenialEntry[] = [];
     for (const action of Object.keys(denialsStore.all())) {
+      const groups = actionRegistry.inheritedGroups(action) ?? [];
       for (const d of denialsStore.unresolved(action)) {
         denials.push({
           action, id: d.id, tool: d.toolName,
           command: truncatedDenialCommand(d.toolName, d.toolInput),
           suggested: d.suggested.kind === 'none' ? null : { kind: d.suggested.kind, value: d.suggested.value },
-          count: d.count, at: d.at,
+          count: d.count, at: d.at, groups,
         });
       }
     }

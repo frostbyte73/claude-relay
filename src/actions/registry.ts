@@ -31,6 +31,22 @@ export function actionDirFor(actionsDir: string, name: string): { dir: string; c
   return { dir: join(actionsDir, category, rest), category, rest };
 }
 
+// The groups an action inherits: `core` implied for a claude runner, then its declared
+// `permissions` (an explicit "core" in that list is a no-op). Exported because three callers
+// need the same answer and they must not drift — resolvePermissions builds the action's grants
+// from it, GET /api/permission-groups counts actions per group with it, and the denial-verdict
+// route refuses a promote into a group outside it (a group the action can't see grants it
+// nothing). Takes the frontmatter shape structurally so a caller holding a plain parsed
+// SKILL.md doesn't need an ActionDef.
+export function groupNamesForAction(fm: { outpost: { runner: string; permissions?: string[] } }): string[] {
+  const names: string[] = [];
+  if (fm.outpost.runner === 'claude') names.push('core');
+  for (const g of fm.outpost.permissions ?? []) {
+    if (g !== 'core') names.push(g);
+  }
+  return names;
+}
+
 export interface RegistryLoadError {
   path: string;
   message: string;
@@ -81,6 +97,16 @@ export class ActionRegistry {
   listActions(): ActionDef[] { return [...this.actionsByName.values()]; }
   gatedFor(actionName: string): ActionAllowlist | undefined {
     return this.getAction(actionName)?.gated;
+  }
+
+  // The groups this action's grants actually come from — the only destinations a promote can
+  // usefully target. Filtered to groups that exist right now, since an implied `core` is only
+  // inherited if there is a `core` to inherit. `undefined` means the action isn't in the
+  // catalog at all, which is a different answer from "inherits nothing".
+  inheritedGroups(actionName: string): string[] | undefined {
+    const action = this.getAction(actionName);
+    if (!action) return undefined;
+    return groupNamesForAction(action.frontmatter).filter((name) => !!this.permissionGroups[name]);
   }
 
   private walkActions(root: string, errors: RegistryLoadError[]): void {
@@ -147,18 +173,16 @@ export class ActionRegistry {
       alwaysAllow: [], alwaysAllowBashPatterns: [],
       alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
     };
-    const groupNames: string[] = [];
-    if (fm.outpost.runner === 'claude' && this.permissionGroups.core) groupNames.push('core');
-    for (const name of fm.outpost.permissions ?? []) {
-      if (name === 'core') continue; // already added (or intentionally absent for builtin)
-      if (!this.permissionGroups[name]) {
+    for (const name of groupNamesForAction(fm)) {
+      const group = this.permissionGroups[name];
+      if (!group) {
+        // An absent `core` is legitimate — a registry built without permission groups at all,
+        // or a builtin runner. An absent *declared* group is a broken SKILL.md.
+        if (name === 'core') continue;
         throw new Error(`unknown permission group: ${JSON.stringify(name)}`);
       }
-      groupNames.push(name);
-    }
-    for (const name of groupNames) {
-      mergeAllowlist(merged, this.permissionGroups[name]!);
-      if (GATED_GROUPS.has(name)) mergeAllowlist(gated, this.permissionGroups[name]!);
+      mergeAllowlist(merged, group);
+      if (GATED_GROUPS.has(name)) mergeAllowlist(gated, group);
     }
     mergeAllowlist(merged, extras);
     return { allowlist: merged, gated };

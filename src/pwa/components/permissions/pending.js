@@ -3,14 +3,19 @@ import { relPast } from '../../utils/formatting.js';
 import { grantsStore } from '../../state/grants.js';
 import { nav } from '../../state/nav.js';
 import { metaApi } from '../../net/meta.js';
-import { pendingRows, mcpUnclassifiedRows, groupCards, GATED_GROUP_NAMES } from '../../vm/permissions.js';
+import { pendingRows, mcpUnclassifiedRows, promotableGroupCards, GATED_GROUP_NAMES } from '../../vm/permissions.js';
 
 // The Pending classifications block of the Permissions page: this is the "Allow" button's
 // honest successor. A blocked call never becomes a grant with one click here — it becomes
-// evidence with three possible verdicts. `never` and `fix-action` resolve the denial and grant
-// nothing; `promote` is the only one that can widen the system, so it alone opens a group
-// picker (plus a sign-off confirm for a gated group) and is styled to stand apart from the
-// other two at a glance.
+// evidence with three possible verdicts. `never` records the decision and grants nothing;
+// `fix-action` grants nothing either but queues a meta.build-action edit and navigates to it,
+// which is what keeps it from being the retired "Dismiss" button under a nicer word; `promote`
+// is the only one that can widen the system, so it alone opens a group picker (plus a sign-off
+// confirm for a gated group) and is styled to stand apart from the other two at a glance.
+//
+// The picker offers only the groups the action INHERITS (`row.groups`, from
+// /api/permissions/pending). Any other group is refused by the server: it would widen that
+// group for every action that does inherit it and still leave this call blocked.
 //
 // The MCP half lists servers with unclassified tools and links to Settings > MCP connections
 // rather than rebuilding that panel's apply flow here (see routes/meta.ts and vm/permissions.js
@@ -54,13 +59,19 @@ export function renderPendingBlock(mount) {
     `;
   }
 
+  function promotableGroups(row) {
+    const snap = grantsStore.get();
+    return snap.groupsLoaded ? promotableGroupCards(snap.groups, row.groups ?? []) : [];
+  }
+
   function promoteHtml(row) {
     const snap = grantsStore.get();
-    const cards = snap.groupsLoaded ? groupCards(snap.groups) : [];
+    const cards = promotableGroups(row);
     const gatedSelected = GATED_GROUP_NAMES.includes(state.promoteGroup);
     const busy = state.busyId === row.id;
     return `
       <div class="perm-pending-picker">
+        <p class="settings-note perm-pending-inherit-note">${escapeHtml(row.action)} inherits ${escapeHtml(cards.map((c) => c.name).join(', ') || 'no groups')} — a rule anywhere else can't reach it.</p>
         <select class="perm-pending-group-select"${snap.groupsLoaded ? '' : ' disabled'}>
           <option value="">${snap.groupsLoaded ? 'Choose a group…' : 'Loading groups…'}</option>
           ${cards.map((c) => `<option value="${escapeHtml(c.name)}"${c.name === state.promoteGroup ? ' selected' : ''}>${escapeHtml(c.name)}${c.gated ? ' (gated)' : ''}</option>`).join('')}
@@ -76,6 +87,11 @@ export function renderPendingBlock(mount) {
     const busy = state.busyId === row.id;
     const promoting = state.promotingId === row.id;
     const err = state.error && state.error.id === row.id ? state.error.message : null;
+    const inherited = row.groups ?? [];
+    const promotable = !!row.suggested && inherited.length > 0;
+    const promoteTitle = !row.suggested ? 'No rule could be derived for this call'
+      : inherited.length === 0 ? `${action} declares no permission groups, so no group can unblock it`
+      : `Grants a real permission — opens a picker over the groups ${action} inherits`;
     return `
       <div class="perm-pending-row" data-id="${escapeHtml(row.id)}" data-action="${escapeHtml(action)}">
         <div class="perm-pending-row-main">
@@ -90,9 +106,10 @@ export function renderPendingBlock(mount) {
         </div>
         <div class="perm-pending-actions">
           <button type="button" class="o-btn o-btn--ghost sm perm-pending-never"${busy ? ' disabled' : ''}>Never</button>
-          <button type="button" class="o-btn o-btn--ghost sm perm-pending-fix"${busy ? ' disabled' : ''}>Fix the action</button>
-          <button type="button" class="o-btn o-btn--danger sm perm-pending-promote-btn"${busy || !row.suggested ? ' disabled' : ''}
-            title="${row.suggested ? 'Grants a real permission — opens a group picker' : 'No rule could be derived for this call'}">Promote…</button>
+          <button type="button" class="o-btn o-btn--ghost sm perm-pending-fix"${busy ? ' disabled' : ''}
+            title="Opens the action builder with this blocked call as feedback">Fix the action…</button>
+          <button type="button" class="o-btn o-btn--danger sm perm-pending-promote-btn"${busy || !promotable ? ' disabled' : ''}
+            title="${escapeHtml(promoteTitle)}">Promote…</button>
         </div>
         ${promoting ? promoteHtml(row) : ''}
         ${err ? `<div class="permgroup-rule-error">${escapeHtml(err)}</div>` : ''}
@@ -157,11 +174,15 @@ export function renderPendingBlock(mount) {
     state.error = null;
     paint();
     try {
-      await metaApi.denialVerdict(action, denialId, body);
+      const result = await metaApi.denialVerdict(action, denialId, body);
       state.promotingId = null;
       state.promoteGroup = '';
       await grantsStore.reloadPending();
       if (body.disposition === 'promote') await grantsStore.reloadGroups();
+      // `fix-action` queues a real meta.build-action edit server-side; land the user in it
+      // rather than leaving them on a row that silently vanished. Navigating by action name is
+      // what the Library's own Feedback flow does — skills-detail renders the in-flight edit.
+      if (result?.editSessionId) nav.select('skills', action);
     } catch (e) {
       state.error = { id: denialId, message: e.body || e.message };
     } finally {

@@ -45,6 +45,19 @@ function writeMcpConfig(servers: Record<string, { url: string }>): void {
   writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: servers }));
 }
 
+function writeAction(actionsDir: string, name: string, permissions: string[]): void {
+  const dir = join(actionsDir, 'read', name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'SKILL.md'), [
+    '---', `name: read.${name}`, `description: test action ${name}`, 'outpost:',
+    '  kind: action', '  category: read', '  side_effects: none', '  runner: claude',
+    `  permissions: [${permissions.join(', ')}]`, '---', '', 'body.',
+  ].join('\n'));
+  const schema = JSON.stringify({ type: 'object', additionalProperties: false });
+  writeFileSync(join(dir, 'input.schema.json'), schema);
+  writeFileSync(join(dir, 'output.schema.json'), schema);
+}
+
 function mountRoutes(): void {
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => Promise<void> | void>();
   const server = {
@@ -85,6 +98,7 @@ beforeEach(() => {
   process.env.HOME = homeDir;
 
   permissionGroups = {
+    core: { description: 'c', alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] },
     pull: { description: 'p', alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] },
     push: { description: 'w', alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] },
   };
@@ -144,6 +158,25 @@ describe('GET /api/permissions/pending', () => {
     const body = JSON.parse(out.body) as Record<string, unknown>;
     expect(body.mcp).toBeUndefined();
     expect(Array.isArray(body.denials)).toBe(true);
+  });
+
+  // Without this the Permissions page's promote picker offered all five groups, and choosing one
+  // the action doesn't inherit resolved the denial, widened that group for every action that
+  // does, and left the call blocked. The UI can only steer if the data is here.
+  it("ships each denial's inherited groups, including the implicit core", async () => {
+    writeAction(join(root, 'actions'), 'thing', ['pull']);
+    registry.load();
+    recordDenial({ actionName: 'read.thing' });
+    recordDenial({ actionName: 'read.gone' });
+
+    const { res, out } = fakeRes();
+    await getPending(fakeReq('/api/permissions/pending'), res);
+
+    expect(out.status).toBe(200);
+    const body = JSON.parse(out.body) as { denials: Array<{ action: string; groups: string[] }> };
+    expect(body.denials.find((d) => d.action === 'read.thing')!.groups).toEqual(['core', 'pull']);
+    // An action that has left the catalog inherits nothing — promote is not offered at all.
+    expect(body.denials.find((d) => d.action === 'read.gone')!.groups).toEqual([]);
   });
 
   it('truncates a long command rather than shipping the whole payload', async () => {
