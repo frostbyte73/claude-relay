@@ -78,6 +78,49 @@ describe('classifyTool — precedence rule 3: MCP read-verb prefixes', () => {
     expect(effectOf('mcp__acme__widget_show')).toBe('read');
     expect(effectOf('mcp__acme__widget_list')).toBe('read');
   });
+
+  it('strips a vendor-name echo so notion-style tool names still match their verb', () => {
+    // Notion's own tool names repeat its vendor prefix (`notion-fetch`, `notion-search`) —
+    // without stripping that echo, "notion-fetch" doesn't start with "fetch" at all and would
+    // wrongly fall through to `unknown`.
+    expect(effectOf('mcp__notion__notion-fetch')).toBe('read');
+    expect(effectOf('mcp__notion__notion-search')).toBe('read');
+  });
+});
+
+describe('classifyTool — a read-verb prefix/suffix match is refused when a mutation verb follows', () => {
+  it('does not let a compound name smuggle a write past its leading read verb', () => {
+    for (const name of ['mcp__x__get_or_create_issue', 'mcp__x__search_and_replace', 'mcp__x__list_and_delete']) {
+      const verdict = classifyTool(name);
+      expect(verdict.effect, name).toBe('unknown');
+    }
+  });
+
+  it('still permits the plain, single-verb shape once the mutation-verb check is added', () => {
+    expect(effectOf('mcp__acme__get_widget')).toBe('read');
+    expect(effectOf('mcp__acme__widget_list')).toBe('read');
+  });
+});
+
+describe('classifyTool — real read tools across vendors do not regress against the mutation-verb check', () => {
+  it('classifies every real read tool as read', () => {
+    const realReadTools = [
+      'mcp__github__get_me',
+      'mcp__github__list_issues',
+      'mcp__github__search_code',
+      'mcp__claude_ai_Linear__get_issue',
+      'mcp__claude_ai_Linear__list_projects',
+      'mcp__notion__notion-fetch',
+      'mcp__notion__notion-search',
+      'mcp__grafana__query_prometheus',
+      'mcp__grafana__list_datasources',
+      'mcp__incident-io__incident_show',
+      'mcp__incident-io__alert_list',
+    ];
+    for (const name of realReadTools) {
+      expect(effectOf(name), name).toBe('read');
+    }
+  });
 });
 
 describe('classifyTool — precedence rule 4: MCP fallback is unknown, never guessed', () => {

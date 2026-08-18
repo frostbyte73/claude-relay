@@ -127,14 +127,64 @@ const MCP_WRITE_TOOL_SET: ReadonlySet<string> = new Set(MCP_WRITE_TOOLS);
 
 // Mirrors the anchored read-verb prefixes `pull` already grants in
 // config/permission-groups.default.json, so a tool this classifier calls `read` is one the
-// existing groups would also have granted as a read.
-const READ_VERB_PREFIXES: readonly string[] = [
-  'get_', 'list_', 'search_', 'query_', 'find_', 'analyze_', 'fetch', 'read_',
-];
+// existing groups would also have granted as a read. Bare verbs, not literal prefixes: a verb
+// must be followed by `_`/`-` or be the entire local name (see matchReadVerb) — a naive
+// `startsWith('get_')`-style check would also have let `get_or_create_issue` and
+// `search_and_replace` (real compound tool names) read as `read`, which is the bug this whole
+// rework closes. See `containsMutationVerb` for the second half of the fix: even a genuine
+// verb-prefix match is refused if what follows it names a mutation.
+const BASE_READ_VERBS: readonly string[] = ['get', 'list', 'search', 'query', 'find', 'analyze', 'fetch', 'read'];
 
-function mcpLocalPart(toolName: string): string {
-  const idx = toolName.lastIndexOf('__');
-  return idx === -1 ? toolName : toolName.slice(idx + 2);
+// Verbs that mean this tool mutates something, checked against whatever text remains after a
+// read-verb prefix/suffix match is stripped off. `replace` is not one of the vendor patterns
+// this table was originally seeded from, but a compound name like `search_and_replace` needs
+// it caught the same way `search_and_delete` would be — the fixed list is a floor, not a
+// ceiling; add to it rather than assume the remainder is safe.
+const MUTATION_VERBS: readonly string[] = [
+  'create', 'update', 'delete', 'remove', 'write', 'set', 'send', 'merge', 'push',
+  'close', 'archive', 'revoke', 'save', 'post', 'patch', 'upsert', 'modify', 'rename',
+  'move', 'duplicate', 'dispatch', 'trigger', 'execute', 'apply', 'install', 'upload', 'replace',
+];
+const MUTATION_VERB_RE = new RegExp(`\\b(?:${MUTATION_VERBS.join('|')})\\b`, 'i');
+
+function containsMutationVerb(segment: string): boolean {
+  return MUTATION_VERB_RE.test(segment.replace(/[-_]/g, ' '));
+}
+
+// Splits `mcp__<vendor>__<tool>` into its vendor and tool parts. Some vendors (Notion) echo
+// their own name as a literal prefix of every tool name (`notion-fetch`, `notion-search`) —
+// stripping that echo is what lets `notion-fetch` match the bare `fetch` verb below instead of
+// falling through to `unknown` for looking like it starts with "notion-" instead of a verb.
+function mcpParts(toolName: string): { vendor: string; local: string } {
+  const rest = toolName.slice('mcp__'.length);
+  const sepIdx = rest.indexOf('__');
+  return sepIdx === -1
+    ? { vendor: '', local: rest }
+    : { vendor: rest.slice(0, sepIdx), local: rest.slice(sepIdx + 2) };
+}
+
+function stripVendorEcho(vendor: string, local: string): string {
+  const echo = vendor.toLowerCase();
+  const lower = local.toLowerCase();
+  if (echo && (lower.startsWith(`${echo}-`) || lower.startsWith(`${echo}_`))) {
+    return local.slice(echo.length + 1);
+  }
+  return local;
+}
+
+// A verb match requires the verb to be the whole local name, or to be followed by `_`/`-` —
+// never just a text prefix. That's what keeps `get_or_create_issue` from matching `get` as
+// cleanly as `get_issue` does; both match here, but `rest` then carries the compound's tail
+// (`or_create_issue` vs `issue`) for `containsMutationVerb` to inspect.
+function matchReadVerb(text: string): { rest: string } | null {
+  const lower = text.toLowerCase();
+  for (const verb of BASE_READ_VERBS) {
+    if (lower === verb) return { rest: '' };
+    if (lower.startsWith(verb) && (lower[verb.length] === '_' || lower[verb.length] === '-')) {
+      return { rest: text.slice(verb.length + 1) };
+    }
+  }
+  return null;
 }
 
 // A hostile or sloppy MCP server's description must never be trusted to grant `read` — only
@@ -160,11 +210,33 @@ export function classifyTool(toolName: string, description?: string): ToolVerdic
   }
 
   if (toolName.startsWith('mcp__')) {
-    const local = mcpLocalPart(toolName).toLowerCase();
-    const matchesPrefix = READ_VERB_PREFIXES.some((p) => local.startsWith(p));
-    const matchesSuffix = local.endsWith('_show') || local.endsWith('_list');
-    if (matchesPrefix || matchesSuffix) {
-      return { effect: 'read', reason: `${toolName} matches a known read-verb prefix/suffix` };
+    const { vendor, local } = mcpParts(toolName);
+    const verbPart = stripVendorEcho(vendor, local);
+
+    const prefixMatch = matchReadVerb(verbPart);
+    if (prefixMatch) {
+      if (containsMutationVerb(prefixMatch.rest)) {
+        return {
+          effect: 'unknown',
+          reason: `${toolName} has a read-verb prefix but the rest of its name ("${prefixMatch.rest}") `
+            + 'names a mutation — refusing to guess read for a compound tool name',
+        };
+      }
+      return { effect: 'read', reason: `${toolName} matches a known read-verb prefix` };
+    }
+
+    const lowerVerbPart = verbPart.toLowerCase();
+    const suffix = lowerVerbPart.endsWith('_show') ? '_show' : lowerVerbPart.endsWith('_list') ? '_list' : null;
+    if (suffix) {
+      const head = verbPart.slice(0, verbPart.length - suffix.length);
+      if (containsMutationVerb(head)) {
+        return {
+          effect: 'unknown',
+          reason: `${toolName} has a read-verb suffix but the rest of its name ("${head}") `
+            + 'names a mutation — refusing to guess read for a compound tool name',
+        };
+      }
+      return { effect: 'read', reason: `${toolName} matches a known read-verb suffix` };
     }
   }
 
