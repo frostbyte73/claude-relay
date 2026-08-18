@@ -399,16 +399,21 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.end(JSON.stringify({ rules: rows }));
   });
 
-  // Revokes a persisted grant (global or project scope). Session-scoped rules
-  // are never listed here (they die with the session); action-scoped rules are
-  // managed via the action editor and can't be revoked from this endpoint.
+  // Revokes a persisted grant (global, project, or action scope). Session-scoped rules are
+  // never listed here (they die with the session).
   server.route('DELETE', '/api/allowlist/rules/:id', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/allowlist\/rules\/([A-Za-z0-9_-]+)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const decoded = decodeRuleId(m[1]!);
     if (!decoded) { res.statusCode = 400; res.end('malformed rule id'); return; }
     if (typeof decoded.scope === 'object' && 'action' in decoded.scope) {
-      res.statusCode = 409; res.end('action-scoped rules are managed via the action editor'); return;
+      const removed = actionsStore.removeRule(decoded.scope.action, decoded.kind, decoded.value);
+      if (!removed) { res.statusCode = 404; res.end('rule not found'); return; }
+      console.log(`[api] allowlist[action=${decoded.scope.action}]: removed ${decoded.kind} rule ${JSON.stringify(decoded.value)}`);
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
     }
     const removed = allowlist.removeRule(decoded.kind, decoded.value, decoded.scope as RuleScope);
     if (!removed) { res.statusCode = 404; res.end('rule not found'); return; }
@@ -426,6 +431,78 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ ok: true }));
   });
+
+  // Edit-in-place for a persisted grant: lint the NEW value before touching anything, then
+  // remove-then-add on the same scope and kind. A refused edit must leave the original rule
+  // untouched, never delete it out from under the user. The id encodes the value, so a
+  // successful edit returns a NEW id; the old one 404s after.
+  function putActionRule(
+    action: string, kind: RuleKind, oldValue: string, newValue: string,
+  ): { ok: true } | { ok: false; status: number; error: string } {
+    if (!actionsStore.removeRule(action, kind, oldValue)) {
+      return { ok: false, status: 404, error: 'rule not found' };
+    }
+    try {
+      actionsStore.addRule(action, kind, newValue);
+    } catch (e) {
+      actionsStore.addRule(action, kind, oldValue);
+      return { ok: false, status: 400, error: `invalid pattern: ${(e as Error).message}` };
+    }
+    console.log(`[api] allowlist[action=${action}]: edited ${kind} rule ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
+    return { ok: true };
+  }
+
+  function putGlobalOrProjectRule(
+    scope: RuleScope, kind: RuleKind, oldValue: string, newValue: string,
+  ): { ok: true } | { ok: false; status: number; error: string } {
+    if (!allowlist.removeRule(kind, oldValue, scope)) {
+      return { ok: false, status: 404, error: 'rule not found' };
+    }
+    try {
+      allowlist.addRule(kind, newValue, scope);
+    } catch (e) {
+      allowlist.addRule(kind, oldValue, scope);
+      return { ok: false, status: 400, error: `invalid pattern: ${(e as Error).message}` };
+    }
+    if (scope === 'global') {
+      const tmp = `${allowlistPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
+      renameSync(tmp, allowlistPath);
+    }
+    const scopeLabel = scope === 'global' ? 'global' : `project=${(scope as { project: string }).project}`;
+    console.log(`[api] allowlist[${scopeLabel}]: edited ${kind} rule ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
+    return { ok: true };
+  }
+
+  async function handlePutAllowlistRule(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const m = (req.url ?? '').match(/^\/api\/allowlist\/rules\/([A-Za-z0-9_-]+)$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const decoded = decodeRuleId(m[1]!);
+    if (!decoded) { res.statusCode = 400; res.end('malformed rule id'); return; }
+    const payload = await readJsonObject<{ value?: unknown }>(req, res);
+    if (!payload) return;
+    const value = payload.value;
+    if (typeof value !== 'string' || value.length === 0 || value.length > 500) {
+      res.statusCode = 400; res.end('body must be { value: <1..500 char string> }'); return;
+    }
+    if (value === decoded.value) { res.statusCode = 400; res.end('no change'); return; }
+
+    // Lint BEFORE any removal: a refused edit must be a no-op, not a deletion.
+    const lint = lintPermissionRule(decoded.kind, value, false);
+    if (!lint.ok) { res.statusCode = 400; res.end(lint.reason ?? 'rule refused'); return; }
+
+    const result = typeof decoded.scope === 'object' && 'action' in decoded.scope
+      ? putActionRule(decoded.scope.action, decoded.kind, decoded.value, value)
+      : putGlobalOrProjectRule(decoded.scope as RuleScope, decoded.kind, decoded.value, value);
+    if (!result.ok) { res.statusCode = result.status; res.end(result.error); return; }
+
+    const newId = encodeRuleId(decoded.kind, value, decoded.scope);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, rule: { id: newId, kind: decoded.kind, value, scope: decoded.scope } }));
+  }
+
+  server.route('PUT', '/api/allowlist/rules/:id', handlePutAllowlistRule);
 
   server.route('GET', '/api/actions/:name/journal', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/actions\/([^/?]+)\/journal(?:\?.*)?$/);
