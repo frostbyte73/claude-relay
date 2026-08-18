@@ -10,6 +10,6 @@
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": [
-    "Write:^/Users/[^/]+/"
+    "Write:^/Users/[^/]+/[A-Za-z0-9][A-Za-z0-9._-]*(?:/|$)"
   ]
 }

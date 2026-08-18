@@ -92,7 +92,23 @@ describe('the global scope grants no write to any action', () => {
 
 describe('write.add-project effective allowlist', () => {
   const allows = effective('write.add-project');
+  const allowsTool = effectiveTool('write.add-project');
   const DEST = '/Users/dc/livekit/unified-testing';
+
+  // `alwaysAllowPathPatterns` is consulted by the `Write` tool check directly, not only by
+  // the bash `mkdir` scoping — so the rule that satisfies one `mkdir -p ~/<org>` call is also
+  // a standing grant for every other Write the action might ever issue. `Write:^/Users/[^/]+/`
+  // (matching only on the user segment) would hand out arbitrary home-directory file writes;
+  // requiring the first character of the next segment to be alnum keeps every dotfile/dotdir
+  // path out while still covering the exact 2-segment clone-parent path (no trailing slash)
+  // this action's own `mkdir -p` documents.
+  it('the Write grant covers only the clone destination shape, never a dotfile path', () => {
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit' })).toBe(true);
+    expect(allowsTool('Write', { file_path: `${DEST}/README.md` })).toBe(true);
+    expect(allowsTool('Write', { file_path: '/Users/dc/.ssh/authorized_keys' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/.zshrc' })).toBe(false);
+    expect(allowsTool('Write', { file_path: '/Users/dc/.config/anything' })).toBe(false);
+  });
 
   it('allows every command its SKILL.md documents', () => {
     const documented = [
@@ -1310,8 +1326,15 @@ it('every action inheriting push resolves a non-empty gated set, and no other ac
 describe('code.implement grants the long tail its own SKILL.md and denial log evidenced', () => {
   const allows = effective('code.implement');
 
-  it('reads the release-tag lookup it needed through the new pull grant, not a curl rule in edit', () => {
-    expect(allows('curl -sL "https://api.github.com/repos/databricks/sjsonnet/releases/tags/0.6.3"')).toBe(true);
+  // Ship 2's action-confinement audit read this SKILL.md and verdicted `[read, edit]` a
+  // no-change case — it instructs no network read anywhere. The one recorded curl denial
+  // (a GitHub release-tag lookup, evidently part of the same "fetch/build a jsonnet binary"
+  // detour the /tmp/jsonnet-<hash> case above already flags as fix-the-action) is one data
+  // point, not a documented need, and `pull` is a whole group (WebFetch/WebSearch plus every
+  // read-side Linear/DataDog/GitHub/Notion/Slack/incident-io/Grafana MCP tool) to grant on
+  // that alone. Stays denied — re-open only if a future run documents an actual need.
+  it('does not gain network reads for one undocumented curl lookup', () => {
+    expect(allows('curl -sL "https://api.github.com/repos/databricks/sjsonnet/releases/tags/0.6.3"')).toBe(false);
   });
 
   it('runs the protoc invocation its cross-repo build actually used, narrowly enumerated', () => {
