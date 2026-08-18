@@ -151,43 +151,27 @@ export function validateGroupUpdate(name: string, group: PermissionGroup): Group
   return { ok: true };
 }
 
-export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
-  const {
-    actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
-    actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, mcpConfigPath,
-    permissionGroupsPath, groupRevisions,
-  } = deps;
+export type ApplyGroupResult = { ok: true } | { ok: false; status: number; error: string };
 
-  server.route('GET', '/api/permission-groups', (_req, res) => {
-    const counts = new Map<string, number>();
-    for (const a of actionRegistry.listActions()) {
-      for (const name of groupNamesForAction(a.frontmatter)) {
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-      }
-    }
-    const groups = Object.entries(permissionGroups).map(([name, cfg]) => ({
-      name,
-      description: cfg.description ?? '',
-      alwaysAllow: cfg.alwaysAllow,
-      alwaysAllowBashPatterns: cfg.alwaysAllowBashPatterns,
-      alwaysAllowMcpPatterns: cfg.alwaysAllowMcpPatterns,
-      alwaysAllowPathPatterns: cfg.alwaysAllowPathPatterns,
-      actionCount: counts.get(name) ?? 0,
-    }));
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ groups }));
-  });
+export interface GroupApplierDeps {
+  actionRegistry: ActionRegistry;
+  permissionGroups: PermissionGroupMap;
+  permissionGroupsPath: string;
+  groupRevisions: PermissionGroupRevisionsStore;
+}
 
-  type ApplyGroupResult = { ok: true } | { ok: false; status: number; error: string };
+export type GroupApplier = (
+  name: string, next: PermissionGroup, author: GroupAuthor,
+  rationale: string | undefined, revertOf: string | undefined,
+) => ApplyGroupResult;
 
-  // Shared by the PUT handler and revert: validate, write-and-reload with rollback on failure,
-  // then record. Revert calls this with the same rigor as a fresh edit — see validateGroupUpdate's
-  // header comment on why history is never a trusted replay.
-  function applyGroup(
-    name: string, next: PermissionGroup, author: GroupAuthor,
-    rationale: string | undefined, revertOf: string | undefined,
-  ): ApplyGroupResult {
+// Shared by the PUT handler, revert, mcp-catalog apply, and the denial-verdict route
+// (routes/actions.ts's `promote` disposition): validate, write-and-reload with rollback on
+// failure, then record. One function so every caller gets the same atomicity and audit trail
+// — see validateGroupUpdate's header comment on why history is never a trusted replay.
+export function createGroupApplier(deps: GroupApplierDeps): GroupApplier {
+  const { actionRegistry, permissionGroups, permissionGroupsPath, groupRevisions } = deps;
+  return function applyGroup(name, next, author, rationale, revertOf) {
     const verdict = validateGroupUpdate(name, next);
     if (!verdict.ok) return { ok: false, status: 400, error: verdict.error };
 
@@ -230,7 +214,38 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     console.log(`[api] permission-group[${name}]: ${revertOf ? 'reverted' : 'updated'} `
       + `(${next.alwaysAllowBashPatterns.length} bash rules)`);
     return { ok: true };
-  }
+  };
+}
+
+export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
+  const {
+    actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
+    actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, mcpConfigPath,
+    permissionGroupsPath, groupRevisions,
+  } = deps;
+
+  const applyGroup = createGroupApplier({ actionRegistry, permissionGroups, permissionGroupsPath, groupRevisions });
+
+  server.route('GET', '/api/permission-groups', (_req, res) => {
+    const counts = new Map<string, number>();
+    for (const a of actionRegistry.listActions()) {
+      for (const name of groupNamesForAction(a.frontmatter)) {
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+    }
+    const groups = Object.entries(permissionGroups).map(([name, cfg]) => ({
+      name,
+      description: cfg.description ?? '',
+      alwaysAllow: cfg.alwaysAllow,
+      alwaysAllowBashPatterns: cfg.alwaysAllowBashPatterns,
+      alwaysAllowMcpPatterns: cfg.alwaysAllowMcpPatterns,
+      alwaysAllowPathPatterns: cfg.alwaysAllowPathPatterns,
+      actionCount: counts.get(name) ?? 0,
+    }));
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ groups }));
+  });
 
   // Body: { group: PermissionGroup, rationale?: string }. The only path that may install a
   // write-shaped rule, and only into a gated group — see validateGroupUpdate.

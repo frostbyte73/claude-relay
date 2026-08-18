@@ -8,15 +8,18 @@ import {
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
-import { actionDirFor, ACTION_CATEGORIES } from '../actions/registry.js';
+import { actionDirFor, ACTION_CATEGORIES, GATED_GROUPS } from '../actions/registry.js';
 import { buildScorecard } from '../actions/scorecard.js';
+import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRunsStore } from '../storage/action-runs-store.js';
 import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denials-store.js';
-import type { Allowlist } from '../permissions/allowlist.js';
+import type { Allowlist, RuleKind } from '../permissions/allowlist.js';
 import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
 import { classifyBashCommand } from '../permissions/tool-classify.js';
 import { splitShellClauses } from '../permissions/shell-split.js';
+import { lintPermissionRule } from '../permissions/write-shape.js';
+import type { GroupApplier } from './meta.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import {
   forgetEdit, loadPersistedEdits, persistEdit,
@@ -42,6 +45,11 @@ export interface ActionsRoutesDeps {
   allowlist: Allowlist;
   actionRunsStore: ActionRunsStore;
   denialsStore: DenialsStore;
+  // Read here only to compose a `promote` verdict's target group before handing it to
+  // applyGroup — this route never writes permission-groups.json directly (see
+  // resolveDenialVerdict's header comment).
+  permissionGroups: PermissionGroupMap;
+  applyGroup: GroupApplier;
   actionRunLedger: ActionRunLedger;
   actionRevisionsStore: ActionRevisionsStore;
   manager: SessionManager;
@@ -92,6 +100,91 @@ export function shellArtifactVerdict(
   };
 }
 
+export interface VerdictRequestBody {
+  disposition?: unknown;
+  group?: unknown;
+  rule?: unknown;
+  reason?: unknown;
+  decidedBy?: unknown;
+}
+
+export type VerdictOutcome =
+  | { ok: true; status: 200; denial: ActionDenial }
+  | { ok: false; status: number; error: string };
+
+const RULE_KINDS: readonly RuleKind[] = ['tool', 'bash', 'mcp', 'path'];
+
+function addRuleToGroup(current: PermissionGroup | undefined, kind: RuleKind, value: string): PermissionGroup {
+  const base: PermissionGroup = current ? structuredClone(current) : {
+    description: '', alwaysAllow: [], alwaysAllowBashPatterns: [],
+    alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
+  };
+  const arr = kind === 'tool' ? base.alwaysAllow
+    : kind === 'bash' ? base.alwaysAllowBashPatterns
+    : kind === 'mcp' ? base.alwaysAllowMcpPatterns
+    : (base.alwaysAllowPathPatterns ??= []);
+  if (!arr.includes(value)) arr.push(value);
+  return base;
+}
+
+// The one place a denial gets resolved. `never`/`fix-action` just record intent; `promote`
+// goes through the SAME group-editor path (`applyGroup`, from routes/meta.ts's
+// createGroupApplier) that PUT /api/permission-groups/:name uses — validated, atomically
+// written, reloaded into the registry and revisioned. This route must never write
+// permission-groups.json itself, or it becomes a second, weaker door onto the allowlist.
+//
+// `decidedBy` gates promotion into a GATED_GROUPS destination: the improver may propose one
+// (in its evidence, ahead of this route ever being called), but only a human's 'user' verdict
+// may apply it — a gated group means nothing if a model can grant into it. Exported standalone
+// (not a closure inside registerActionsRoutes) so it's testable without standing up a Server.
+export function resolveDenialVerdict(
+  deps: { denialsStore: DenialsStore; permissionGroups: PermissionGroupMap; applyGroup: GroupApplier },
+  actionName: string,
+  denialId: string,
+  payload: VerdictRequestBody,
+): VerdictOutcome {
+  const { disposition } = payload;
+  if (disposition !== 'promote' && disposition !== 'never' && disposition !== 'fix-action') {
+    return { ok: false, status: 400, error: `disposition must be promote|never|fix-action, got ${JSON.stringify(disposition)}` };
+  }
+  const denial = deps.denialsStore.list(actionName).find((d) => d.id === denialId);
+  if (!denial) return { ok: false, status: 404, error: 'no such denial' };
+
+  const reason = typeof payload.reason === 'string' ? payload.reason : '';
+  const decidedBy: DenialVerdict['decidedBy'] = payload.decidedBy === 'improver' ? 'improver' : 'user';
+
+  if (disposition === 'promote') {
+    const group = typeof payload.group === 'string' ? payload.group : '';
+    const rule = payload.rule as { kind?: unknown; value?: unknown } | undefined;
+    const kind = rule?.kind;
+    const value = rule?.value;
+    if (!group || typeof value !== 'string' || !value || !RULE_KINDS.includes(kind as RuleKind)) {
+      return { ok: false, status: 400, error: 'promote requires group and rule: { kind, value }' };
+    }
+    const gated = GATED_GROUPS.has(group);
+    // The standing rule: a gated group is only gated if nothing but a human can grant into it.
+    if (gated && decidedBy !== 'user') {
+      return { ok: false, status: 403, error: `promoting into the gated group "${group}" requires user approval, not the improver` };
+    }
+    const lint = lintPermissionRule(kind as RuleKind, value, gated);
+    if (!lint.ok) return { ok: false, status: 400, error: lint.reason ?? 'rule refused' };
+
+    const next = addRuleToGroup(deps.permissionGroups[group], kind as RuleKind, value);
+    const applied = deps.applyGroup(group, next, decidedBy, reason || undefined, undefined);
+    if (!applied.ok) return { ok: false, status: applied.status, error: applied.error };
+
+    const verdict: DenialVerdict = {
+      disposition: 'promote', group, rule: { kind: kind as RuleKind, value },
+      reason, decidedAt: Date.now(), decidedBy,
+    };
+    deps.denialsStore.setVerdict(actionName, denialId, verdict);
+    return { ok: true, status: 200, denial };
+  }
+
+  deps.denialsStore.setVerdict(actionName, denialId, { disposition, reason, decidedAt: Date.now(), decidedBy });
+  return { ok: true, status: 200, denial };
+}
+
 // Hook-facing handlers the daemon wires into HookServer/MCP after this factory
 // runs. The action-edit + denial state they close over lives here so the whole
 // action-authoring surface is one module rather than scattered across daemon.ts.
@@ -117,7 +210,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   const {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
-    actionRevisionsStore, manager, engine, notifyAll,
+    actionRevisionsStore, manager, engine, notifyAll, permissionGroups, applyGroup,
   } = deps;
 
   // ── local helpers ──────────────────────────────────────────────────────
@@ -461,6 +554,26 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     }
     res.statusCode = 204;
     res.end();
+  });
+
+  // Record a verdict on a denial — `never`/`fix-action` just record; `promote` applies the
+  // rule through applyGroup (see resolveDenialVerdict). This is the only endpoint that can
+  // resolve a denial now that the Library panel's Dismiss button is gone.
+  server.route('POST', '/api/actions/:name/denials/:denialId/verdict', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials\/([^/?]+)\/verdict(?:\?|$)/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const name = decodeURIComponent(m[1]!);
+    const denialId = decodeURIComponent(m[2]!);
+    const payload = await readJsonBody<VerdictRequestBody>(req);
+    const result = resolveDenialVerdict({ denialsStore, permissionGroups, applyGroup }, name, denialId, payload ?? {});
+    res.statusCode = result.status;
+    if (result.ok) {
+      try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true, denial: result.denial }));
+    } else {
+      res.end(result.error);
+    }
   });
 
   server.route('POST', '/api/actions/new', async (req, res) => {
