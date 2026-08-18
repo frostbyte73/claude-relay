@@ -1,5 +1,5 @@
 // @ts-expect-error — plain-JS PWA module
-import { groupCards, groupContents, grantRows, pendingRows } from '../../src/pwa/vm/permissions.js';
+import { groupCards, groupContents, grantRows, pendingRows, groupWithRule, groupWithoutRule, errorTarget } from '../../src/pwa/vm/permissions.js';
 import { describe, it, expect } from 'vitest';
 
 const GROUPS = [
@@ -32,6 +32,39 @@ describe('groupContents', () => {
 
   it('omits kinds with no rules rather than rendering empty sections', () => {
     expect(groupContents(GROUPS[0]).map((s: any) => s.kind)).toEqual(['bash', 'mcp']);
+  });
+});
+
+describe('groupWithRule / groupWithoutRule', () => {
+  it('rebuilds every kind, since PUT replaces the whole group', () => {
+    const next = groupWithRule(GROUPS[1], 'bash', null, '^rg ');
+    expect(next.alwaysAllow).toEqual(['Read', 'Glob']);
+    expect(next.alwaysAllowBashPatterns).toEqual(['^ls(\\s|$)', '^rg ']);
+    expect(next.alwaysAllowMcpPatterns).toEqual([]);
+    expect(next.alwaysAllowPathPatterns).toEqual([]);
+  });
+
+  it('leaves the source group untouched so a refused save loses nothing', () => {
+    groupWithoutRule(GROUPS[1], 'tool', 0);
+    groupWithRule(GROUPS[1], 'tool', 1, 'Grep');
+    expect(GROUPS[1]!.alwaysAllow).toEqual(['Read', 'Glob']);
+  });
+
+  it('replaces at an index and removes by index', () => {
+    expect(groupWithRule(GROUPS[1], 'tool', 1, 'Grep').alwaysAllow).toEqual(['Read', 'Grep']);
+    expect(groupWithoutRule(GROUPS[1], 'tool', 0).alwaysAllow).toEqual(['Glob']);
+  });
+});
+
+describe('errorTarget', () => {
+  const GROUP = { alwaysAllow: [], alwaysAllowBashPatterns: ['^ls', '^ls -la'], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] };
+
+  it('blames the longest rule the message names, not a prefix of it', () => {
+    expect(errorTarget(GROUP, '^ls -la: permits the external write `x`')).toEqual({ kind: 'bash', index: 1 });
+  });
+
+  it('returns null when the message names no rule, so the page reports it group-wide', () => {
+    expect(errorTarget(GROUP, 'unknown permission group: nope')).toBeNull();
   });
 });
 

@@ -10,14 +10,16 @@ const GROUP_ORDER = ['core', 'read', 'pull', 'edit', 'push'];
 // worse failure than one that goes stale loudly — a test in this ship pins the two together.
 export const GATED_GROUP_NAMES = ['push'];
 
-const KIND_ORDER = ['tool', 'bash', 'mcp', 'path'];
+export const KIND_ORDER = ['tool', 'bash', 'mcp', 'path'];
 const KIND_FIELD = {
   tool: 'alwaysAllow',
   bash: 'alwaysAllowBashPatterns',
   mcp: 'alwaysAllowMcpPatterns',
   path: 'alwaysAllowPathPatterns',
 };
-const KIND_LABEL = { tool: 'Tools', bash: 'Bash patterns', mcp: 'MCP patterns', path: 'Path patterns' };
+// Exported because the editor also labels the kinds a group has no rules for — groupContents
+// drops those sections, and a second copy of the labels would be free to drift.
+export const KIND_LABEL = { tool: 'Tools', bash: 'Bash patterns', mcp: 'MCP patterns', path: 'Path patterns' };
 
 function rulesOf(group, kind) {
   const list = group?.[KIND_FIELD[kind]];
@@ -48,6 +50,47 @@ export function groupContents(group) {
       rules: rulesOf(group, kind).map((value, index) => ({ kind, value, index })),
     }))
     .filter((s) => s.rules.length > 0);
+}
+
+function withRules(group, kind, rules) {
+  const next = {
+    description: group?.description ?? '',
+    alwaysAllow: rulesOf(group, 'tool'),
+    alwaysAllowBashPatterns: rulesOf(group, 'bash'),
+    alwaysAllowMcpPatterns: rulesOf(group, 'mcp'),
+    alwaysAllowPathPatterns: rulesOf(group, 'path'),
+  };
+  next[KIND_FIELD[kind]] = rules;
+  return next;
+}
+
+// PUT replaces the whole group, so every edit rebuilds all four arrays from the current
+// state. Pure and copy-on-write: the store's snapshot must survive a refused save intact.
+// `index === null` appends.
+export function groupWithRule(group, kind, index, value) {
+  const rules = [...rulesOf(group, kind)];
+  if (index === null) rules.push(value); else rules[index] = value;
+  return withRules(group, kind, rules);
+}
+
+export function groupWithoutRule(group, kind, index) {
+  return withRules(group, kind, rulesOf(group, kind).filter((_, i) => i !== index));
+}
+
+// A refused save answers `<rule>: <why>`, and the rule it names is not always the one just
+// edited — a group can already hold a rule a later lint would refuse, and the server reports
+// the first one it hits. Match the message back to a row so the explanation lands on the
+// offending rule; a null answer means the page shows it group-wide instead of blaming an
+// arbitrary row. Longest match wins, so one rule that prefixes another can't steal it.
+export function errorTarget(group, message) {
+  let best = null;
+  for (const kind of KIND_ORDER) {
+    rulesOf(group, kind).forEach((value, index) => {
+      if (!message.startsWith(`${value}: `)) return;
+      if (!best || value.length > best.value.length) best = { kind, index, value };
+    });
+  }
+  return best ? { kind: best.kind, index: best.index } : null;
 }
 
 function basenameOf(p) {

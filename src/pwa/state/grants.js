@@ -26,8 +26,7 @@ export const grantsStore = {
   get: store.get,
   subscribe: store.subscribe,
 
-  async loadGroups() {
-    if (store.get().groupsLoaded) return;
+  async reloadGroups() {
     try {
       const data = await metaApi.permissionGroups();
       store.set((s) => ({ ...s, groups: Array.isArray(data?.groups) ? data.groups : [], groupsLoaded: true }));
@@ -36,14 +35,23 @@ export const grantsStore = {
     }
   },
 
-  async loadRules() {
-    if (store.get().rulesLoaded) return;
+  async reloadRules() {
     try {
       const data = await metaApi.allowlistRules();
       store.set((s) => ({ ...s, rules: Array.isArray(data?.rules) ? data.rules : [], rulesLoaded: true }));
     } catch (e) {
       store.set((s) => ({ ...s, err: e.message }));
     }
+  },
+
+  async loadGroups() {
+    if (store.get().groupsLoaded) return;
+    await this.reloadGroups();
+  },
+
+  async loadRules() {
+    if (store.get().rulesLoaded) return;
+    await this.reloadRules();
   },
 
   async loadMcp() {
