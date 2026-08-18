@@ -3,13 +3,18 @@
 
 import { classifyTool, type ToolEffect } from './tool-classify.js';
 import type { CatalogResult } from '../integrations/mcp-catalog.js';
-import type { PermissionGroupMap } from '../actions/types.js';
+import type { PermissionGroupMap, PermissionGroup } from '../actions/types.js';
+import { GATED_GROUPS } from '../actions/registry.js';
 
 export interface ToolPlacement {
   tool: string; // the FULL mcp__server__tool name
   effect: ToolEffect;
   group: 'pull' | 'push' | null; // null when the effect is unknown/ambiguous — needs a human
   alreadyGranted: boolean;
+  // Set only for an external-write tool that is NOT already covered by push, but IS already
+  // matched by some other, non-gated group's pattern — i.e. a write that already runs today
+  // with no pin. Names that group. See findUngatedGrantingGroup.
+  ungatedElsewhere?: string;
 }
 
 export interface ServerProposal {
@@ -27,27 +32,49 @@ function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// True when some existing group already grants this exact tool name. Checked against every
-// group's real resolved `alwaysAllowMcpPatterns`, not just `pull`/`push` — the classifier and
-// `pull` disagree about what counts as a read (DataDog `load_`/`aggregate_`, github
-// `pull_request_read`/`issue_read`, Slack `slack_read_*`/`slack_search_*`, incident-io
-// `alert_stats`/`ask`, all classify `unknown` here but are already granted). A tool the running
-// config already covers must never be presented as "needs review", regardless of what this
-// module's own classification says about it — so this check runs independently of, and prior
-// to, the effect-to-group mapping below.
-function isAlreadyGranted(tool: string, groups: PermissionGroupMap): boolean {
-  for (const group of Object.values(groups)) {
-    for (const pattern of group.alwaysAllowMcpPatterns ?? []) {
-      let re: RegExp;
-      try {
-        re = new RegExp(pattern);
-      } catch {
-        continue;
-      }
-      if (re.test(tool)) return true;
-    }
+function testsPattern(tool: string, pattern: string): boolean {
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern);
+  } catch {
+    return false;
   }
-  return false;
+  return re.test(tool);
+}
+
+// True when the ONE group a tool is actually bound for already grants it. Scoped to that single
+// group, never the whole map: an external-write tool already matched by `pull`'s pattern (a
+// misconfigured read grant that happens to also cover a write) must NOT read as `alreadyGranted`
+// just because *some* group matches it — that would silently confirm the misconfiguration by
+// proposing no `push` rule and saying nothing. Likewise a read tool matched only by `push` must
+// not be reported as covered while proposing no `pull` rule for it (leaving it needlessly gated
+// forever). Reconciliation is meaningful only against the group a rule would actually be added
+// to, not against "any group, whichever."
+function isGrantedByGroup(tool: string, group: PermissionGroup | undefined): boolean {
+  return (group?.alwaysAllowMcpPatterns ?? []).some((pattern) => testsPattern(tool, pattern));
+}
+
+// Used only for a tool with no destination group at all (`group: null` — unknown/local-write/
+// interpreter): there is no rule being generated for it either way, so scanning every group
+// carries none of the cross-group-leakage risk `isGrantedByGroup` guards against above. This is
+// purely informational — it lets an operator see that a tool the classifier couldn't place is
+// nonetheless already reachable (e.g. DataDog's `load_`/`aggregate_` verbs, which `pull` already
+// grants by vendor pattern even though this classifier calls them `unknown`).
+function isGrantedAnywhere(tool: string, groups: PermissionGroupMap): boolean {
+  return Object.values(groups).some((group) => isGrantedByGroup(tool, group));
+}
+
+// The single case `alreadyGranted` must never paper over: an external-write tool not covered by
+// `push` (so a `push` rule is about to be proposed for it) that some OTHER, non-gated group's
+// pattern already matches — meaning the write already runs today, ungated, with no approval pin.
+// Names that group so the proposal surfaces the pre-existing misconfiguration instead of quietly
+// adding a redundant gated rule alongside it.
+function findUngatedGrantingGroup(tool: string, groups: PermissionGroupMap, destGroup: string): string | undefined {
+  for (const [name, group] of Object.entries(groups)) {
+    if (name === destGroup || GATED_GROUPS.has(name)) continue;
+    if (isGrantedByGroup(tool, group)) return name;
+  }
+  return undefined;
 }
 
 // read -> pull, external-write -> push (both gated by the group they land in). Everything
@@ -75,11 +102,22 @@ export function proposeForServer(result: CatalogResult, groups: PermissionGroupM
     // else touches the name.
     const fullName = `mcp__${result.server}__${tool.name}`;
     const verdict = classifyTool(fullName, tool.description);
+    const group = groupFor(verdict.effect);
+
+    if (group === null) {
+      return { tool: fullName, effect: verdict.effect, group, alreadyGranted: isGrantedAnywhere(fullName, groups) };
+    }
+
+    const alreadyGranted = isGrantedByGroup(fullName, groups[group]);
+    const ungatedElsewhere = !alreadyGranted && group === 'push'
+      ? findUngatedGrantingGroup(fullName, groups, group)
+      : undefined;
     return {
       tool: fullName,
       effect: verdict.effect,
-      group: groupFor(verdict.effect),
-      alreadyGranted: isAlreadyGranted(fullName, groups),
+      group,
+      alreadyGranted,
+      ...(ungatedElsewhere !== undefined ? { ungatedElsewhere } : {}),
     };
   });
 

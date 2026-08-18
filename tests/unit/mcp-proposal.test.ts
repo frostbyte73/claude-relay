@@ -99,6 +99,47 @@ describe('proposeForServer — reconciling against existing grants', () => {
     expect(p.effect).toBe('unknown');
     expect(p.alreadyGranted).toBe(true);
   });
+
+  // isAlreadyGranted must be scoped to the tool's OWN destination group, never the whole map —
+  // reproduced here with only literal pull/push maps, no third group involved, per the review
+  // finding on the first cut of this module.
+  it('a read tool matched only by push does not read as alreadyGranted, and a pull rule IS still proposed', () => {
+    const groups: PermissionGroupMap = {
+      pull: emptyGroup(),
+      push: { ...emptyGroup(), alwaysAllowMcpPatterns: ['^mcp__sentry__(get_issue)$'] },
+    };
+    const proposal = proposeForServer(ok('sentry', [{ name: 'get_issue' }]), groups);
+    const p = proposal.placements[0]!;
+    expect(p).toMatchObject({ effect: 'read', group: 'pull', alreadyGranted: false });
+    expect(proposal.rules).toContainEqual({ group: 'pull', kind: 'mcp', value: '^mcp__sentry__(get_issue)$' });
+  });
+
+  it('an external-write tool already matched by a non-gated group does not read as alreadyGranted for push, a push rule IS still proposed, and ungatedElsewhere names the leaking group', () => {
+    const groups: PermissionGroupMap = {
+      pull: { ...emptyGroup(), alwaysAllowMcpPatterns: ['^mcp__github__(merge_pull_request)$'] },
+      push: emptyGroup(),
+    };
+    const proposal = proposeForServer(ok('github', [{ name: 'merge_pull_request' }]), groups);
+    const p = proposal.placements[0]!;
+    expect(p).toMatchObject({
+      effect: 'external-write', group: 'push', alreadyGranted: false, ungatedElsewhere: 'pull',
+    });
+    expect(proposal.rules).toContainEqual({
+      group: 'push', kind: 'mcp', value: '^mcp__github__(merge_pull_request)$',
+    });
+  });
+
+  it('a read tool granted by pull itself still reads as alreadyGranted and is still excluded from rules (no regression)', () => {
+    const groups: PermissionGroupMap = {
+      pull: { ...emptyGroup(), alwaysAllowMcpPatterns: ['^mcp__sentry__(get_issue)$'] },
+      push: emptyGroup(),
+    };
+    const proposal = proposeForServer(ok('sentry', [{ name: 'get_issue' }]), groups);
+    const p = proposal.placements[0]!;
+    expect(p).toMatchObject({ effect: 'read', group: 'pull', alreadyGranted: true });
+    expect(p.ungatedElsewhere).toBeUndefined();
+    expect(proposal.rules).toHaveLength(0);
+  });
 });
 
 describe('proposeForServer — rule shape', () => {
