@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { Allowlist, PATH_INPUT_FIELDS } from '../../src/permissions/allowlist.js';
 import {
   assertNotWriteShaped, classifyPathShape, classifyRuleShape, lintPermissionRule,
-  PATH_SCOPED_TOOLS, PATH_WRITE_TOOLS,
+  MCP_WRITE_PROBES, PATH_SCOPED_TOOLS, PATH_WRITE_TOOLS,
 } from '../../src/permissions/write-shape.js';
 
 const shaped = (v: string) => classifyPathShape(v).writeShaped;
@@ -221,6 +221,46 @@ describe('a whole-tool write grant is refused like the path rule it stands in fo
     }
   });
 
+  it('refuses a whole-tool grant of an MCP write tool, the same as its `^name$` rule', () => {
+    // `rulesAllow` answers `alwaysAllow.has(toolName)` before it ever reaches the `mcp__`
+    // branch, so this spelling never met the probe corpus that refuses the rule form. The
+    // corpus is the shared constant, so a tool added to it later is covered here on the day it
+    // lands — this loop is what makes that true rather than hopeful.
+    expect(MCP_WRITE_PROBES.length).toBeGreaterThan(50);
+    for (const tool of MCP_WRITE_PROBES) {
+      const asTool = lintPermissionRule('tool', tool, false);
+      expect(asTool.ok, tool).toBe(false);
+      expect(asTool.ungatedWrite, tool).toBe(true);
+      // The invariant: the whole-tool spelling is exactly as hard to install as the narrowest
+      // rule naming the same tool, in both directions.
+      expect(asTool.ok, tool).toBe(lintPermissionRule('mcp', `^${tool}$`, false).ok);
+      expect(lintPermissionRule('tool', tool, true).ok, tool).toBe(true);
+    }
+  });
+
+  it('leaves an MCP read tool installable in either spelling', () => {
+    for (const tool of ['mcp__github__get_file_contents', 'mcp__github__list_issues',
+      'mcp__claude_ai_Linear__get_issue', 'mcp__grafana__query_prometheus']) {
+      expect(lintPermissionRule('tool', tool, false).ok, tool).toBe(true);
+      expect(lintPermissionRule('mcp', `^${tool}$`, false).ok, tool).toBe(true);
+    }
+  });
+
+  it('is refusing an MCP grant that really does reach the write', () => {
+    const installed = new Allowlist({
+      alwaysAllow: ['mcp__github__push_files'], alwaysAllowBashPatterns: [],
+      alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
+    });
+    expect(installed.allows('mcp__github__push_files', {})).toBe(true);
+
+    const fresh = new Allowlist({
+      alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [],
+      alwaysAllowPathPatterns: [],
+    });
+    expect(() => fresh.addRule('tool', 'mcp__github__push_files')).toThrow(/external write/);
+    expect(fresh.allows('mcp__github__push_files', {})).toBe(false);
+  });
+
   it('leaves the read tools and the rest of the catalog alone', () => {
     for (const tool of ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch',
       'ToolSearch', 'ListMcpResourcesTool', 'ReadMcpResourceTool']) {
@@ -249,6 +289,26 @@ describe('a path pattern that can backtrack exponentially is refused', () => {
       'Read:^/tmp/(?:a?b?)+$', 'Write:^/tmp/((x+))+', 'Write:^/tmp/(?:[^/]+/)+x']) {
       expect(classifyPathShape(v).structural, v).toBe(true);
       expect(lintPermissionRule('path', v, true).ok, v).toBe(false);
+    }
+  });
+
+  it('refuses a repeated group that matches the same text two ways', () => {
+    // `(a|a)+` carries no quantifier inside the group, so the first version of this bound let
+    // it through: 19 characters, `^`-anchored, prefix `/tmp/` — and 1452ms through `allows()`
+    // at a 28-character path, doubling per character.
+    for (const v of ['Write:^/tmp/(a|a)+$', 'Read:^/tmp/(a|a)+$', 'Write:^/tmp/(?:x|x)*',
+      'Write:^/tmp/(a|ab|a)+']) {
+      expect(classifyPathShape(v).structural, v).toBe(true);
+      expect(lintPermissionRule('path', v, true).ok, v).toBe(false);
+    }
+  });
+
+  it('still accepts an alternation that is not repeated', () => {
+    // The tightening is on *quantified* groups only. An alternation that matches at most once
+    // costs nothing, and it is the one legitimate use of a group in a path rule.
+    for (const v of ['Write:^/tmp/(a|b)', 'Write:^/tmp/(?:outpost|scratch)/', 'Read:^/tmp/(a|b)?',
+      'Read:^/Users/(dc|other)/code/']) {
+      expect(lintPermissionRule('path', v, false).ok, v).toBe(true);
     }
   });
 

@@ -52,13 +52,16 @@ export function groupContents(group) {
     .filter((s) => s.rules.length > 0);
 }
 
+// The three untouched arrays are copied, not aliased: the snapshot this reads from must
+// survive a refused save intact, and an alias makes that a promise about who mutates rather
+// than a property of the value.
 function withRules(group, kind, rules) {
   const next = {
     description: group?.description ?? '',
-    alwaysAllow: rulesOf(group, 'tool'),
-    alwaysAllowBashPatterns: rulesOf(group, 'bash'),
-    alwaysAllowMcpPatterns: rulesOf(group, 'mcp'),
-    alwaysAllowPathPatterns: rulesOf(group, 'path'),
+    alwaysAllow: [...rulesOf(group, 'tool')],
+    alwaysAllowBashPatterns: [...rulesOf(group, 'bash')],
+    alwaysAllowMcpPatterns: [...rulesOf(group, 'mcp')],
+    alwaysAllowPathPatterns: [...rulesOf(group, 'path')],
   };
   next[KIND_FIELD[kind]] = rules;
   return next;

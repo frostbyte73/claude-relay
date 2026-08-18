@@ -141,6 +141,10 @@ function compile(pattern: string): RegExp | null {
   try { return new RegExp(pattern); } catch { return null; }
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+}
+
 // Path-scoped tools whose grant authorises a file write. A `Read:`/`Glob:`/`Grep:` pattern
 // grants no write however broad it is, so confinement is not this lint's business there —
 // refusing those would break `read` without closing anything.
@@ -215,11 +219,13 @@ function containsQuantifier(body: string): boolean {
   return false;
 }
 
-// A repeated group whose body can itself repeat — the shape that turns a failed match into
-// exponential backtracking. See MAX_PATH_PATTERN_LENGTH above for why this is a bound and not
-// a decision procedure. `?` counts as an inner quantifier (`(a?b?)+` blows up the same way)
-// but not as an outer one: matching a group at most once repeats nothing.
-function hasNestedQuantifier(pattern: string): boolean {
+// A repeated group whose body is ambiguous — either it can itself repeat (`(?:a+)+`) or it
+// offers more than one way to match the same text (`(a|a)+`, which cost 1452ms at 28 characters
+// through `allows()`). Both turn a failed match into exponential backtracking, and both are
+// still only a bound: see MAX_PATH_PATTERN_LENGTH above. `?` counts as an inner quantifier
+// (`(a?b?)+` blows up the same way) but not as an outer one — matching a group at most once
+// repeats nothing, so `(a|b)?` and the unquantified `(a|b)` stay legal.
+function repeatsAnAmbiguousGroup(pattern: string): boolean {
   const stack: number[] = [];
   let inClass = false;
   let i = 0;
@@ -236,8 +242,9 @@ function hasNestedQuantifier(pattern: string): boolean {
     if (c === ')') {
       const start = stack.pop();
       const next = pattern[i + 1];
+      const body = start === undefined ? '' : pattern.slice(start + 1, i);
       if (start !== undefined && (next === '*' || next === '+' || next === '{')
-        && containsQuantifier(pattern.slice(start + 1, i))) {
+        && (containsQuantifier(body) || hasTopLevelAlternation(body))) {
         return true;
       }
       i++;
@@ -345,9 +352,10 @@ export function classifyPathShape(value: string): ShapeVerdict {
   if (compile(pattern) === null) {
     return structural(`pattern does not compile as a regex: ${pattern}`);
   }
-  if (hasNestedQuantifier(pattern)) {
-    return structural('pattern repeats a group whose body also repeats (`(?:a+)+`), which can '
-      + 'backtrack exponentially on a path the session chooses — write the prefix plainly');
+  if (repeatsAnAmbiguousGroup(pattern)) {
+    return structural('pattern repeats a group that can match the same text more than one way '
+      + '(`(?:a+)+`, `(a|a)+`), which backtracks exponentially on a path the session chooses — '
+      + 'write the prefix plainly');
   }
   if (!PATH_WRITE_TOOLS.has(tool)) return { writeShaped: false, reason: '' };
   return pathPrefixConfined(tool, pattern);
@@ -371,6 +379,20 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
         reason: `a whole-tool \`${value}\` grant writes any path on the machine — scope it to a `
           + `path rule instead (\`${value}:^/tmp/\`)`,
       };
+    }
+    // The same equivalence for an MCP tool: `alwaysAllow: ['mcp__github__push_files']` is the
+    // rule `^mcp__github__push_files$`, which the mcp branch refuses on the probe corpus — and
+    // it never met that corpus, because `rulesAllow` answers `alwaysAllow.has(toolName)` before
+    // it reaches the `mcp__` branch at all. Re-asked as the anchored rule it stands in for, so
+    // a tool added to MCP_WRITE_TOOLS later is covered here the day it lands.
+    if (value.startsWith('mcp__')) {
+      const asRule = classifyRuleShape('mcp', `^${escapeRegex(value)}$`);
+      if (asRule.writeShaped) {
+        return {
+          writeShaped: true,
+          reason: `a whole-tool \`${value}\` grant is the rule \`^${value}$\`, which ${asRule.reason}`,
+        };
+      }
     }
     return { writeShaped: false, reason: '' };
   }
