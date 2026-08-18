@@ -241,10 +241,23 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
 .perm-pending-gated-note { color: var(--warn); flex-basis: 100%; margin: 0; }
 
 /* ── Grants ───────────────────────────────────────────────────────────── */
+/* The single most load-bearing sentence on the Permissions page (see index.js) — a callout,
+   not a muted .settings-note, so it reads before anyone reaches for the row below it. */
+.perm-grants-subtitle {
+  margin: 0 0 var(--gap-3);
+  padding: var(--gap-2) var(--gap-3);
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 12px;
+}
+.perm-grants-subtitle strong { color: var(--accent); }
+.allow-kind + .allow-kind { margin-top: var(--gap-4); }
+.allow-kind h4 { margin: 0 0 var(--gap-2); }
 .allow-row {
   display: grid;
   grid-template-columns: 18px 1fr auto;
-  align-items: center;
+  align-items: start;
   gap: var(--gap-2);
   padding: var(--gap-2) 4px;
   font-size: 12px;
@@ -254,10 +267,37 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
 .allow-row-icon { color: var(--ok); }
 .allow-row-pattern { font-family: var(--font-mono); color: var(--text); word-break: break-all; }
 .allow-row-scope { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+.allow-row-actions { display: flex; gap: 4px; flex: none; }
 /* Base look comes from .o-btn.o-btn--default.sm (index.js); only the
    destructive hover tint is surface-local. */
 .allow-row-revoke:hover { border-color: var(--danger); color: var(--danger); }
 .allow-row-revoke:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.allow-editor { display: flex; flex-direction: column; gap: var(--gap-2); }
+.allow-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.allow-edit-input:focus { outline: none; border-color: var(--accent); }
+.allow-editor-actions { display: flex; gap: var(--gap-2); }
+
+.allow-picker { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; margin-top: var(--gap-2); }
+.allow-group-select {
+  padding: 4px 8px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12px;
+}
 
 /* ── Projects ─────────────────────────────────────────────────────────── */
 .settings-project-row {

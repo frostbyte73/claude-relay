@@ -326,8 +326,21 @@ export function renderGroupsBlock(mount) {
     }
   });
 
+  // The only door the Grants block gets into a group: hand it the exact (kind, value) and
+  // expand + pre-fill this block's own inline editor, so the actual write still goes through
+  // commit() -> PUT /api/permission-groups/:name and its lint. Nothing here writes anything.
+  function promote(name, kind, value) {
+    state.expanded.add(name);
+    state.editing = { group: name, kind, index: null, value, reason: '' };
+    state.error = null;
+    focusInput = true;
+    paint();
+    const card = [...mount.querySelectorAll('.permgroup-card')].find((el) => el.dataset.group === name);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
   paint();
   const unsub = grantsStore.subscribe(paint);
   void grantsStore.loadGroups();
-  return unsub;
+  return { unmount: unsub, promote };
 }

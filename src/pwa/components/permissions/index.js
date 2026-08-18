@@ -1,6 +1,7 @@
 import { detailShell, block } from '../settings-surface/detail-shell.js';
 import { renderGroupsBlock } from './groups.js';
 import { renderPendingBlock } from './pending.js';
+import { renderGrantsBlock } from './grants.js';
 
 // Settings > Permissions. Three blocks — Groups, Pending classifications, Grants — each owned
 // by its own module; this file is only the shell that mounts them, so no block's markup ever
@@ -13,15 +14,18 @@ export function renderPermissions(mount) {
   const groupsSection = block(body, 'Permission groups', '<div class="permgroup-list"></div>');
   const pendingSection = block(body, 'Pending classifications',
     '<div class="perm-pending-list"></div>');
+  // The subtitle is the single most load-bearing sentence on this page: it's what tells a
+  // user that a grant added below will NOT unblock an action (Ship 2 confined action-bound
+  // calls away from global/project scope entirely) — so it renders inline, always, never
+  // behind a tooltip.
+  const grantsSection = block(body, 'Grants', `
+    <p class="perm-grants-subtitle"><strong>Sessions and skills only.</strong> A grant added here never reaches an action — an action's permissions come only from the groups it declares.</p>
+    <div class="perm-grants-list"></div>
+  `);
 
-  // Block 3 (Grants) mounts into this; the module that fills it lands in a later task. Left
-  // as a bare, headingless div on purpose — an empty block with a heading would advertise a
-  // control that isn't there yet.
-  const grantsMount = document.createElement('div');
-  grantsMount.className = 'perm-grants-mount';
-  body.appendChild(grantsMount);
-
-  const unmountGroups = renderGroupsBlock(groupsSection.querySelector('.permgroup-list'));
+  const groupsApi = renderGroupsBlock(groupsSection.querySelector('.permgroup-list'));
   const unmountPending = renderPendingBlock(pendingSection.querySelector('.perm-pending-list'));
-  return () => { unmountGroups(); unmountPending(); };
+  const unmountGrants = renderGrantsBlock(grantsSection.querySelector('.perm-grants-list'),
+    { promoteToGroup: groupsApi.promote });
+  return () => { groupsApi.unmount(); unmountPending(); unmountGrants(); };
 }
