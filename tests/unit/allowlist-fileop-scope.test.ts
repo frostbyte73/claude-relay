@@ -49,9 +49,12 @@ describe('edit-group file ops are scoped to the session worktree', () => {
     expect(bash(a, `ln -s /etc/passwd ${wt}/x`, wt)).toBe(false);
   });
 
+  // `mkdir` is exempt from this scoping entirely (Ship 5 round 4 — it can't overwrite, expose,
+  // or destroy anything, so an unscoped `mkdir` anywhere its own bash rule reaches is judged
+  // fine). `touch` stays in the scoped set, so it is what actually proves the /tmp/ path-rule
+  // carve-out now.
   it('allows a destination covered by the /tmp/ path rule the group actually grants', () => {
-    expect(bash(a, 'mkdir /tmp/x', wt)).toBe(true);
-    expect(bash(a, 'mkdir -p /tmp/x/y', wt)).toBe(true);
+    expect(bash(a, 'touch /tmp/x', wt)).toBe(true);
   });
 
   it('the /tmp/ carve-out comes from the resolved path rule, not a hardcoded literal', () => {
@@ -63,7 +66,16 @@ describe('edit-group file ops are scoped to the session worktree', () => {
       alwaysAllowMcpPatterns: [],
       alwaysAllowPathPatterns: [],
     });
-    expect(editBashOnly.allows('Bash', { command: 'mkdir /tmp/x' })).toBe(false);
+    expect(editBashOnly.allows('Bash', { command: 'touch /tmp/x' })).toBe(false);
+  });
+
+  // `mkdir` itself is now unscoped (see above) — its own bash rule is the only gate, and that
+  // rule reaches any absolute path, in or out of any worktree. Documented here so the exemption
+  // reads as a deliberate, checked property rather than an absence of a test.
+  it('mkdir is unscoped: its own bash rule is the only gate, not path-scoping', () => {
+    expect(bash(a, 'mkdir /tmp/x', wt)).toBe(true);
+    expect(bash(a, 'mkdir -p /tmp/x/y', wt)).toBe(true);
+    expect(bash(a, 'mkdir -p /Users/x/anywhere', wt)).toBe(true);
   });
 
   it("recognises chmod's mode argument as a mode, not a path, but still scopes its target", () => {
@@ -74,7 +86,10 @@ describe('edit-group file ops are scoped to the session worktree', () => {
 
   it('denies a relative path — the daemon cannot know the shell cwd it resolves against', () => {
     expect(bash(a, 'rm build', wt)).toBe(false);
-    expect(bash(a, 'mkdir sub/dir', wt)).toBe(false);
+    expect(bash(a, 'touch sub/file', wt)).toBe(false);
+    // mkdir is unscoped (see above), so a relative path is not a scoping question for it —
+    // it is allowed the same as any other mkdir destination.
+    expect(bash(a, 'mkdir sub/dir', wt)).toBe(true);
   });
 
   it('denies an escape normalised away by resolve()', () => {
@@ -151,7 +166,7 @@ describe('a session with no worktree path is unaffected', () => {
   const a = forGroups('edit');
 
   it('still allows what a path rule covers', () => {
-    expect(a.allows('Bash', { command: 'mkdir /tmp/x' })).toBe(true);
+    expect(a.allows('Bash', { command: 'touch /tmp/x' })).toBe(true);
   });
 
   it('denies what is out of scope, same as any other unscoped destination', () => {

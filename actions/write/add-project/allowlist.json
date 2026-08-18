@@ -9,7 +9,5 @@
     "^curl(?:[ \\t]+(?:-[fsSL]+|--(?:silent|fail|show-error|location)))*[ \\t]+(?:-X|--request)(?:[ \\t]+|=)POST[ \\t]+[\"']?(?:\\$OUTPOST_API_URL|\\$\\{OUTPOST_API_URL\\}|http://(?:127\\.0\\.0\\.1|localhost):[0-9]+)/api/projects[\"']?(?:(?:[ \\t]|\\\\\\n)+(?:-H|--header|-d|--data|--data-raw)(?:(?:[ \\t]|\\\\\\n)+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*(?:[ \\t]|\\\\\\n)*$"
   ],
   "alwaysAllowMcpPatterns": [],
-  "alwaysAllowPathPatterns": [
-    "Write:^/Users/[^/]+(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+$"
-  ]
+  "alwaysAllowPathPatterns": []
 }

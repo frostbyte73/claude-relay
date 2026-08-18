@@ -201,7 +201,23 @@ function bashPatternsMatch(rules: CompiledRules, clauseText: string): boolean {
 // The bash verbs `edit`'s `^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\s|$)` pattern hands out with
 // no path scoping at all. `Write` and `Edit` are already confined to the session worktree (or
 // a `Write:`-style path grant); this is the same treatment for their bash equivalents.
-const SCOPED_FILE_OPS = new Set(['mkdir', 'mv', 'cp', 'touch', 'rm', 'rmdir', 'ln', 'chmod']);
+//
+// `mkdir` is deliberately excluded (Ship 5 round 4). It cannot overwrite an existing file,
+// expose one, or destroy one — the worst it can do unscoped is bring an empty directory into
+// existence, and the clause is still gated by whatever bash rule granted it in the first place
+// (e.g. `write.add-project`'s own `^mkdir -p[ \t]+...` pattern, which already anchors the shape
+// of path it accepts). Folding `mkdir` into this set anyway forced every action that legitimately
+// creates a directory outside its worktree to also carry a `Write:`-style path rule — but that
+// rule is the *same* one the `Write` tool check consults, so "may `mkdir` here" and "may `Write`
+// here" collapsed into one grant. Three review rounds (see the ship's report) each tried to
+// scope that one rule narrowly enough to cover only the directory-creation case and each still
+// over-granted the `Write` tool — `Write:^/Users/[^/]+/` (any home directory), then a version
+// unconstrained below its first segment (`/Users/dc/livekit/.git/hooks/post-commit` writable),
+// then one unconstrained on `/Users/Shared`, other users' homes, and unbounded repo-tree depth.
+// The mechanism, not the regex, was wrong: one path-rule vocabulary was being asked to answer two
+// different questions ("may this directory be created" vs "may this file be written"). `rmdir`
+// stays scoped — it acts on an existing directory, not the low-damage "doesn't exist yet" case.
+const SCOPED_FILE_OPS = new Set(['mv', 'cp', 'touch', 'rm', 'rmdir', 'ln', 'chmod']);
 
 // chmod's first non-flag word is a mode (`777`, `+x`, `u+rwx,go-w`), not a path — recognising
 // it is what keeps chmod usable at all once its paths are scoped. Anything that doesn't match

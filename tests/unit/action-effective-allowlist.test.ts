@@ -95,30 +95,30 @@ describe('write.add-project effective allowlist', () => {
   const allowsTool = effectiveTool('write.add-project');
   const DEST = '/Users/dc/livekit/unified-testing';
 
-  // `alwaysAllowPathPatterns` is consulted by the `Write` tool check directly, not only by
-  // the bash `mkdir` scoping — so the rule that satisfies one `mkdir -p ~/<org>` call is also
-  // a standing grant for every other Write the action might ever issue. `Write:^/Users/[^/]+/`
-  // (matching only on the user segment) would hand out arbitrary home-directory file writes;
-  // round 2 fixed the first segment but left every *nested* segment unconstrained
-  // (`/Users/dc/livekit/.git/hooks/post-commit` still allowed — worse than the original hole,
-  // since a writable git hook is local code execution on the next `git` operation). Every
-  // segment after `/Users/<user>` must now start alnum, and the pattern is `$`-anchored so
-  // nothing past the last checked segment can ride along unconstrained.
-  it('the Write grant covers only the clone destination shape, never a dotfile path at any depth', () => {
-    expect(allowsTool('Write', { file_path: '/Users/dc/livekit' })).toBe(true);
-    expect(allowsTool('Write', { file_path: '/Users/dc/work/livekit' })).toBe(true);
-    expect(allowsTool('Write', { file_path: `${DEST}/README.md` })).toBe(true);
+  // Ship 5 round 4: three review rounds each tried to scope a `Write:` path rule narrowly
+  // enough to cover only this action's own `mkdir -p ~/<org>` call, and each still over-granted
+  // the `Write` tool — `alwaysAllowPathPatterns` is consulted by the `Write` tool check
+  // directly, not only by the bash `mkdir` scoping, so one rule was being asked to answer two
+  // different questions ("may this directory be created" vs "may this file be written"). The
+  // fix was to drop the `Write:` rule entirely and exempt `mkdir` from `allowlist.ts`'s
+  // path-scoped command set instead (`mkdir` can't overwrite, expose, or destroy anything, and
+  // the clause is still gated by its own bash rule). This action now carries no path rule at
+  // all, so every `Write`-tool call denies, everywhere, unconditionally.
+  it('carries no Write: rule at all — the Write tool is refused everywhere', () => {
+    expect(allowsTool('Write', { file_path: '/Users/dc/livekit' })).toBe(false);
+    expect(allowsTool('Write', { file_path: `${DEST}/README.md` })).toBe(false);
     expect(allowsTool('Write', { file_path: '/Users/dc/.ssh/authorized_keys' })).toBe(false);
-    expect(allowsTool('Write', { file_path: '/Users/dc/.zshrc' })).toBe(false);
-    expect(allowsTool('Write', { file_path: '/Users/dc/.config/anything' })).toBe(false);
-    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/.ssh/id_rsa' })).toBe(false);
     expect(allowsTool('Write', { file_path: '/Users/dc/livekit/.git/hooks/post-commit' })).toBe(false);
-    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/repo/.env' })).toBe(false);
   });
 
-  it('still denies traversal that resolve() would collapse back into a dotfile', () => {
-    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/../.ssh/id_rsa' })).toBe(false);
-    expect(allowsTool('Write', { file_path: '/Users/dc/livekit/../../../etc/passwd' })).toBe(false);
+  // `mkdir` is unscoped now, so its bash rule is the only gate — and that rule's own character
+  // class (`[A-Za-z0-9._]` for the first path segment) admits a leading dot. This is reported,
+  // not hidden: an unscoped `mkdir -p ~/.ssh` can bring an *empty* `.ssh` directory into
+  // existence, but creates no key, exposes nothing, and the `Write` tool still cannot put a
+  // file there (see the test above) — judged an acceptable consequence of `mkdir`'s low-damage
+  // ceiling, not a new hole.
+  it('mkdir -p ~/.ssh: allowed by the bash rule\'s own character class, and that is judged fine', () => {
+    expect(allows('mkdir -p /Users/dc/.ssh')).toBe(true);
   });
 
   it('allows every command its SKILL.md documents', () => {
