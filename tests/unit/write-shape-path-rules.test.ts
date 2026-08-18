@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { Allowlist, PATH_INPUT_FIELDS } from '../../src/permissions/allowlist.js';
 import {
-  assertNotWriteShaped, classifyPathShape, classifyRuleShape, lintPermissionRule,
-  MCP_WRITE_PROBES, PATH_SCOPED_TOOLS, PATH_WRITE_TOOLS,
+  assertNotWriteShaped, backtrackingDegree, classifyPathShape, classifyRuleShape,
+  lintPermissionRule, MCP_WRITE_PROBES, PATH_SCOPED_TOOLS, PATH_WRITE_TOOLS,
 } from '../../src/permissions/write-shape.js';
 
 const shaped = (v: string) => classifyPathShape(v).writeShaped;
@@ -151,21 +151,48 @@ describe('the lint reaches every rule-entry path', () => {
   });
 });
 
-// The lint that refuses a rule the shipped config already contains breaks the product on the
-// next group save, silently, for a user who changed nothing. Pin the real file rather than a
-// copy of its contents, so an added rule has to face this test.
-describe('the shipped permission groups still lint clean', () => {
-  it('passes every alwaysAllowPathPatterns entry in permission-groups.default.json', () => {
-    const groups = JSON.parse(readFileSync('config/permission-groups.default.json', 'utf8')) as
-      Record<string, { alwaysAllowPathPatterns?: string[] }>;
-    const seen: string[] = [];
-    for (const [name, group] of Object.entries(groups)) {
-      for (const rule of group.alwaysAllowPathPatterns ?? []) {
-        seen.push(rule);
-        expect(lintPermissionRule('path', rule, false).ok, `${name}: ${rule}`).toBe(true);
-      }
+interface RuleSet {
+  alwaysAllowBashPatterns?: string[];
+  alwaysAllowMcpPatterns?: string[];
+  alwaysAllowPathPatterns?: string[];
+}
+
+// Every rule the product actually ships, from both places one can live: the tracked permission
+// groups and the colocated action allowlists the registry merges in at load.
+function shippedRules(): { where: string; kind: 'bash' | 'mcp' | 'path'; rule: string; gated: boolean }[] {
+  const sources: [string, RuleSet, boolean][] = [];
+  const groups = JSON.parse(readFileSync('config/permission-groups.default.json', 'utf8')) as
+    Record<string, RuleSet>;
+  for (const [name, g] of Object.entries(groups)) sources.push([name, g, name === 'push']);
+  for (const category of readdirSync('actions')) {
+    const dir = `actions/${category}`;
+    if (!statSync(dir).isDirectory()) continue;
+    for (const action of readdirSync(dir)) {
+      const file = `${dir}/${action}/allowlist.json`;
+      // A colocated allowlist is merged into the plain allowlist only, never `gated`.
+      if (existsSync(file)) sources.push([file, JSON.parse(readFileSync(file, 'utf8')) as RuleSet, false]);
     }
-    expect(seen).toContain('Write:^/tmp/');
+  }
+  const out: { where: string; kind: 'bash' | 'mcp' | 'path'; rule: string; gated: boolean }[] = [];
+  for (const [where, set, gated] of sources) {
+    for (const rule of set.alwaysAllowBashPatterns ?? []) out.push({ where, kind: 'bash', rule, gated });
+    for (const rule of set.alwaysAllowMcpPatterns ?? []) out.push({ where, kind: 'mcp', rule, gated });
+    for (const rule of set.alwaysAllowPathPatterns ?? []) out.push({ where, kind: 'path', rule, gated });
+  }
+  return out;
+}
+
+// The lint that refuses a rule the shipped config already contains breaks the product on the
+// next group save, silently, for a user who changed nothing. Pin the real files rather than a
+// copy of their contents, so an added rule has to face this test.
+describe('the shipped permission groups still lint clean', () => {
+  it('passes every rule of every kind, in the groups and in the action allowlists', () => {
+    const rules = shippedRules();
+    expect(rules.length).toBeGreaterThan(90);
+    for (const { where, kind, rule, gated } of rules) {
+      expect(lintPermissionRule(kind, rule, gated).ok, `${where} (${kind}): ${rule}`).toBe(true);
+    }
+    expect(rules.filter((r) => r.kind === 'path').map((r) => r.rule)).toContain('Write:^/tmp/');
   });
 });
 
@@ -280,8 +307,8 @@ describe('a whole-tool write grant is refused like the path rule it stands in fo
   });
 });
 
-// Undecidable in general, so this is a bound: refuse the classic catastrophic shape and cap
-// the length. The pattern runs synchronously inside the PreToolUse gate, against a path the
+// Undecidable in general, so this is a bound: score how many ways a failed match can be varied
+// and cap it. The pattern runs synchronously inside the PreToolUse gate, against a path the
 // session chose.
 describe('a path pattern that can backtrack exponentially is refused', () => {
   it('refuses a repeated group whose body also repeats', () => {
@@ -331,5 +358,131 @@ describe('a path pattern that can backtrack exponentially is refused', () => {
     const started = Date.now();
     classifyPathShape('Write:^/tmp/(?:a+)+$');
     expect(Date.now() - started).toBeLessThan(100);
+  });
+});
+
+// The guard this replaced scored a pattern's *shape* — a nested or ambiguous group — and the
+// worst blowup available needs no group at all. `Write:^/tmp/.*.*.*.*.*.*.*.*.*.*.*.*x$` is 32
+// characters against a 200-character cap, `^`-anchored, confined to /tmp/, group-free,
+// alternation-free — and 11.5s through `allows()` on a 24-character path, 27.7s on a
+// 30-character one. Cost, not shape, is the property worth bounding.
+describe('a path pattern that backtracks polynomially is refused', () => {
+  const poly = (k: number) => `Write:^/tmp/${'.*'.repeat(k)}x$`;
+
+  it('refuses the group-free stack of wildcards the shape guard waved through', () => {
+    // Both ends of the range the length cap never saw: 32 characters, and the largest k that
+    // still fits under it.
+    expect(poly(12).length - 'Write:'.length).toBe(32);
+    expect(poly(96).length - 'Write:'.length).toBe(200);
+    for (const k of [3, 8, 10, 12, 96]) {
+      const v = poly(k);
+      expect(classifyPathShape(v).structural, v).toBe(true);
+      expect(lintPermissionRule('path', v, true).ok, v).toBe(false);
+      expect(() => assertNotWriteShaped('path', v)).toThrow(/backtrack/);
+    }
+  });
+
+  it('is scoring cost, so the spellings that dodge a top-level quantifier count too', () => {
+    // A guard that counted only quantifiers outside every group would read each of these as
+    // zero. Degrees add along a concatenation and max across alternation branches, at depth.
+    for (const v of [
+      'Write:^/tmp/(?:.*)(?:.*)(?:.*)x$',
+      'Write:^/tmp/(.*.*.*.*x)$',
+      'Write:^/tmp/[^/]*[^/]*[^/]*x$',
+      'Write:^/tmp/(a|.*.*.*)x$',
+      'Write:^/tmp/.{0,}.{0,}.{0,}x$',
+      'Read:^/tmp/(?:.*)(?:.*)(?:.*)x$',
+    ]) {
+      expect(classifyPathShape(v).structural, v).toBe(true);
+    }
+  });
+
+  it('scores the two shapes the old guard named as unbounded, not merely high', () => {
+    for (const v of ['^/tmp/(?:a+)+$', '^/tmp/(a*)*', '^/tmp/(?:a?b?)+$', '^/tmp/(a|a)+$']) {
+      expect(backtrackingDegree(v), v).toBe(Infinity);
+    }
+  });
+
+  it('leaves every legitimate path rule at or under the cap', () => {
+    // Measured through `allows()` at a 1024-character path: degree 1 is 0.01ms, degree 2 is
+    // 0.89ms, degree 3 is 228ms. The cap sits between the last two.
+    for (const [v, degree] of [
+      ['Write:^/tmp/', 0], ['Write:^/tmp/.*', 1], ['Write:^/tmp/[^/]+\\.json$', 1],
+      ['Write:^/tmp/(x)+', 1], ['Write:^/tmp/(?:outpost)?', 0], ['Read:^/tmp/(a|b)?', 0],
+      ['Write:^/tmp/(?:outpost|scratch)/', 0], ['Write:^/tmp/.*/.*', 2],
+    ] as [string, number][]) {
+      expect(backtrackingDegree(v.slice(v.indexOf(':') + 1)), v).toBe(degree);
+      expect(lintPermissionRule('path', v, false).ok, v).toBe(true);
+    }
+  });
+
+  it('answers in bounded time on the pattern it now refuses', () => {
+    const started = Date.now();
+    for (const k of [12, 96]) classifyPathShape(poly(k));
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+});
+
+// A previous round's own report named the consequence of bounding only `path`: "this is now the
+// one place where the narrowest rule is not the hardest to install." An `mcp` pattern runs in
+// the same synchronous gate, so it takes the same bound. `bash` cannot — see below.
+describe('the backtracking bound reaches mcp rules too', () => {
+  it('refuses an mcp pattern that backtracks, in a gated group as well', () => {
+    for (const v of ['^mcp__github__(?:a+)+$', '^mcp__github__.*.*.*.*x$', '^mcp__(a|a)+push$']) {
+      expect(classifyRuleShape('mcp', v).structural, v).toBe(true);
+      expect(lintPermissionRule('mcp', v, false).ok, v).toBe(false);
+      expect(lintPermissionRule('mcp', v, true).ok, v).toBe(false);
+      expect(() => assertNotWriteShaped('mcp', v)).toThrow(/backtrack/);
+    }
+  });
+
+  it('costs the shipped mcp rules nothing — the widest scores 1 against a cap of 2', () => {
+    const mcp = shippedRules().filter((r) => r.kind === 'mcp');
+    expect(mcp.length).toBeGreaterThan(10);
+    for (const { where, rule } of mcp) {
+      expect(backtrackingDegree(rule), `${where}: ${rule}`).toBeLessThanOrEqual(2);
+    }
+  });
+});
+
+// The honest half of that symmetry: `bash` takes neither the length cap nor the degree bound,
+// and the reason is measured rather than asserted. The shipped `pull`/`push`/`read` whitelists
+// are long and deliberately intricate — and empirically fast, because each iteration of their
+// repeated groups is pinned to a mandatory literal that a degree count cannot see. A bound that
+// refuses a third of them to close a cost nobody can make bite is the wrong bound. This test
+// exists so that claim stays true rather than becoming folklore.
+describe('the bash whitelists are why the bound stops where it does', () => {
+  const bash = () => shippedRules().filter((r) => r.kind === 'bash');
+
+  it('records how badly the path bound would misfire on them', () => {
+    const rules = bash();
+    expect(rules.length).toBeGreaterThan(70);
+    const overLength = rules.filter((r) => r.rule.length > 200);
+    const unbounded = rules.filter((r) => backtrackingDegree(r.rule) === Infinity);
+    expect(overLength.length).toBeGreaterThan(15);
+    expect(unbounded.length).toBeGreaterThan(15);
+    expect(Math.max(...rules.map((r) => r.rule.length))).toBeGreaterThan(800);
+  });
+
+  it('shows those same rules answering fast on input built to make them backtrack', () => {
+    // Probes are grown from each rule's own literal head, then padded with the separators and
+    // flag-shaped fragments its groups are written to chew on, and terminated so the match
+    // fails — the condition under which a backtracking regex does its worst.
+    const fillers = [' ', ' -', ' a', ' -a', ' -fsSL', ' --header x', '/a', ' https://x/'];
+    let worst = 0;
+    for (const { rule } of bash()) {
+      const re = new RegExp(rule);
+      const head = (/^\^([A-Za-z0-9 _/.-]*)/.exec(rule)?.[1] ?? '').trimEnd();
+      for (const filler of fillers) {
+        for (const reps of [20, 40, 80]) {
+          const started = performance.now();
+          re.test(`${head}${filler.repeat(reps)}`);
+          worst = Math.max(worst, performance.now() - started);
+        }
+      }
+    }
+    // Measured at 0.32ms for the slowest of the 76; the assertion is loose enough to survive a
+    // loaded CI box and still fail on a genuine regression.
+    expect(worst).toBeLessThan(50);
   });
 });

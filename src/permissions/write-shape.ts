@@ -162,20 +162,24 @@ export const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set([
   'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep',
 ]);
 
-// A ceiling on how much backtracking a hand-written pattern can buy. Both checks below are
-// bounds, not proofs — deciding whether an arbitrary regex backtracks catastrophically is
-// undecidable in general, so this refuses two cheap proxies for it and no more:
-//
-//   1. Length. A confinement rule is a path prefix; the shipped ones are ten characters. A
-//      pattern this long is not one someone wrote to name a directory.
-//   2. A quantified group whose body is itself quantified (`(?:a+)+`, `(a*)*`, `(a+)*`). This
-//      is the classic catastrophic shape: `Write:^/tmp/(?:a+)+$` against a session-supplied
-//      `/tmp/aaaa…!` took 216ms at 26 characters and did not return at 40 — inside the
-//      synchronous PreToolUse gate every tool call funnels through.
-//
-// A pattern that backtracks badly some other way still gets through. The mitigation for that
-// is that a path rule is a prefix, not a parser: nothing here needs a nested quantifier.
+// A ceiling on how long a path pattern may be. Not a cost bound — regex cost has no relation
+// to pattern length (a 900-character rule with disjoint quantifiers is instant) — but a
+// confinement rule is a path prefix and the shipped ones are ten characters, so a pattern this
+// long is not one someone wrote to name a directory. `backtrackingDegree` below is the actual
+// cost bound. Path only: the shipped `bash` whitelists run to 906 characters.
 const MAX_PATH_PATTERN_LENGTH = 200;
+
+// How many ways the engine may vary a failed match's shape. Measured through `allows()` against
+// a session-supplied path, `^/tmp/` + k `.*` + `x$`, at the path lengths a caller can actually
+// hand in (macOS PATH_MAX is 1024):
+//
+//   degree 1: 0.01ms at 1024 chars     degree 3:   5ms at 256, 228ms at 1024
+//   degree 2: 0.89ms at 1024 chars     degree 4: 350ms at 256,  65s at 1024
+//
+// Degree 3 already stalls the synchronous PreToolUse gate every tool call funnels through, so
+// the cap sits at 2 — which is also comfortably above every legitimate path rule, since a
+// prefix with one wildcard tail is degree 1.
+const MAX_BACKTRACKING_DEGREE = 2;
 
 // The roots a path rule may confine a write to. A whitelist rather than a structural rule
 // (absolute, ends at a `/`, two segments deep, ...) because every such rule reads `/Users/`
@@ -219,40 +223,113 @@ function containsQuantifier(body: string): boolean {
   return false;
 }
 
-// A repeated group whose body is ambiguous — either it can itself repeat (`(?:a+)+`) or it
-// offers more than one way to match the same text (`(a|a)+`, which cost 1452ms at 28 characters
-// through `allows()`). Both turn a failed match into exponential backtracking, and both are
-// still only a bound: see MAX_PATH_PATTERN_LENGTH above. `?` counts as an inner quantifier
-// (`(a?b?)+` blows up the same way) but not as an outer one — matching a group at most once
-// repeats nothing, so `(a|b)?` and the unquantified `(a|b)` stay legal.
-function repeatsAnAmbiguousGroup(pattern: string): boolean {
-  const stack: number[] = [];
-  let inClass = false;
+// The quantifier at `pattern[i]`, if there is one: how many times the atom before it may
+// repeat, and how far to skip past it. `?`, `{0,1}` and `{1,1}` cap at 1 and so repeat nothing.
+// A `{` that isn't a well-formed bound is a literal `{` in JS regex, not a quantifier.
+function quantifierAt(pattern: string, i: number): { max: number; end: number } | null {
+  const c = pattern[i];
+  if (c === '*' || c === '+') return { max: Infinity, end: i + 1 };
+  if (c === '?') return { max: 1, end: i + 1 };
+  if (c !== '{') return null;
+  const m = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(i));
+  if (!m) return null;
+  const max = m[2] === undefined ? Number(m[1]) : m[2] === '' ? Infinity : Number(m[2]);
+  return { max, end: i + m[0].length };
+}
+
+// How badly a failed match can backtrack, as the degree of the polynomial in input length —
+// counting the independent choices the engine gets to vary, not the shapes it is written in.
+// This is the whole cost bound; it subsumes the two shapes the guard used to name.
+//
+//   - Degrees *add* along a concatenation and *max* across alternation branches, at every
+//     nesting depth. That is what catches `^/tmp/.*.*.*.*x$` — group-free, alternation-free,
+//     32 characters, and 11.5s through `allows()` at k=12. A guard that inspected only group
+//     shape saw nothing here, and one that counted only top-level quantifiers would still miss
+//     the identical `^/tmp/(?:.*)(?:.*)(?:.*)x$`.
+//   - A repeated atom whose body is ambiguous — it can itself repeat (`(?:a+)+`) or match the
+//     same text two ways (`(a|a)+`, 1452ms at 28 characters) — is not polynomial at all, so it
+//     scores Infinity. `?` counts as an inner quantifier (`(a?b?)+` blows up the same way) but
+//     never as an outer one: matching something at most once repeats nothing.
+//   - A repeated single-character atom (`.`, `[^/]`, `x`) contributes exactly 1: one character
+//     matcher cannot be internally ambiguous.
+//
+// Still a bound, not a proof, in both directions:
+//   - It over-counts quantifiers whose atoms are disjoint (`[0-9]+[ \t]+\S+` scores 3 and costs
+//     nothing, since no input can be split two ways between them). Deciding that properly means
+//     a real regex analyser. The over-count is why this applies to `path` and `mcp` and not to
+//     `bash`, whose shipped whitelists legitimately score in the dozens — see `classifyRuleShape`.
+//   - It bounds how cost *grows* with input length, not the cost itself. A caller who supplies
+//     an absurd path still buys time at a legal degree: `Write:^/tmp/.*.*x$` is 2ms at 1024
+//     characters and 168ms at 20,000. Capping the probe, not the pattern, is what closes that,
+//     and the probe is `readPathInput`'s in allowlist.ts, not this module's.
+export function backtrackingDegree(pattern: string): number {
+  // One frame per nesting level: `sum` is the current concatenation's running degree, `best`
+  // the largest branch of an alternation closed off by a `|` so far at this level.
+  const stack: { sum: number; best: number; start: number }[] = [];
+  let sum = 0;
+  let best = 0;
   let i = 0;
+
+  const applyAtom = (degree: number, atomEnd: number): number => {
+    const q = quantifierAt(pattern, atomEnd);
+    if (!q) { sum += degree; return atomEnd; }
+    sum += q.max <= 1 ? degree : 1;
+    return q.end;
+  };
+
   while (i < pattern.length) {
     const c = pattern[i]!;
-    if (c === '\\') { i += 2; continue; }
-    if (inClass) {
-      if (c === ']') inClass = false;
-      i++;
+    if (c === '\\') { i = applyAtom(0, i + 2); continue; }
+    if (c === '[') {
+      let j = i + 1;
+      if (pattern[j] === '^') j++;
+      if (pattern[j] === ']') j++;
+      while (j < pattern.length && pattern[j] !== ']') { j += pattern[j] === '\\' ? 2 : 1; }
+      i = applyAtom(0, j + 1);
       continue;
     }
-    if (c === '[') { inClass = true; i++; continue; }
-    if (c === '(') { stack.push(i); i++; continue; }
+    if (c === '(') { stack.push({ sum, best, start: i }); sum = 0; best = 0; i++; continue; }
     if (c === ')') {
-      const start = stack.pop();
-      const next = pattern[i + 1];
-      const body = start === undefined ? '' : pattern.slice(start + 1, i);
-      if (start !== undefined && (next === '*' || next === '+' || next === '{')
-        && (containsQuantifier(body) || hasTopLevelAlternation(body))) {
-        return true;
+      const frame = stack.pop();
+      if (frame === undefined) { i++; continue; }
+      const body = pattern.slice(frame.start + 1, i);
+      const inner = Math.max(best, sum);
+      sum = frame.sum;
+      best = frame.best;
+      const q = quantifierAt(pattern, i + 1);
+      if (q && q.max > 1) {
+        if (containsQuantifier(body) || hasTopLevelAlternation(body)) return Infinity;
+        sum += 1;
+        i = q.end;
+      } else {
+        i = applyAtom(inner, i + 1);
       }
-      i++;
       continue;
     }
-    i++;
+    if (c === '|') { best = Math.max(best, sum); sum = 0; i++; continue; }
+    if (c === '^' || c === '$') { i++; continue; }
+    i = applyAtom(0, i + 1);
   }
-  return false;
+  return Math.max(best, sum);
+}
+
+// Shared refusal for a pattern whose backtracking degree exceeds the cap. `structural`, so a
+// gated group is no excuse: a pattern that stalls the gate stalls it for every session on the
+// machine regardless of which group installed it.
+function backtrackingRefusal(pattern: string): ShapeVerdict | null {
+  const degree = backtrackingDegree(pattern);
+  if (degree <= MAX_BACKTRACKING_DEGREE) return null;
+  return {
+    writeShaped: true,
+    structural: true,
+    reason: degree === Infinity
+      ? 'pattern repeats a group that can match the same text more than one way '
+        + '(`(?:a+)+`, `(a|a)+`), which backtracks exponentially on input the session chooses — '
+        + 'write the prefix plainly'
+      : `pattern stacks ${degree} unbounded quantifiers whose matches can overlap (\`.*.*.*\`), `
+        + `which costs O(nˆ${degree}) backtracking on input the session chooses — the checker runs `
+        + `it synchronously on every tool call (max ${MAX_BACKTRACKING_DEGREE})`,
+  };
 }
 
 // A `|` outside every group and character class turns the pattern into "either side matches",
@@ -352,11 +429,8 @@ export function classifyPathShape(value: string): ShapeVerdict {
   if (compile(pattern) === null) {
     return structural(`pattern does not compile as a regex: ${pattern}`);
   }
-  if (repeatsAnAmbiguousGroup(pattern)) {
-    return structural('pattern repeats a group that can match the same text more than one way '
-      + '(`(?:a+)+`, `(a|a)+`), which backtracks exponentially on a path the session chooses — '
-      + 'write the prefix plainly');
-  }
+  const slow = backtrackingRefusal(pattern);
+  if (slow) return slow;
   if (!PATH_WRITE_TOOLS.has(tool)) return { writeShaped: false, reason: '' };
   return pathPrefixConfined(tool, pattern);
 }
@@ -402,6 +476,21 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
   const re = compile(value);
   if (!re) {
     return { writeShaped: true, structural: true, reason: `pattern does not compile as a regex: ${value}` };
+  }
+
+  // The backtracking bound reaches `mcp` too, and costs the shipped rules nothing: the widest
+  // one scores 1 against a cap of 2. It stops at `bash`, and that asymmetry is measured rather
+  // than assumed — 25 of the 76 shipped bash patterns score Infinity here and 22 exceed
+  // MAX_PATH_PATTERN_LENGTH, yet the slowest of them answers in 0.32ms on adversarial input,
+  // because their repeated groups pin each iteration to a mandatory literal the degree count
+  // cannot see. Deciding *that* needs a real regex analyser (disjoint first-sets), not a
+  // tighter proxy; every proxy tried refuses a third of `pull`/`push`, which is the wrong
+  // trade against a cost nobody has been able to make bite. See permission-group-pull.test.ts
+  // for what those rules are load-bearing for. `bash` therefore carries the compile check and
+  // the probe corpus only, and this is the one gap the module knows it is leaving open.
+  if (kind === 'mcp') {
+    const slow = backtrackingRefusal(value);
+    if (slow) return slow;
   }
 
   const probes = kind === 'mcp' ? MCP_WRITE_PROBES : WRITE_PROBES;
