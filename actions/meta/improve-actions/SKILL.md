@@ -42,7 +42,8 @@ cat "$OUTPOST_ENVELOPE"
 | `improve.scorecard` | Measured outcomes: accept rate, first-try rate, avg revisions, failures, denials, cost. Rates are `null`, not `0`, when nothing has been adjudicated. |
 | `improve.failures[]` | Every failed / gave-up run, each with a `runId` you cite by. |
 | `improve.revisions[]` | Runs the user sent back, with `feedbackChars` — where they pushed back and how hard. |
-| `improve.denials[]` | Tool calls the allowlist blocked, each with an `id`, its suggested rule, and a count. Only *unresolved* denials — one that already carries a verdict (`promote`/`never`/`fix-action`) is excluded, so nothing here has already been decided. |
+| `improve.denials[]` | Tool calls the allowlist blocked, each with an `id`, its suggested rule, and a count. Only *unresolved* denials — one that already carries a verdict (`promote`/`never`/`fix-action`) is excluded, so nothing here has already been decided. Newest first. |
+| `improve.denialsTotal` / `improve.denialsCap` | How many unresolved denials exist, and how many of them `denials[]` actually carries. When `denialsTotal` exceeds `denialsCap` the list is truncated — say so rather than reasoning as if you saw all of them. |
 | `improve.rejectedProposals[]` | Proposals already declined, with the user's reason. |
 | `improve.lessons[]` | What the action wrote about itself. Self-reported — weaker than the scorecard, useful for *why*. |
 | `improve.history[]` | Past applied / reverted revisions with byte sizes. A **reverted** improver edit is the strongest negative signal in the pack. |
