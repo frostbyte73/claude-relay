@@ -15,6 +15,7 @@ import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
+import type { DenialsStore } from '../storage/denials-store.js';
 import { readJsonObject } from './util.js';
 import { readMcpServersFile, transportOf, type McpServerConfig } from '../integrations/mcp-config.js';
 import { listTools } from '../integrations/mcp-catalog.js';
@@ -31,6 +32,7 @@ export interface MetaRoutesDeps {
   projectRegistry: ProjectRegistry;
   worktreeManager: WorktreeManager;
   journalStore: JournalStore;
+  denialsStore: DenialsStore;
   mcpConfigPath: string;
   permissionGroupsPath: string;
   groupRevisions: PermissionGroupRevisionsStore;
@@ -151,43 +153,27 @@ export function validateGroupUpdate(name: string, group: PermissionGroup): Group
   return { ok: true };
 }
 
-export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
-  const {
-    actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
-    actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, mcpConfigPath,
-    permissionGroupsPath, groupRevisions,
-  } = deps;
+export type ApplyGroupResult = { ok: true } | { ok: false; status: number; error: string };
 
-  server.route('GET', '/api/permission-groups', (_req, res) => {
-    const counts = new Map<string, number>();
-    for (const a of actionRegistry.listActions()) {
-      for (const name of groupNamesForAction(a.frontmatter)) {
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-      }
-    }
-    const groups = Object.entries(permissionGroups).map(([name, cfg]) => ({
-      name,
-      description: cfg.description ?? '',
-      alwaysAllow: cfg.alwaysAllow,
-      alwaysAllowBashPatterns: cfg.alwaysAllowBashPatterns,
-      alwaysAllowMcpPatterns: cfg.alwaysAllowMcpPatterns,
-      alwaysAllowPathPatterns: cfg.alwaysAllowPathPatterns,
-      actionCount: counts.get(name) ?? 0,
-    }));
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ groups }));
-  });
+export interface GroupApplierDeps {
+  actionRegistry: ActionRegistry;
+  permissionGroups: PermissionGroupMap;
+  permissionGroupsPath: string;
+  groupRevisions: PermissionGroupRevisionsStore;
+}
 
-  type ApplyGroupResult = { ok: true } | { ok: false; status: number; error: string };
+export type GroupApplier = (
+  name: string, next: PermissionGroup, author: GroupAuthor,
+  rationale: string | undefined, revertOf: string | undefined,
+) => ApplyGroupResult;
 
-  // Shared by the PUT handler and revert: validate, write-and-reload with rollback on failure,
-  // then record. Revert calls this with the same rigor as a fresh edit — see validateGroupUpdate's
-  // header comment on why history is never a trusted replay.
-  function applyGroup(
-    name: string, next: PermissionGroup, author: GroupAuthor,
-    rationale: string | undefined, revertOf: string | undefined,
-  ): ApplyGroupResult {
+// Shared by the PUT handler, revert, mcp-catalog apply, and the denial-verdict route
+// (routes/actions.ts's `promote` disposition): validate, write-and-reload with rollback on
+// failure, then record. One function so every caller gets the same atomicity and audit trail
+// — see validateGroupUpdate's header comment on why history is never a trusted replay.
+export function createGroupApplier(deps: GroupApplierDeps): GroupApplier {
+  const { actionRegistry, permissionGroups, permissionGroupsPath, groupRevisions } = deps;
+  return function applyGroup(name, next, author, rationale, revertOf) {
     const verdict = validateGroupUpdate(name, next);
     if (!verdict.ok) return { ok: false, status: 400, error: verdict.error };
 
@@ -230,7 +216,38 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     console.log(`[api] permission-group[${name}]: ${revertOf ? 'reverted' : 'updated'} `
       + `(${next.alwaysAllowBashPatterns.length} bash rules)`);
     return { ok: true };
-  }
+  };
+}
+
+export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
+  const {
+    actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
+    actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, denialsStore,
+    mcpConfigPath, permissionGroupsPath, groupRevisions,
+  } = deps;
+
+  const applyGroup = createGroupApplier({ actionRegistry, permissionGroups, permissionGroupsPath, groupRevisions });
+
+  server.route('GET', '/api/permission-groups', (_req, res) => {
+    const counts = new Map<string, number>();
+    for (const a of actionRegistry.listActions()) {
+      for (const name of groupNamesForAction(a.frontmatter)) {
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+    }
+    const groups = Object.entries(permissionGroups).map(([name, cfg]) => ({
+      name,
+      description: cfg.description ?? '',
+      alwaysAllow: cfg.alwaysAllow,
+      alwaysAllowBashPatterns: cfg.alwaysAllowBashPatterns,
+      alwaysAllowMcpPatterns: cfg.alwaysAllowMcpPatterns,
+      alwaysAllowPathPatterns: cfg.alwaysAllowPathPatterns,
+      actionCount: counts.get(name) ?? 0,
+    }));
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ groups }));
+  });
 
   // Body: { group: PermissionGroup, rationale?: string }. The only path that may install a
   // write-shaped rule, and only into a gated group — see validateGroupUpdate.
@@ -384,33 +401,109 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.end(JSON.stringify({ rules: rows }));
   });
 
-  // Revokes a persisted grant (global or project scope). Session-scoped rules
-  // are never listed here (they die with the session); action-scoped rules are
-  // managed via the action editor and can't be revoked from this endpoint.
+  function scopeLabelFor(scope: PersistedRuleScope): string {
+    return scope === 'global' ? 'global'
+      : 'project' in scope ? `project=${scope.project}`
+      : `action=${scope.action}`;
+  }
+
+  // Revokes a persisted grant (global, project, or action scope). Session-scoped rules are
+  // never listed here (they die with the session). Allowlist.removeRule delegates to
+  // ActionsStore for action scope, so this needs no scope branch of its own.
   server.route('DELETE', '/api/allowlist/rules/:id', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/allowlist\/rules\/([A-Za-z0-9_-]+)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const decoded = decodeRuleId(m[1]!);
     if (!decoded) { res.statusCode = 400; res.end('malformed rule id'); return; }
-    if (typeof decoded.scope === 'object' && 'action' in decoded.scope) {
-      res.statusCode = 409; res.end('action-scoped rules are managed via the action editor'); return;
-    }
     const removed = allowlist.removeRule(decoded.kind, decoded.value, decoded.scope as RuleScope);
     if (!removed) { res.statusCode = 404; res.end('rule not found'); return; }
     if (decoded.scope === 'global') {
-      // Project-file persistence lives inside Allowlist.removeRule; the global
-      // file is owned by the daemon, so re-serialize it here (same atomic-rename
-      // shape as the POST /api/allowlist/rules handler).
+      // Project- and action-scoped persistence live inside Allowlist.removeRule /
+      // ActionsStore.removeRule; the global file is owned by the daemon, so re-serialize it
+      // here (same atomic-rename shape as the POST /api/allowlist/rules handler).
       const tmp = `${allowlistPath}.tmp`;
       writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
       renameSync(tmp, allowlistPath);
     }
-    const scopeLabel = decoded.scope === 'global' ? 'global' : `project=${(decoded.scope as { project: string }).project}`;
-    console.log(`[api] allowlist[${scopeLabel}]: removed ${decoded.kind} rule ${JSON.stringify(decoded.value)}`);
+    console.log(`[api] allowlist[${scopeLabelFor(decoded.scope)}]: removed ${decoded.kind} rule ${JSON.stringify(decoded.value)}`);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ ok: true }));
   });
+
+  function fieldForKind(kind: RuleKind): keyof AllowlistConfig {
+    return kind === 'tool' ? 'alwaysAllow'
+      : kind === 'bash' ? 'alwaysAllowBashPatterns'
+      : kind === 'mcp' ? 'alwaysAllowMcpPatterns'
+      : 'alwaysAllowPathPatterns';
+  }
+
+  function existingValuesFor(scope: PersistedRuleScope, kind: RuleKind): string[] {
+    const cfg = typeof scope === 'object' && 'action' in scope
+      ? actionsStore.get(scope.action).allowlist
+      : allowlist.toConfig(scope as 'global' | { project: string });
+    return (cfg[fieldForKind(kind)] ?? []) as string[];
+  }
+
+  // Edit-in-place for a persisted grant: remove-then-add on the same scope and kind, via the
+  // same Allowlist facade the DELETE route uses (so action scope is no special case here
+  // either). A refused edit must leave the original rule untouched, never delete it out from
+  // under the user — callers must lint (and check for a same-kind collision) BEFORE calling
+  // this. The id encodes the value, so a successful edit returns a NEW id; the old one 404s.
+  function applyRuleEdit(
+    scope: PersistedRuleScope, kind: RuleKind, oldValue: string, newValue: string,
+  ): { ok: true } | { ok: false; status: number; error: string } {
+    const ruleScope = scope as RuleScope;
+    if (!allowlist.removeRule(kind, oldValue, ruleScope)) {
+      return { ok: false, status: 404, error: 'rule not found' };
+    }
+    try {
+      allowlist.addRule(kind, newValue, ruleScope);
+    } catch (e) {
+      allowlist.addRule(kind, oldValue, ruleScope);
+      return { ok: false, status: 400, error: `invalid pattern: ${(e as Error).message}` };
+    }
+    if (scope === 'global') {
+      const tmp = `${allowlistPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
+      renameSync(tmp, allowlistPath);
+    }
+    console.log(`[api] allowlist[${scopeLabelFor(scope)}]: edited ${kind} rule ${JSON.stringify(oldValue)} -> ${JSON.stringify(newValue)}`);
+    return { ok: true };
+  }
+
+  async function handlePutAllowlistRule(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const m = (req.url ?? '').match(/^\/api\/allowlist\/rules\/([A-Za-z0-9_-]+)$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const decoded = decodeRuleId(m[1]!);
+    if (!decoded) { res.statusCode = 400; res.end('malformed rule id'); return; }
+    const payload = await readJsonObject<{ value?: unknown }>(req, res);
+    if (!payload) return;
+    const value = payload.value;
+    if (typeof value !== 'string' || value.length === 0 || value.length > 500) {
+      res.statusCode = 400; res.end('body must be { value: <1..500 char string> }'); return;
+    }
+    if (value === decoded.value) { res.statusCode = 400; res.end('no change'); return; }
+    // A collision with another rule of the same kind/scope would make removeRule+addRule
+    // silently merge two rules into one — refuse it rather than reporting a merge as an edit.
+    if (existingValuesFor(decoded.scope, decoded.kind).includes(value)) {
+      res.statusCode = 400; res.end('a rule with this value already exists for this scope and kind'); return;
+    }
+
+    // Lint BEFORE any removal: a refused edit must be a no-op, not a deletion.
+    const lint = lintPermissionRule(decoded.kind, value, false);
+    if (!lint.ok) { res.statusCode = 400; res.end(lint.reason ?? 'rule refused'); return; }
+
+    const result = applyRuleEdit(decoded.scope, decoded.kind, decoded.value, value);
+    if (!result.ok) { res.statusCode = result.status; res.end(result.error); return; }
+
+    const newId = encodeRuleId(decoded.kind, value, decoded.scope);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, rule: { id: newId, kind: decoded.kind, value, scope: decoded.scope } }));
+  }
+
+  server.route('PUT', '/api/allowlist/rules/:id', handlePutAllowlistRule);
 
   server.route('GET', '/api/actions/:name/journal', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/actions\/([^/?]+)\/journal(?:\?.*)?$/);
@@ -567,6 +660,59 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   }
 
   server.route('POST', '/api/mcp/catalog/apply', handlePostMcpCatalogApply);
+
+  // The recorded tool input is what a user reads to judge a denial's verdict — the suggested
+  // rule alone doesn't say what actually ran. `null` is a distinct, honest answer from an empty
+  // or one-word command: it tells the client the payload isn't there to show, rather than
+  // shipping a value (`toolName` alone, or a stray `"undefined"`) indistinguishable from a real
+  // single-word command. Truncated so one oversized payload can't blow up this route's response.
+  function truncatedDenialCommand(toolName: string, toolInput: unknown): string | null {
+    if (toolName === 'Bash') {
+      const cmd = (toolInput as { command?: unknown } | null | undefined)?.command;
+      return typeof cmd === 'string' ? cmd.slice(0, 200) : null;
+    }
+    // `null` is an absent payload too — stringifying it ships the client the four-character
+    // command `null`, which renders as a call that was made rather than one nobody recorded.
+    if (toolInput === undefined || toolInput === null) return null;
+    try {
+      const json = JSON.stringify(toolInput);
+      return typeof json === 'string' ? json.slice(0, 200) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  interface PendingDenialEntry {
+    action: string; id: string; tool: string; command: string | null;
+    suggested: { kind: string; value: string } | null; count: number; at: number;
+  }
+
+  // Every unresolved denial across every action, in one cross-action payload — there's no
+  // other endpoint that isn't scoped to one action at a time. Deliberately does NOT fold in
+  // GET /api/mcp/catalog's unclassified-tool counts: that route's `listTools` does a live
+  // network probe per configured server (up to MCP_PROBE_TIMEOUT_MS each on a hung one), and
+  // this route's whole reason to exist is a fast, synchronous first paint for the Permissions
+  // page. The MCP panel calls /api/mcp/catalog itself, on its own schedule, so a slow or
+  // unreachable server only ever delays that one panel — never this one, and never denials.
+  function handleGetPermissionsPending(_req: IncomingMessage, res: ServerResponse): void {
+    const denials: PendingDenialEntry[] = [];
+    for (const action of Object.keys(denialsStore.all())) {
+      for (const d of denialsStore.unresolved(action)) {
+        denials.push({
+          action, id: d.id, tool: d.toolName,
+          command: truncatedDenialCommand(d.toolName, d.toolInput),
+          suggested: d.suggested.kind === 'none' ? null : { kind: d.suggested.kind, value: d.suggested.value },
+          count: d.count, at: d.at,
+        });
+      }
+    }
+
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ denials }));
+  }
+
+  server.route('GET', '/api/permissions/pending', handleGetPermissionsPending);
 
   server.route('GET', '/api/files', (req, res) => {
     const url = new URL(req.url ?? '', 'http://internal');

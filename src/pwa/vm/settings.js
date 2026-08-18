@@ -40,9 +40,9 @@ export const SETTINGS_SECTIONS = [
   },
 ];
 
-// `warnFlags` is `{ [sectionKey]: boolean }` — currently only 'mcp' is ever
-// true (an unreachable MCP server), computed by the caller from grants store
-// state so this stays a pure function of already-derived booleans.
+// `warnFlags` is `{ [sectionKey]: boolean }` — 'mcp' (an unreachable MCP server) and
+// 'permissions' (an unresolved denial waiting on a verdict) today, computed by the caller from
+// grants store state so this stays a pure function of already-derived booleans.
 export function settingsSections(warnFlags = {}, desktop = true) {
   return SETTINGS_SECTIONS
     .filter((group) => desktop || !group.desktopOnly)
@@ -50,48 +50,6 @@ export function settingsSections(warnFlags = {}, desktop = true) {
       ...group,
       items: group.items.map((item) => ({ ...item, warn: !!warnFlags[item.key] })),
     }));
-}
-
-const GROUP_ORDER = ['core', 'read', 'pull', 'edit', 'push'];
-const GROUP_TONE = { core: 'core', read: 'read', pull: 'pull', edit: 'edit', push: 'push' };
-
-export function permissionGroupRows(groups = []) {
-  return [...groups]
-    .sort((a, b) => GROUP_ORDER.indexOf(a.name) - GROUP_ORDER.indexOf(b.name))
-    .map((g) => ({
-      name: g.name,
-      description: g.description ?? '',
-      actionCount: g.actionCount ?? 0,
-      tone: GROUP_TONE[g.name] ?? 'core',
-    }));
-}
-
-function basenameOf(p) {
-  if (typeof p !== 'string' || !p) return p;
-  const parts = p.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? p;
-}
-
-function scopeLabel(scope) {
-  if (scope === 'global') return 'global';
-  if (scope && typeof scope === 'object') {
-    if (scope.project) return `project · ${basenameOf(scope.project)}`;
-    if (scope.action) return `action · ${scope.action}`;
-  }
-  return 'unknown';
-}
-
-// No addedAt/expiry metadata exists on allowlist rules (Allowlist.toConfig()
-// returns bare pattern arrays) — lifecycle is always 'permanent' per D4.4;
-// don't fabricate timestamps the mockup shows but the backend can't back.
-export function allowlistRuleRows(rules = []) {
-  return rules.map((r, i) => ({
-    id: `${r.kind}:${r.value}:${i}`,
-    kind: r.kind,
-    pattern: r.value,
-    scopeText: scopeLabel(r.scope),
-    lifecycle: 'permanent',
-  }));
 }
 
 const MCP_LABEL = { ok: 'Connected', configured: 'Configured (stdio)', unreachable: 'Unreachable' };

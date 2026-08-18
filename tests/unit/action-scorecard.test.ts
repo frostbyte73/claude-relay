@@ -104,6 +104,20 @@ describe('buildScorecard grouping', () => {
     expect(sc.denials.top.map((d) => d.toolName)).toEqual(['npx', 'cd']);
   });
 
+  it('excludes a verdicted denial from total/distinct/top, same as the improvement pack', () => {
+    const denial = (toolName: string, count: number): ActionDenial => ({
+      id: toolName, actionName: 'code.spec', sessionId: 'x', toolName, toolInput: {},
+      suggested: { kind: 'bash', value: `^${toolName} ` }, at: NOW, count,
+    });
+    const resolved: ActionDenial = {
+      ...denial('cd', 9),
+      verdict: { disposition: 'fix-action', reason: 'shell builtin', decidedAt: NOW, decidedBy: 'improver' },
+    };
+    const sc = card([run({ outcome: 'accepted' })], [resolved, denial('npx', 3)]);
+    expect(sc.denials).toMatchObject({ total: 3, distinct: 1 });
+    expect(sc.denials.top.map((d) => d.toolName)).toEqual(['npx']);
+  });
+
   it('surfaces recent failures with their reason', () => {
     const sc = card([
       run({ outcome: 'failed', endedAt: NOW, failureReason: 'boom' }),

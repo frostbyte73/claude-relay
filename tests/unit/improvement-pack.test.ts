@@ -4,7 +4,7 @@ import {
   type ImprovementPackDeps,
 } from '../../src/actions/improvement-pack.js';
 import type { ActionRunOutcome, ActionRunRecord } from '../../src/storage/action-runs-store.js';
-import type { ActionDenial } from '../../src/storage/denials-store.js';
+import type { ActionDenial, DenialVerdict } from '../../src/storage/denials-store.js';
 import type { ActionEvent } from '../../src/storage/action-revisions-store.js';
 
 const NOW = 1_700_000_000_000;
@@ -38,6 +38,13 @@ function denial(overrides: Partial<ActionDenial> = {}): ActionDenial {
     suggested: { kind: 'bash', value: '^rg ' },
     at: NOW - HOUR,
     count: 3,
+    ...overrides,
+  };
+}
+
+function verdict(overrides: Partial<DenialVerdict> = {}): DenialVerdict {
+  return {
+    disposition: 'never', reason: 'not a permission gap', decidedAt: NOW - HOUR, decidedBy: 'user',
     ...overrides,
   };
 }
@@ -237,10 +244,39 @@ describe('buildImprovementPack', () => {
     expect(pack.previousReview).toEqual({ at: NOW - 3 * HOUR, rationale: 'all clean' });
   });
 
-  it('drops one-off denials and keeps recurring ones', () => {
-    const d = deps({ denialsFor: () => [denial({ id: 'once', count: 1 }), denial({ id: 'again', count: 5 })] });
+  it('includes a one-off denial in the pack, newest first', () => {
+    // Pack contents and election ask different questions (see selectActionToImprove —
+    // ignores a one-off denial, above): a single denial can't elect an action for review, but
+    // once an action is already being reviewed it belongs in the evidence.
+    const d = deps({
+      denialsFor: () => [
+        denial({ id: 'once', count: 1, at: NOW - HOUR }),
+        denial({ id: 'again', count: 5, at: NOW - 2 * HOUR }),
+      ],
+    });
     const pack = buildImprovementPack('read.investigate', d);
-    expect(pack.denials.map((x) => x.count)).toEqual([5]);
+    expect(pack.denials.map((x) => x.id)).toEqual(['once', 'again']);
+  });
+
+  it('caps the denials list and states the cap rather than truncating silently', () => {
+    const many = Array.from({ length: 25 }, (_, i) => denial({ id: `d${i}`, count: 1, at: NOW - i * HOUR }));
+    const pack = buildImprovementPack('read.investigate', deps({ denialsFor: () => many }));
+    expect(pack.denials).toHaveLength(20);
+    expect(pack.denials[0]).toMatchObject({ id: 'd0' });
+    expect(pack.denialsCap).toBe(20);
+    expect(pack.denialsTotal).toBe(25);
+  });
+
+  it('excludes a verdicted denial and carries the id of an unresolved one', () => {
+    const d = deps({
+      denialsFor: () => [
+        denial({ id: 'resolved', count: 5, verdict: verdict() }),
+        denial({ id: 'open', count: 5 }),
+      ],
+    });
+    const pack = buildImprovementPack('read.investigate', d);
+    expect(pack.denials).toHaveLength(1);
+    expect(pack.denials[0]).toMatchObject({ id: 'open' });
   });
 
   it('caps each evidence list so a long-lived action stays a curated trace', () => {

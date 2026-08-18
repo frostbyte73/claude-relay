@@ -42,7 +42,8 @@ cat "$OUTPOST_ENVELOPE"
 | `improve.scorecard` | Measured outcomes: accept rate, first-try rate, avg revisions, failures, denials, cost. Rates are `null`, not `0`, when nothing has been adjudicated. |
 | `improve.failures[]` | Every failed / gave-up run, each with a `runId` you cite by. |
 | `improve.revisions[]` | Runs the user sent back, with `feedbackChars` — where they pushed back and how hard. |
-| `improve.denials[]` | Tool calls the allowlist blocked, with counts. |
+| `improve.denials[]` | Tool calls the allowlist blocked, each with an `id`, its suggested rule, and a count. Only *unresolved* denials — one that already carries a verdict (`promote`/`never`/`fix-action`) is excluded, so nothing here has already been decided. Newest first. |
+| `improve.denialsTotal` / `improve.denialsCap` | How many unresolved denials exist, and how many of them `denials[]` actually carries. When `denialsTotal` exceeds `denialsCap` the list is truncated — say so rather than reasoning as if you saw all of them. |
 | `improve.rejectedProposals[]` | Proposals already declined, with the user's reason. |
 | `improve.lessons[]` | What the action wrote about itself. Self-reported — weaker than the scorecard, useful for *why*. |
 | `improve.history[]` | Past applied / reverted revisions with byte sizes. A **reverted** improver edit is the strongest negative signal in the pack. |
@@ -108,6 +109,28 @@ action at all, so it's often the highest-leverage line in the file.
   description's trigger conditions rather than adding a "don't use this when…"
   paragraph to the body.
 
+### Resolve a recurring denial with a verdict, not a grant
+
+You have no tool that grants a permission, and none of your evidence should be
+read as if you did. For a denial in `improve.denials[]` worth acting on, cite
+its `id` in `evidence` alongside the verdict you'd give it:
+
+- **`promote`** — the blocked call is a legitimate need; name the destination
+  permission group (`pull` for a read, `push` for a write) and the exact rule.
+  A promotion into a gated group (`push`) can only be **applied by the user**
+  — say so plainly, and never write as if your proposal grants it. It doesn't:
+  the verdict is applied later, through the same validated group-editor path a
+  human uses, not by this proposal being approved.
+- **`never`** — the call should not be granted anywhere; say why, so the same
+  denial stops reappearing in every future pack.
+- **`fix-action`** — the fix belongs in this action's own instructions or
+  command, not in an allowlist; make that fix part of your `skillMdAfter`.
+
+Never propose `allowlistAdds` as the answer to a denial. It writes a rule
+scoped to this one action, which satisfies its own allowlist but never reaches
+the gated set a write draft's approval is checked against — a write "granted"
+this way would run ungated. `allowlistAdds` has no legitimate use here.
+
 ## Step 3 — Decide
 
 Reach a proposal only if you can name the pattern, cite two or more runs, and
@@ -140,9 +163,9 @@ mcp__outpost__submit_action_proposal({
   skillMdAfter: "<full revised SKILL.md — native JSON string, no shell escaping>",
   evidence: [
     "runs r7f2/r9c1: both failed at the PR-comment step with no branch resolved",
-    "3 send-backs averaging 400 chars of feedback, all about missing file paths"
-  ],
-  allowlistAdds: [{ "kind": "bash", "value": "^gh pr view " }]
+    "3 send-backs averaging 400 chars of feedback, all about missing file paths",
+    "denial d3f2c1: promote ^gh pr view (\\s|$) into `pull` — recurring read, count 6"
+  ]
 })
 ```
 
@@ -159,10 +182,9 @@ mcp__outpost__submit_action_proposal({
 
 `skillMdAfter` must be the **complete** file including frontmatter — the daemon
 writes it verbatim. `evidence` entries are shown to the user next to your diff;
-each should name the runs or counts it rests on.
-
-Add `allowlistAdds` only for a recurring denial in the pack, scoped as narrowly
-as the blocked call actually needs.
+each should name the runs or counts it rests on — a denial verdict belongs here
+too, cited by `id` (see "Resolve a recurring denial with a verdict, not a
+grant" above).
 
 ## Step 5 — Confirm and stop
 

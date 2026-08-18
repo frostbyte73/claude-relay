@@ -6,6 +6,10 @@
 // Renders read-only where no real backend exists yet (session-scoped grant
 // lifecycle, daemon uptime) rather than fabricating controls — see CLAUDE.md's
 // "no fake controls" instruction for this surface.
+//
+// Permissions is the one section that isn't rendered here: it's a page in its own
+// right (editable groups, pending classifications, grants) and lives in
+// components/permissions/, mounted below like any other section renderer.
 
 import { escapeHtml } from '../../util.js';
 import { nav } from '../../state/nav.js';
@@ -15,11 +19,13 @@ import { openAddProjectSheet } from '../cwd-picker.js';
 import { settings, VALID_DEFAULT_MODELS } from '../../state/settings.js';
 import { sessions } from '../../state/sessions.js';
 import { usage } from '../../state/usage.js';
-import { grantsStore, mcpHasWarning } from '../../state/grants.js';
-import { settingsSections, permissionGroupRows, allowlistRuleRows, mcpServerRows } from '../../vm/settings.js';
+import { grantsStore, mcpHasWarning, pendingHasWarning } from '../../state/grants.js';
+import { settingsSections, mcpServerRows } from '../../vm/settings.js';
 import { renderThemeGrid, renderModeToggle } from '../theme-picker.js';
 import { mountPushSection } from '../push/index.js';
+import { renderPermissions } from '../permissions/index.js';
 import { emptyState } from '../shell/placeholder.js';
+import { detailShell, block } from './detail-shell.js';
 import { renderHotkeys } from './hotkeys.js';
 
 const MODEL_LABELS = { default: 'Daemon default', fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
@@ -37,7 +43,7 @@ export function renderList(mount) {
 
   function paint() {
     const sel = nav.get().selectionBySurface.settings ?? null;
-    const warnFlags = { mcp: mcpHasWarning(grantsStore.get()) };
+    const warnFlags = { mcp: mcpHasWarning(grantsStore.get()), permissions: pendingHasWarning(grantsStore.get()) };
     const groups = settingsSections(warnFlags, isDesktop());
     mount.innerHTML = groups.map((g) => `
       <div class="settings-nav-group">
@@ -63,9 +69,10 @@ export function renderList(mount) {
   paint();
   const unsubNav = nav.subscribe(paint);
   const unsubGrants = grantsStore.subscribe(paint);
-  // Kick off the lazy loads whose results feed the MCP warn-dot as soon as the
-  // surface opens, not only once the user drills into MCP connections.
+  // Kick off the lazy loads whose results feed the MCP and Permissions warn-dots as soon as
+  // the surface opens, not only once the user drills into MCP connections or Permissions.
   void grantsStore.ensureMcpLoaded();
+  void grantsStore.loadPending();
 
   // Deferred to its own microtask: renderList runs synchronously inside the
   // shell frame's paint(), and nav.setSelection() notifies subscribers
@@ -101,27 +108,6 @@ export function renderDetail(mount, deps) {
     return undefined;
   }
   return renderer(mount);
-}
-
-function detailShell(mount, title, lede) {
-  mount.innerHTML = `
-    <div class="settings-detail">
-      <div class="settings-detail-hdr">
-        <h1>${escapeHtml(title)}</h1>
-        ${lede ? `<p class="settings-detail-lede">${escapeHtml(lede)}</p>` : ''}
-      </div>
-      <div class="settings-detail-body"></div>
-    </div>
-  `;
-  return mount.querySelector('.settings-detail-body');
-}
-
-function block(body, heading, contentHtml) {
-  const section = document.createElement('div');
-  section.className = 'o-section settings-block';
-  section.innerHTML = `<h3 class="o-microhead">${escapeHtml(heading)}</h3>${contentHtml}`;
-  body.appendChild(section);
-  return section;
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────
@@ -229,83 +215,6 @@ function renderModelDefaults(mount) {
   paintApproval();
   paintConcurrency();
   const unsub = settings.subscribe(() => { paintModel(); paintApproval(); paintConcurrency(); });
-  return unsub;
-}
-
-// ── Permissions ────────────────────────────────────────────────────────
-
-function groupRowHtml(row) {
-  return `
-    <div class="permgroup-row">
-      <span class="o-pill grp-${row.tone}">${escapeHtml(row.name)}</span>
-      <div class="permgroup-desc">${escapeHtml(row.description)}</div>
-      <span class="permgroup-count">${row.actionCount} action${row.actionCount === 1 ? '' : 's'}</span>
-    </div>
-  `;
-}
-
-function allowRowHtml(row, idx) {
-  return `
-    <div class="allow-row">
-      <span class="allow-row-icon" aria-hidden="true">✓</span>
-      <div>
-        <div class="allow-row-pattern">${escapeHtml(row.pattern)}</div>
-        <div class="allow-row-scope">${escapeHtml(row.kind)} · ${escapeHtml(row.scopeText)}</div>
-      </div>
-      <button type="button" class="o-btn o-btn--default sm allow-row-revoke" data-revoke-idx="${idx}">Revoke</button>
-    </div>
-  `;
-}
-
-function renderPermissions(mount) {
-  const body = detailShell(mount, 'Permissions', 'Permission groups gate what tools each skill can call. Extras narrow those groups per-action.');
-  const groupsSection = block(body, 'Groups in use', '<div class="settings-loading">Loading…</div>');
-  const grantsSection = block(body, 'Grants', '<div class="settings-loading">Loading…</div>');
-
-  // grantsStore caches rules for the tab's lifetime (no reload mutator yet) —
-  // track revocations locally so the list reflects them without a refetch.
-  const revoked = new Set();
-  const ruleKey = (r) => r.id ?? `${r.kind}:${r.value}:${JSON.stringify(r.scope)}`;
-  const visibleRules = () => (grantsStore.get().rules ?? []).filter((r) => !revoked.has(ruleKey(r)));
-
-  function paint() {
-    const state = grantsStore.get();
-    const groupRows = permissionGroupRows(state.groups);
-    groupsSection.innerHTML = `<h3>Groups in use</h3>${
-      state.groupsLoaded
-        ? (groupRows.length ? groupRows.map(groupRowHtml).join('') : '<p class="settings-note">No actions registered.</p>')
-        : '<div class="settings-loading">Loading…</div>'
-    }`;
-    const rules = visibleRules();
-    const ruleRows = allowlistRuleRows(rules);
-    grantsSection.innerHTML = `<h3>Grants${state.rulesLoaded ? ` · ${ruleRows.length}` : ''}</h3>${
-      state.rulesLoaded
-        ? (ruleRows.length ? ruleRows.map(allowRowHtml).join('') : '<p class="settings-note">No always-allow rules recorded yet.</p>')
-        : '<div class="settings-loading">Loading…</div>'
-    }`;
-  }
-
-  grantsSection.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-revoke-idx]');
-    if (!btn) return;
-    const rule = visibleRules()[Number(btn.dataset.revokeIdx)];
-    if (!rule) return;
-    if (!confirm(`Revoke "${rule.value}" (${rule.kind})? Future calls matching it will ask again.`)) return;
-    btn.disabled = true;
-    try {
-      const res = await fetch(`/api/allowlist/rules/${encodeURIComponent(rule.id)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`${res.status}: ${(await res.text()).slice(0, 200)}`);
-      revoked.add(ruleKey(rule));
-      paint();
-    } catch (err) {
-      window.alert(`Revoke failed: ${err.message}`);
-      btn.disabled = false;
-    }
-  });
-
-  paint();
-  const unsub = grantsStore.subscribe(paint);
-  void grantsStore.ensurePermissionsLoaded();
   return unsub;
 }
 

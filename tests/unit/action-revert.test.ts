@@ -46,6 +46,8 @@ describe('revertToEvent', () => {
     expect(store.listByAction(ACTION).map((e) => e.kind)).toEqual(['reverted', 'applied', 'created']);
   });
 
+  // The rules here are stand-ins for "a rule this revision added" — read-shaped ones, since a
+  // whole-tool `Write` (what these used to carry) is refused at addRule by the write lint.
   it('removes only the rules the reverted revision added', () => {
     writeFileSync(join(actionDir, 'SKILL.md'), 'v1\n');
     // Added out-of-band, the way the denials "Allow" button does — must survive.
@@ -53,14 +55,14 @@ describe('revertToEvent', () => {
 
     const applied = store.applyWrite({
       action: ACTION, dir: actionDir, body: 'v2\n', author: 'improver',
-      allowlistAdds: [{ kind: 'bash', value: '^sed ' }, { kind: 'tool', value: 'Write' }],
+      allowlistAdds: [{ kind: 'bash', value: '^sed ' }, { kind: 'tool', value: 'Glob' }],
     });
     actionsStore.addRule(ACTION, 'bash', '^sed ');
-    actionsStore.addRule(ACTION, 'tool', 'Write');
+    actionsStore.addRule(ACTION, 'tool', 'Glob');
     // A later revision re-adds one of them, so that one is still earned.
     store.applyWrite({
       action: ACTION, dir: actionDir, body: 'v3\n', author: 'user',
-      allowlistAdds: [{ kind: 'tool', value: 'Write' }],
+      allowlistAdds: [{ kind: 'tool', value: 'Glob' }],
     });
 
     const { removed } = revert(applied.id);
@@ -68,24 +70,24 @@ describe('revertToEvent', () => {
     expect(removed).toEqual([{ kind: 'bash', value: '^sed ' }]);
     const al = actionsStore.get(ACTION).allowlist;
     expect(al.alwaysAllowBashPatterns).toEqual([]);
-    expect(al.alwaysAllow).toEqual(['WebFetch', 'Write']);
+    expect(al.alwaysAllow).toEqual(['WebFetch', 'Glob']);
   });
 
   it('does not credit a proposal with rules that never landed', () => {
     writeFileSync(join(actionDir, 'SKILL.md'), 'v1\n');
     const applied = store.applyWrite({
       action: ACTION, dir: actionDir, body: 'v2\n', author: 'improver',
-      allowlistAdds: [{ kind: 'tool', value: 'Write' }],
+      allowlistAdds: [{ kind: 'tool', value: 'Glob' }],
     });
-    actionsStore.addRule(ACTION, 'tool', 'Write');
+    actionsStore.addRule(ACTION, 'tool', 'Glob');
     // The same rule was also *suggested* by a draft that was rejected. Suggesting is not
     // landing, so it must not protect the rule from removal.
     store.record({
       action: ACTION, kind: 'rejected', author: 'user', body: 'draft\n',
-      allowlistAdds: [{ kind: 'tool', value: 'Write' }],
+      allowlistAdds: [{ kind: 'tool', value: 'Glob' }],
     });
 
-    expect(revert(applied.id).removed).toEqual([{ kind: 'tool', value: 'Write' }]);
+    expect(revert(applied.id).removed).toEqual([{ kind: 'tool', value: 'Glob' }]);
     expect(actionsStore.get(ACTION).allowlist.alwaysAllow).toEqual([]);
   });
 

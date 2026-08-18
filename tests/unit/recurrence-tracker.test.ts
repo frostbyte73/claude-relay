@@ -94,23 +94,39 @@ describe('RecurrenceTracker', () => {
   it('suggestionFor: kind=mcp produces exact-match regex', () => {
     const t = new RecurrenceTracker();
     for (let i = 0; i < 3; i++) {
-      t.record({ cwd, toolName: 'mcp__incident-io__incident_update', toolInput: { id: 'INC-1' }, decision: 'allow' });
+      t.record({ cwd, toolName: 'mcp__incident-io__schedule_show', toolInput: { id: 'S-1' }, decision: 'allow' });
     }
-    const s = t.suggestionFor(cwd, 'mcp__incident-io__incident_update', { id: 'INC-1' });
+    const s = t.suggestionFor(cwd, 'mcp__incident-io__schedule_show', { id: 'S-1' });
     expect(s).not.toBeNull();
     expect(s!.kind).toBe('mcp');
-    expect(s!.suggestedValue).toBe('^mcp__incident-io__incident_update$');
+    expect(s!.suggestedValue).toBe('^mcp__incident-io__schedule_show$');
   });
 
   it('suggestionFor: kind=tool produces the tool name unchanged', () => {
     const t = new RecurrenceTracker();
     for (let i = 0; i < 3; i++) {
-      t.record({ cwd, toolName: 'NotebookEdit', toolInput: {}, decision: 'allow' });
+      t.record({ cwd, toolName: 'WebFetch', toolInput: {}, decision: 'allow' });
     }
-    const s = t.suggestionFor(cwd, 'NotebookEdit', {});
+    const s = t.suggestionFor(cwd, 'WebFetch', {});
     expect(s).not.toBeNull();
     expect(s!.kind).toBe('tool');
-    expect(s!.suggestedValue).toBe('NotebookEdit');
+    expect(s!.suggestedValue).toBe('WebFetch');
+  });
+
+  it('suggestionFor: refuses a derived rule the lint would refuse to install', () => {
+    // A rule `addRule` would refuse must never be offered as a promotion — that was the
+    // "Promotion failed, try again" trap: retrying can never work because the rule itself
+    // is refused.
+    const t = new RecurrenceTracker();
+    for (let i = 0; i < 3; i++) {
+      t.record({ cwd, toolName: 'NotebookEdit', toolInput: {}, decision: 'allow' });
+    }
+    expect(t.suggestionFor(cwd, 'NotebookEdit', {})).toBeNull();
+
+    for (let i = 0; i < 3; i++) {
+      t.record({ cwd, toolName: 'mcp__incident-io__incident_update', toolInput: { id: 'INC-1' }, decision: 'allow' });
+    }
+    expect(t.suggestionFor(cwd, 'mcp__incident-io__incident_update', { id: 'INC-1' })).toBeNull();
   });
 
   it('bash suggestion: empty command returns null', () => {

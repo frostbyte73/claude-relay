@@ -19,12 +19,14 @@ describe('ActionsStore', () => {
   it('persists allowlist rules across instances', () => {
     const path = tmpPath();
     const s1 = new ActionsStore(path);
-    expect(s1.addRule('meta.orchestrate', 'tool', 'Edit')).toBe(true);
-    expect(s1.addRule('meta.orchestrate', 'tool', 'Edit')).toBe(false);
+    // Any addable rule will do — the subject is persistence and dedupe. A whole-tool `Edit`
+    // (what this used to say) is a write grant the lint now refuses at addRule.
+    expect(s1.addRule('meta.orchestrate', 'tool', 'NotebookRead')).toBe(true);
+    expect(s1.addRule('meta.orchestrate', 'tool', 'NotebookRead')).toBe(false);
 
     const s2 = new ActionsStore(path);
     const w = s2.get('meta.orchestrate');
-    expect(w.allowlist.alwaysAllow).toContain('Edit');
+    expect(w.allowlist.alwaysAllow).toContain('NotebookRead');
   });
 
   it('persists path rules across instances', () => {

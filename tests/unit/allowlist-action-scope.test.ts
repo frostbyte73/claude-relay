@@ -30,17 +30,21 @@ describe('Allowlist — action scope', () => {
   it('addRule with action scope persists via the store', () => {
     const store = newStore();
     const a = new Allowlist(emptyCfg, { actionsStore: store });
-    expect(a.addRule('tool', 'Edit', { action: 'code.implement' })).toBe(true);
-    expect(store.get('code.implement').allowlist.alwaysAllow).toContain('Edit');
+    expect(a.addRule('tool', 'Glob', { action: 'code.implement' })).toBe(true);
+    expect(store.get('code.implement').allowlist.alwaysAllow).toContain('Glob');
   });
 
   it('addRule action scope without store throws', () => {
     const a = new Allowlist(emptyCfg);
-    expect(() => a.addRule('tool', 'Edit', { action: 'x' })).toThrow();
+    // A read tool on purpose: a whole-tool write grant would throw at the write lint instead,
+    // and this test is about the missing store.
+    expect(() => a.addRule('tool', 'Glob', { action: 'x' })).toThrow(/actionsStore/);
   });
 
   it('action-registry bundled allowlist allows where global denies', () => {
-    // Set up a tiny on-disk action with a colocated allowlist that allows Edit.
+    // Set up a tiny on-disk action with a colocated allowlist that allows Edit under /tmp.
+    // Whole-tool `Edit` — what this bundled the capability as before — is `Edit:^/` in one
+    // word, and the registry now refuses to load an action carrying it.
     const root = mkdtempSync(join(tmpdir(), 'act-reg-'));
     const dir = join(root, 'actions', 'code', 'thing');
     mkdirSync(dir, { recursive: true });
@@ -60,10 +64,10 @@ describe('Allowlist — action scope', () => {
     writeFileSync(join(dir, 'input.schema.json'), '{"type":"object"}');
     writeFileSync(join(dir, 'output.schema.json'), '{"type":"object"}');
     writeFileSync(join(dir, 'allowlist.json'), JSON.stringify({
-      alwaysAllow: ['Edit'],
+      alwaysAllow: [],
       alwaysAllowBashPatterns: [],
       alwaysAllowMcpPatterns: [],
-      alwaysAllowPathPatterns: [],
+      alwaysAllowPathPatterns: ['Edit:^/tmp/'],
     }));
     const reg = new ActionRegistry(join(root, 'actions'));
     reg.load();

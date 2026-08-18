@@ -113,7 +113,6 @@ export function renderDetail(mount, deps) {
     }
     view.innerHTML = skillHtml(item, library.get(), state, null);
     wire(view, item);
-    wireDenials(view, item, state);
     wireScorecard(view);
     wireRevisions(view, item);
   };
@@ -285,6 +284,13 @@ function wireEditCard(view, edit) {
 
 // ── Denials ("the action tried this and was blocked") ────────────────────
 
+function verdictBadgeHtml(verdict) {
+  if (!verdict) return `<span class="o-pill">awaiting review</span>`;
+  if (verdict.disposition === 'promote') return `<span class="o-pill ok">promoted to ${escapeHtml(verdict.group ?? '?')}</span>`;
+  if (verdict.disposition === 'never') return `<span class="o-pill danger">never</span>`;
+  return `<span class="o-pill investigate">fix action</span>`;
+}
+
 function denialsSectionHtml(item, state) {
   const list = state.denials?.[item.name] ?? [];
   if (list.length === 0) return '';
@@ -296,8 +302,8 @@ function denialsSectionHtml(item, state) {
           ? `<span class="lib-denial-unfixable">${escapeHtml(d.suggested.reason ?? 'no rule can allow this call')}</span>`
           : `<span class="o-pill code">${escapeHtml(d.suggested.kind)}: ${escapeHtml(d.suggested.value)}</span>`}
         ${d.count > 1 ? `<span class="lib-denial-count">×${d.count}</span>` : ''}
+        ${verdictBadgeHtml(d.verdict)}
       </div>
-      <button type="button" class="o-btn o-btn--ghost" data-denial="dismiss">Dismiss</button>
     </div>
   `).join('');
   return `
@@ -307,25 +313,6 @@ function denialsSectionHtml(item, state) {
       ${rows}
     </div>
   `;
-}
-
-function wireDenials(view, item, state) {
-  const section = view.querySelector('.lib-denials');
-  if (!section) return;
-  section.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-denial="dismiss"]');
-    if (!btn) return;
-    const row = btn.closest('.lib-denial-row');
-    const denial = (state.denials?.[item.name] ?? []).find((d) => d.id === row?.dataset.denialId);
-    if (!denial) return;
-    btn.disabled = true;
-    try {
-      await actionsApi.dismissDenial(item.name, denial.id);
-    } catch (err) {
-      window.alert(`Failed: ${err.message}`);
-      btn.disabled = false;
-    }
-  });
 }
 
 // ── Permissions / recent runs ─────────────────────────────────────────────

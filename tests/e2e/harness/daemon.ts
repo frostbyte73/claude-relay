@@ -36,11 +36,28 @@ export interface SeedWorktreeRecord {
   archivedAt?: number;
 }
 
+// Mirrors ActionDenial (storage/denials-store.ts) closely enough for a fixture — `id`/`at`
+// default so a test only has to spell out what it's actually asserting on.
+export interface SeedDenial {
+  actionName: string;
+  toolName: string;
+  toolInput?: unknown;
+  suggested: { kind: 'tool' | 'bash' | 'mcp' | 'path' | 'none'; value: string };
+  count?: number;
+  at?: number;
+  id?: string;
+}
+
 export interface StartDaemonOpts {
   // Path to the fixture JSONL the mock claude will replay.
   fixturePath: string;
   // Optional: pre-seed projects and sessions on disk before the daemon starts.
   initialProjects?: SeedProject[];
+  // Optional: pre-seed unresolved denials under <runtimeDir>/denials.json before the daemon
+  // starts (DenialsStore's constructor loads this file synchronously and once, so seeding
+  // after boot would never be picked up) — lets a Permissions-page test exercise the Pending
+  // classifications panel without driving a real action session through an allowlist miss.
+  initialDenials?: SeedDenial[];
   // Optional: pre-seed worktree records so UI tests can target archive/delete flows
   // against rows that look like they were spawned via the worktree path.
   initialWorktrees?: SeedWorktreeRecord[];
@@ -145,6 +162,27 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     for (const job of opts.initialJobs) {
       writeFileSync(join(jobsDir, `${String(job.id)}.json`), JSON.stringify(job, null, 2) + '\n', { mode: 0o600 });
     }
+  }
+
+  // Seed denials.json BEFORE the daemon starts — same one-shot-synchronous-load constraint
+  // as jobs/worktrees above.
+  if (opts.initialDenials?.length) {
+    const byAction: Record<string, unknown[]> = {};
+    let seq = 0;
+    for (const d of opts.initialDenials) {
+      const list = (byAction[d.actionName] ??= []);
+      list.push({
+        id: d.id ?? `seed-denial-${seq++}`,
+        actionName: d.actionName,
+        sessionId: 'seed-session',
+        toolName: d.toolName,
+        toolInput: d.toolInput ?? null,
+        suggested: d.suggested,
+        at: d.at ?? Date.now(),
+        count: d.count ?? 1,
+      });
+    }
+    writeFileSync(join(runtimeDir, 'denials.json'), JSON.stringify({ byAction }, null, 2) + '\n', { mode: 0o600 });
   }
 
   const host = '127.0.0.1';

@@ -46,7 +46,7 @@ import { registerJobsRoutes } from './routes/jobs.js';
 import { registerSessionsRoutes } from './routes/sessions.js';
 import { registerProjectsRoutes } from './routes/projects.js';
 import { registerPushRoutes } from './routes/push.js';
-import { registerMetaRoutes } from './routes/meta.js';
+import { registerMetaRoutes, createGroupApplier } from './routes/meta.js';
 import { registerActionsRoutes, type ActionsRoutesHandlers } from './routes/actions.js';
 import { registerActionRevisionsRoutes } from './routes/action-revisions.js';
 import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
@@ -885,17 +885,25 @@ async function main() {
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
     actionsStore, actionsStorePath: join(RUNTIME_DIR, 'actions.json'), projectRegistry, worktreeManager,
-    journalStore, mcpConfigPath,
+    journalStore, denialsStore, mcpConfigPath,
     permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
   registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
   registerPreferencesRoutes(server, { preferencesStore, notify: notifyAll });
 
+  // A second instance of the same stateless factory registerMetaRoutes uses — both close over
+  // the same permissionGroups object and permission-groups.json path, so a `promote` verdict
+  // applied here gets the identical validate/write/reload/revision guarantees as the group
+  // editor itself, with no group-writing logic duplicated in routes/actions.ts.
+  const applyGroup = createGroupApplier({
+    actionRegistry, permissionGroups, permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
+  });
   const actionRoutes = registerActionsRoutes(server, {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll,
+    permissionGroups, applyGroup,
   });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
