@@ -16,6 +16,9 @@ import type { WorktreeManager } from '../git/worktree-manager.js';
 import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import { readJsonObject } from './util.js';
+import { readMcpServersFile, transportOf, type McpServerConfig } from '../integrations/mcp-config.js';
+import { listTools } from '../integrations/mcp-catalog.js';
+import { proposeForServer, type ServerProposal } from '../permissions/mcp-proposal.js';
 
 export interface MetaRoutesDeps {
   actionRegistry: ActionRegistry;
@@ -86,29 +89,21 @@ function isEmptyConfig(cfg: AllowlistConfig): boolean {
     && (cfg.alwaysAllowPathPatterns ?? []).length === 0;
 }
 
-interface McpServerConfig {
-  type?: string;
-  url?: string;
-  command?: string;
-  headers?: Record<string, string>;
-}
-
-function readMcpServersFile(path: string): Record<string, McpServerConfig> {
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as { mcpServers?: Record<string, McpServerConfig> };
-    return raw.mcpServers ?? {};
-  } catch {
-    return {};
-  }
-}
-
-function transportOf(cfg: McpServerConfig): 'http' | 'sse' | 'stdio' {
-  if (cfg.type === 'sse') return 'sse';
-  if (cfg.type === 'stdio' || (!cfg.url && !!cfg.command)) return 'stdio';
-  return 'http';
-}
-
 const MCP_PROBE_TIMEOUT_MS = 2500;
+
+// Discovers configured MCP servers the same way for every route that needs them: the daemon's
+// own mcp-config.json first, then `~/.claude.json`'s "mcpServers" filling in anything not
+// already named — claude merges the two for every spawned session (no --strict-mcp-config
+// flag), first occurrence wins on a name collision, so reads have to agree with that or a
+// route would propose/probe a server the daemon doesn't actually pass through to sessions.
+function mergeMcpServers(mcpConfigPath: string): Map<string, McpServerConfig> {
+  const merged = new Map<string, McpServerConfig>();
+  for (const [name, cfg] of Object.entries(readMcpServersFile(mcpConfigPath))) merged.set(name, cfg);
+  for (const [name, cfg] of Object.entries(readMcpServersFile(join(homedir(), '.claude.json')))) {
+    if (!merged.has(name)) merged.set(name, cfg);
+  }
+  return merged;
+}
 
 // Best-effort transport-level reachability check — a non-2xx response still proves
 // the server is up, so we only call it 'unreachable' on a network failure/timeout.
@@ -435,15 +430,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   });
 
   server.route('GET', '/api/mcp/status', async (_req, res) => {
-    const merged = new Map<string, McpServerConfig>();
-    for (const [name, cfg] of Object.entries(readMcpServersFile(mcpConfigPath))) merged.set(name, cfg);
-    // User-global config (~/.claude.json "mcpServers") merges in for every spawned
-    // session too — claude adds --mcp-config servers to whatever's already configured
-    // rather than replacing it (no --strict-mcp-config flag is passed). First
-    // occurrence wins on a name collision.
-    for (const [name, cfg] of Object.entries(readMcpServersFile(join(homedir(), '.claude.json')))) {
-      if (!merged.has(name)) merged.set(name, cfg);
-    }
+    const merged = mergeMcpServers(mcpConfigPath);
 
     const servers = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
       const transport = transportOf(cfg);
@@ -461,6 +448,125 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ servers }));
   });
+
+  // Enumerates every configured server's tools and proposes group placements for each — the
+  // onboarding path for a server outside any hardcoded vendor allowlist, which otherwise
+  // inherits zero grants. Concurrent, not serial: listTools already bounds each server to its
+  // own timeout, so awaiting them in a loop would let N hung servers cost N timeouts in a row
+  // where Promise.all costs exactly one.
+  async function handleGetMcpCatalog(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const merged = mergeMcpServers(mcpConfigPath);
+    const proposals = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
+      const result = await listTools(name, cfg);
+      return proposeForServer(result, permissionGroups);
+    }));
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ servers: proposals }));
+  }
+
+  server.route('GET', '/api/mcp/catalog', handleGetMcpCatalog);
+
+  interface ApplyCatalogRule { group?: unknown; kind?: unknown; value?: unknown }
+  interface ApplyCatalogBody { server?: unknown; rules?: unknown }
+  type CheckedRule = { group: 'pull' | 'push'; kind: 'mcp'; value: string };
+
+  function parseApplyCatalogBody(payload: ApplyCatalogBody): CheckedRule[] | null {
+    if (typeof payload.server !== 'string' || payload.server.length === 0) return null;
+    if (!Array.isArray(payload.rules) || payload.rules.length === 0) return null;
+    const checked: CheckedRule[] = [];
+    for (const raw of payload.rules as ApplyCatalogRule[]) {
+      if (!raw || typeof raw !== 'object') return null;
+      const { group, kind, value } = raw;
+      if (group !== 'pull' && group !== 'push') return null;
+      if (kind !== 'mcp') return null;
+      if (typeof value !== 'string' || value.length === 0) return null;
+      checked.push({ group, kind, value });
+    }
+    return checked;
+  }
+
+  // Recomputes the proposal for `server` right now rather than trusting the client's payload —
+  // this is the one thing standing between onboarding and a way to post an arbitrary rule into
+  // any group, bypassing PUT /api/permission-groups/:name's validation entirely. A submitted
+  // rule is applied only if it matches one this recomputation actually produced (same group,
+  // same kind, same exact value); if the server's tools changed since the user's GET, the old
+  // rule they approved is no longer in the new proposal, and that is a refusal — never silently
+  // substituting the freshly recomputed placement for the one they were shown and approved.
+  async function handlePostMcpCatalogApply(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const payload = await readJsonObject<ApplyCatalogBody>(req, res);
+    if (!payload) return;
+    const rules = parseApplyCatalogBody(payload);
+    if (!rules) {
+      res.statusCode = 400;
+      res.end('body must be { server: string, rules: [{ group: "pull"|"push", kind: "mcp", value: string }] }');
+      return;
+    }
+    const server = payload.server as string;
+
+    const merged = mergeMcpServers(mcpConfigPath);
+    const cfg = merged.get(server);
+    if (!cfg) { res.statusCode = 404; res.end(`unknown mcp server: ${server}`); return; }
+
+    const result = await listTools(server, cfg);
+    const proposal: ServerProposal = proposeForServer(result, permissionGroups);
+    for (const rule of rules) {
+      const matched = proposal.rules.some((p) =>
+        p.group === rule.group && p.kind === rule.kind && p.value === rule.value);
+      if (!matched) {
+        res.statusCode = 400;
+        res.end(`rule not part of the current proposal for ${server}: ${rule.group} ${JSON.stringify(rule.value)}`);
+        return;
+      }
+    }
+
+    // A batch spanning both groups must be all-or-nothing: build every touched group's
+    // post-merge state and lint ALL of them before writing ANY of them. Without this pass, a
+    // rule for an already-healthy group would land (write + reload + revision) before a second
+    // rule's group was found to be invalid — a 400 response the caller reasonably reads as
+    // "nothing happened", while the first group had in fact already changed on disk.
+    const byGroup = new Map<'pull' | 'push', string[]>();
+    for (const rule of rules) {
+      const values = byGroup.get(rule.group) ?? [];
+      if (!values.includes(rule.value)) values.push(rule.value);
+      byGroup.set(rule.group, values);
+    }
+
+    const nextByGroup = new Map<'pull' | 'push', PermissionGroup>();
+    for (const [groupName, values] of byGroup) {
+      const current = permissionGroups[groupName];
+      const base: PermissionGroup = current ? structuredClone(current) : {
+        description: '', alwaysAllow: [], alwaysAllowBashPatterns: [],
+        alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [],
+      };
+      const nextPatterns = [...base.alwaysAllowMcpPatterns];
+      for (const v of values) if (!nextPatterns.includes(v)) nextPatterns.push(v);
+      const next: PermissionGroup = { ...base, alwaysAllowMcpPatterns: nextPatterns };
+
+      const verdict = validateGroupUpdate(groupName, next);
+      if (!verdict.ok) { res.statusCode = 400; res.end(verdict.error); return; }
+      nextByGroup.set(groupName, next);
+    }
+
+    // This pre-validation removes the one failure mode that's actually reachable from this
+    // route (a bad rule). It does NOT make the loop below transactional: applyGroup can still
+    // fail at the disk-write or registry-reload stage on a later group after an earlier one has
+    // already landed. That residual window is accepted deliberately — each applyGroup call
+    // rolls back its OWN group on such a failure, and building a cross-group transaction for a
+    // disk/reload fault (as opposed to a bad rule, which is now caught above) is out of scope.
+    const applied: Array<{ group: string; value: string }> = [];
+    for (const [groupName, next] of nextByGroup) {
+      const applyResult = applyGroup(groupName, next, 'user', `mcp onboarding: ${server}`, undefined);
+      if (!applyResult.ok) { res.statusCode = applyResult.status; res.end(applyResult.error); return; }
+      for (const v of byGroup.get(groupName)!) applied.push({ group: groupName, value: v });
+    }
+
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, applied }));
+  }
+
+  server.route('POST', '/api/mcp/catalog/apply', handlePostMcpCatalogApply);
 
   server.route('GET', '/api/files', (req, res) => {
     const url = new URL(req.url ?? '', 'http://internal');

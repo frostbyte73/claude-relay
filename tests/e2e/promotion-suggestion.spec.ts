@@ -4,7 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = resolvePath(__dirname, 'fixtures', 'repeat-mcp-write.jsonl');
+// A read-shaped tool, deliberately: mcp__incident-io__incident_update is a genuine external
+// write and Allowlist.addRule (assertNotWriteShaped, write-shape.ts) now refuses to persist it
+// as an ungated rule. This spec is about the recurrence tracker's suggest-then-promote
+// mechanic (any repeated call, regardless of shape) — RecurrenceTracker.suggestionFor has no
+// write-shape awareness — so it needs a fixture tool addRule will actually accept once the
+// suggestion is confirmed. Not mcp__incident-io__incident_show either: it's globally
+// always-allowed by config/allowlist.default.json, so it would never reach the approval queue
+// at all and no suggestion would ever form. docs_search isn't covered by any default
+// always-allow pattern. Renamed repeat-mcp-write.jsonl -> repeat-mcp-read.jsonl to match.
+const FIXTURE = resolvePath(__dirname, 'fixtures', 'repeat-mcp-read.jsonl');
 const TEST_CWD = '/tmp/outpost-e2e-promotion';
 
 test.use({ daemonOpts: { fixturePath: FIXTURE } });
@@ -68,7 +77,7 @@ test('3rd identical approval carries a suggestion in the approval_pending payloa
   body = await (await outpostPage.request.get(`${daemon.baseUrl}/api/sessions`)).json();
   expect(body.pending[0].suggestion).not.toBeNull();
   expect(body.pending[0].suggestion.kind).toBe('mcp');
-  expect(body.pending[0].suggestion.suggestedValue).toBe('^mcp__incident-io__incident_update$');
+  expect(body.pending[0].suggestion.suggestedValue).toBe('^mcp__livekit-docs__docs_search$');
   expect(body.pending[0].suggestion.matchCount).toBeGreaterThanOrEqual(3);
   expect(body.pending[0].suggestion.triggerWindow).toBe('24h');
 });
@@ -121,5 +130,5 @@ test('clicking Always allow in the footer promotes the rule and approves the cal
   const expectedFile = join(daemon.runtimeDir, 'allowlists', `${TEST_CWD.replace(/\//g, '-')}.json`);
   expect(existsSync(expectedFile)).toBe(true);
   const cfg = JSON.parse(readFileSync(expectedFile, 'utf8'));
-  expect(cfg.alwaysAllowMcpPatterns).toContain('^mcp__incident-io__incident_update$');
+  expect(cfg.alwaysAllowMcpPatterns).toContain('^mcp__livekit-docs__docs_search$');
 });

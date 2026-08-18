@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape, assertNotWriteShaped } from '../../src/permissions/write-shape.js';
+import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape, assertNotWriteShaped, MCP_WRITE_PROBES } from '../../src/permissions/write-shape.js';
+import { classifyTool, MCP_WRITE_TOOLS } from '../../src/permissions/tool-classify.js';
 
 const shaped = (kind: 'tool' | 'bash' | 'mcp' | 'path', v: string) =>
   classifyRuleShape(kind, v).writeShaped;
@@ -343,5 +344,37 @@ describe('MCP_WRITE_PROBES pins the Grafana proxy', () => {
   // silently re-opening the hole (see write-shape.ts's module header on that ruling).
   it('refuses a grant of the raw Grafana API request tool', () => {
     expect(() => assertNotWriteShaped('mcp', '^mcp__grafana__grafana_api_request$')).toThrow();
+  });
+});
+
+// MCP_WRITE_PROBES is now literally `MCP_WRITE_TOOLS` (write-shape.ts), so a test that compared
+// the two arrays would be an identity check — always true regardless of what either list
+// contains, and pinning nothing. This frozen list is the pre-derivation Ship 2 probe corpus:
+// removing any of these from MCP_WRITE_TOOLS (and so from MCP_WRITE_PROBES, since they're the
+// same array) fails this test, which is a real regression to catch — the derivation only
+// guarantees the two lists agree with EACH OTHER, not that either still names these writes.
+const MUST_ALWAYS_BE_PROBED: readonly string[] = [
+  'mcp__github__merge_pull_request',
+  'mcp__github__create_pull_request',
+  'mcp__github__create_or_update_file',
+  'mcp__github__delete_file',
+  'mcp__github__push_files',
+  'mcp__github__create_branch',
+  'mcp__github__create_repository',
+  'mcp__claude_ai_Linear__save_issue',
+  'mcp__claude_ai_Linear__save_comment',
+  'mcp__claude_ai_Linear__save_document',
+  'mcp__claude_ai_Linear__save_project',
+  'mcp__claude_ai_Linear__delete_comment',
+  'mcp__grafana__grafana_api_request',
+];
+
+describe('the probe corpus always covers these writes, drift or no drift', () => {
+  it('never drops one of the writes Ship 2 ruled must always be probed', () => {
+    for (const t of MUST_ALWAYS_BE_PROBED) expect(MCP_WRITE_PROBES, t).toContain(t);
+  });
+
+  it('classifies every MCP probe as an external write', () => {
+    for (const p of MCP_WRITE_PROBES) expect(classifyTool(p).effect, p).toBe('external-write');
   });
 });
