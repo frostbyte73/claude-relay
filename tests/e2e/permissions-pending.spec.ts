@@ -26,6 +26,23 @@ test.use({
   },
 });
 
+// The failure mode this panel cannot afford: the fetch fails, nothing ever sets `pendingLoaded`,
+// and the panel spins forever — on the only front door to a denial, with no error text and a
+// dark nav dot to say anything is wrong. A failed load is itself a warning state.
+test('a failed denials fetch renders the error and still lights the nav dot', async ({ outpostPage }) => {
+  await outpostPage.route('**/api/permissions/pending', (route) =>
+    route.fulfill({ status: 503, contentType: 'text/plain', body: 'denials store unavailable' }));
+
+  await outpostPage.locator('.o-sidebar-item[data-surface="settings"]').click();
+  await expect(outpostPage.locator('.settings-nav-item[data-key="permissions"] .settings-warn-dot'))
+    .toBeVisible({ timeout: 10_000 });
+
+  await outpostPage.locator('.settings-nav-item[data-key="permissions"]').click();
+  await expect(outpostPage.locator('.perm-pending-load-error')).toContainText('denials store unavailable',
+    { timeout: 10_000 });
+  await expect(outpostPage.locator('.settings-loading')).toHaveCount(0);
+});
+
 test('a seeded unresolved denial appears under its action; Fix the action clears it and the nav dot', async ({ outpostPage }) => {
   await outpostPage.locator('.o-sidebar-item[data-surface="settings"]').click();
 

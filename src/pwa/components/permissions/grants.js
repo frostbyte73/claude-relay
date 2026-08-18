@@ -97,7 +97,9 @@ export function renderGrantsBlock(mount, deps) {
   function paint() {
     const snap = grantsStore.get();
     if (!snap.rulesLoaded) {
-      mount.innerHTML = '<div class="settings-loading">Loading…</div>';
+      mount.innerHTML = snap.rulesErr
+        ? `<p class="settings-note perm-grants-load-error">Could not load grants: ${escapeHtml(snap.rulesErr)}</p>`
+        : '<div class="settings-loading">Loading…</div>';
       return;
     }
     const rows = grantRows(snap.rules);

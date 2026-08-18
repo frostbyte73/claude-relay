@@ -152,14 +152,17 @@ describe('the lint reaches every rule-entry path', () => {
 });
 
 interface RuleSet {
+  alwaysAllow?: string[];
   alwaysAllowBashPatterns?: string[];
   alwaysAllowMcpPatterns?: string[];
   alwaysAllowPathPatterns?: string[];
 }
 
+type ShippedRule = { where: string; kind: 'tool' | 'bash' | 'mcp' | 'path'; rule: string; gated: boolean };
+
 // Every rule the product actually ships, from both places one can live: the tracked permission
 // groups and the colocated action allowlists the registry merges in at load.
-function shippedRules(): { where: string; kind: 'bash' | 'mcp' | 'path'; rule: string; gated: boolean }[] {
+function shippedRules(): ShippedRule[] {
   const sources: [string, RuleSet, boolean][] = [];
   const groups = JSON.parse(readFileSync('config/permission-groups.default.json', 'utf8')) as
     Record<string, RuleSet>;
@@ -173,8 +176,9 @@ function shippedRules(): { where: string; kind: 'bash' | 'mcp' | 'path'; rule: s
       if (existsSync(file)) sources.push([file, JSON.parse(readFileSync(file, 'utf8')) as RuleSet, false]);
     }
   }
-  const out: { where: string; kind: 'bash' | 'mcp' | 'path'; rule: string; gated: boolean }[] = [];
+  const out: ShippedRule[] = [];
   for (const [where, set, gated] of sources) {
+    for (const rule of set.alwaysAllow ?? []) out.push({ where, kind: 'tool', rule, gated });
     for (const rule of set.alwaysAllowBashPatterns ?? []) out.push({ where, kind: 'bash', rule, gated });
     for (const rule of set.alwaysAllowMcpPatterns ?? []) out.push({ where, kind: 'mcp', rule, gated });
     for (const rule of set.alwaysAllowPathPatterns ?? []) out.push({ where, kind: 'path', rule, gated });
@@ -188,11 +192,17 @@ function shippedRules(): { where: string; kind: 'bash' | 'mcp' | 'path'; rule: s
 describe('the shipped permission groups still lint clean', () => {
   it('passes every rule of every kind, in the groups and in the action allowlists', () => {
     const rules = shippedRules();
-    expect(rules.length).toBeGreaterThan(90);
+    expect(rules.length).toBeGreaterThan(110);
     for (const { where, kind, rule, gated } of rules) {
       expect(lintPermissionRule(kind, rule, gated).ok, `${where} (${kind}): ${rule}`).toBe(true);
     }
     expect(rules.filter((r) => r.kind === 'path').map((r) => r.rule)).toContain('Write:^/tmp/');
+    // The `tool` kind was the one this sweep used to skip. It reads clean today, and the point
+    // of walking it is that a future tightening of the tool classifier — a new entry in
+    // MCP_WRITE_TOOLS, another whole-tool refusal — meets the real corpus rather than a copy.
+    const tools = rules.filter((r) => r.kind === 'tool');
+    expect(tools.length).toBeGreaterThan(14);
+    expect(tools.map((r) => r.rule)).toContain('Read');
   });
 });
 
@@ -419,6 +429,93 @@ describe('a path pattern that backtracks polynomially is refused', () => {
   it('answers in bounded time on the pattern it now refuses', () => {
     const started = Date.now();
     for (const k of [12, 96]) classifyPathShape(poly(k));
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+});
+
+// The cost function's first version scored quantifier *stacking*, so the same ambiguity it
+// refuses as `(a|a)+` walked past when spelled as concatenation: `(a|a)` written out 30 times is
+// 158 characters, under the length cap, with no quantified group anywhere — and 26.0s through
+// `allows()` for a 38-character path (k=20 → 35ms, k=24 → 302ms, k=30 → 26s: doubling, not
+// polynomial). Ambiguity is the property worth scoring; quantification is only one way to repeat
+// something.
+describe('an ambiguous alternation costs the same repeated by concatenation as by a quantifier', () => {
+  const unrolled = (frag: string, k: number) => `Write:^/tmp/${frag.repeat(k)}x$`;
+
+  it('refuses the unrolled spelling of the group it already refuses quantified', () => {
+    expect(backtrackingDegree('^/tmp/(a|a)+$')).toBe(Infinity);
+    expect(unrolled('(a|a)', 30).length - 'Write:'.length).toBe(158);
+    for (const k of [3, 8, 20, 30]) {
+      const v = unrolled('(a|a)', k);
+      expect(backtrackingDegree(v.slice(v.indexOf(':') + 1)), v).toBe(k);
+      expect(classifyPathShape(v).structural, v).toBe(true);
+      expect(lintPermissionRule('path', v, true).ok, v).toBe(false);
+      expect(() => assertNotWriteShaped('path', v)).toThrow(/backtrack/);
+    }
+  });
+
+  it('refuses the neighbouring spellings of the same cost', () => {
+    // Each of these scored 0 under the stacking model and each is measurably slow through
+    // `allows()` at k=20-25: nested alternation (38.2s), an ambiguous alternation made optional
+    // rather than repeated (48.5s), a class overlapping its alternative (35.8ms), an optional
+    // repeated by concatenation (479ms), a class overlapping the literal beside it (14.6ms).
+    // `(a|b|a)` and `(a|ab)` are fast on the inputs tried and refused anyway — the bound is over
+    // the pattern, not over the one input someone happened to measure.
+    for (const [frag, k] of [
+      ['((a|a)|a)', 20], ['(?:a|a)?', 20], ['(a|[ab])', 20], ['(?:a)?', 25],
+      ['[ab]?a', 20], ['(a|b|a)', 20], ['(a|ab)', 25], ['(a|)', 20],
+    ] as [string, number][]) {
+      const v = unrolled(frag, k);
+      expect(classifyPathShape(v).structural, v).toBe(true);
+    }
+  });
+
+  it('leaves a disjoint alternation alone however many times it is repeated', () => {
+    // The whole risk of scoring alternation: over-approximating overlap refuses the shipped
+    // whitelists. Branches that cannot match the same text are free, at any count.
+    for (const v of [
+      `Write:^/tmp/${'(a|b)'.repeat(30)}x$`,
+      'Write:^/tmp/(?:outpost|scratch)/',
+      'Write:^/tmp/(?:list_issues|list_issue_labels)/',
+    ]) {
+      expect(backtrackingDegree(v.slice(v.indexOf(':') + 1)), v).toBe(0);
+      expect(lintPermissionRule('path', v, false).ok, v).toBe(true);
+    }
+  });
+
+  it('is exact for literal branches and over-approximates for the rest', () => {
+    // A first-character test would call `list_teams` and `load_data` ambiguous and refuse the
+    // shipped DataDog rule. Literal branches get compared as strings; a prefix relation still
+    // counts, because the alternation sits inside a concatenation (`(a|ab)(a|ab)` parses `aab`
+    // two ways). Anything not a plain literal falls back to first characters and fails closed.
+    expect(backtrackingDegree('^x(list_teams|load_data)$')).toBe(0);
+    expect(backtrackingDegree('^x(update_pr|update_pr_branch)$')).toBe(1);
+    expect(backtrackingDegree('^x(a|[ab])$')).toBe(1);
+    expect(backtrackingDegree('^x(a|\\w)$')).toBe(1);
+  });
+
+  it('scores the shipped mcp alternations, including the widest one', () => {
+    const incidentIo = '^mcp__incident-io__(.*_show|.*_list|alert_stats|incident_stats'
+      + '|follow_up_stats|escalation_stats|ask|ask_incident|ask_telemetry|investigation_sync)$';
+    // `ask` is a prefix of `ask_incident`, and `.*_show` can match either — so this really is an
+    // ambiguous alternation, and it sits exactly at the cap: one wildcard branch (1) plus the
+    // ambiguity (1). Two four-way choices is four paths, not 2^30.
+    expect(backtrackingDegree(incidentIo)).toBe(2);
+    expect(lintPermissionRule('mcp', incidentIo, false).ok).toBe(true);
+  });
+
+  it('bounds `mcp`, where no length cap limits how many times the fragment repeats', () => {
+    for (const k of [30, 60, 200]) {
+      const v = `^mcp__x__${'(a|a)'.repeat(k)}$`;
+      expect(lintPermissionRule('mcp', v, true).ok, v).toBe(false);
+    }
+  });
+
+  it('answers fast on the patterns it now refuses', () => {
+    const started = Date.now();
+    for (const frag of ['(a|a)', '((a|a)|a)', '(?:a|a)?']) {
+      backtrackingDegree(`^mcp__x__${frag.repeat(200)}$`);
+    }
     expect(Date.now() - started).toBeLessThan(100);
   });
 });

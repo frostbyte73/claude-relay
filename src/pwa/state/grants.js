@@ -22,6 +22,11 @@ const store = createStore({
   mcpLoading: false,
   pendingLoaded: false,
   pendingLoading: false,
+  // Per-resource load errors. A shared `err` cannot answer the question each panel asks — "did
+  // MY fetch fail?" — and a panel that can't answer it renders its spinner forever.
+  groupsErr: null,
+  rulesErr: null,
+  pendingErr: null,
   err: null,
 });
 
@@ -32,18 +37,18 @@ export const grantsStore = {
   async reloadGroups() {
     try {
       const data = await metaApi.permissionGroups();
-      store.set((s) => ({ ...s, groups: Array.isArray(data?.groups) ? data.groups : [], groupsLoaded: true }));
+      store.set((s) => ({ ...s, groups: Array.isArray(data?.groups) ? data.groups : [], groupsLoaded: true, groupsErr: null }));
     } catch (e) {
-      store.set((s) => ({ ...s, err: e.message }));
+      store.set((s) => ({ ...s, err: e.message, groupsErr: e.message }));
     }
   },
 
   async reloadRules() {
     try {
       const data = await metaApi.allowlistRules();
-      store.set((s) => ({ ...s, rules: Array.isArray(data?.rules) ? data.rules : [], rulesLoaded: true }));
+      store.set((s) => ({ ...s, rules: Array.isArray(data?.rules) ? data.rules : [], rulesLoaded: true, rulesErr: null }));
     } catch (e) {
-      store.set((s) => ({ ...s, err: e.message }));
+      store.set((s) => ({ ...s, err: e.message, rulesErr: e.message }));
     }
   },
 
@@ -80,9 +85,10 @@ export const grantsStore = {
         pendingDenials: Array.isArray(data?.denials) ? data.denials : [],
         pendingLoaded: true,
         pendingLoading: false,
+        pendingErr: null,
       }));
     } catch (e) {
-      store.set((s) => ({ ...s, err: e.message, pendingLoading: false }));
+      store.set((s) => ({ ...s, err: e.message, pendingErr: e.message, pendingLoading: false }));
     }
   },
 
@@ -109,10 +115,12 @@ export function mcpHasWarning(state) {
 }
 
 // Same signal, denials half: the Permissions nav item lights up while an unresolved denial is
-// waiting on a verdict. Deliberately NOT folded with the MCP catalog's unclassified-tool count
+// waiting on a verdict — or while the fetch that would have found one failed, since a page that
+// cannot list denials is exactly when the user needs sending to it.
+// Deliberately NOT folded with the MCP catalog's unclassified-tool count
 // (a live per-server tools/list probe the Pending panel fetches on its own, slower schedule,
 // see routes/meta.ts's handleGetPermissionsPending) — that would put a slow network probe back
 // on the nav's paint path, the exact thing splitting the route apart was meant to avoid.
 export function pendingHasWarning(state) {
-  return (state.pendingDenials ?? []).length > 0;
+  return (state.pendingDenials ?? []).length > 0 || Boolean(state.pendingErr);
 }

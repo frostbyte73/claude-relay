@@ -176,7 +176,9 @@ export function renderGroupsBlock(mount) {
   function paint() {
     const snap = grantsStore.get();
     if (!snap.groupsLoaded) {
-      mount.innerHTML = '<div class="settings-loading">Loading…</div>';
+      mount.innerHTML = snap.groupsErr
+        ? `<p class="settings-note permgroup-load-error">Could not load permission groups: ${escapeHtml(snap.groupsErr)}</p>`
+        : '<div class="settings-loading">Loading…</div>';
       return;
     }
     const cards = groupCards(snap.groups);

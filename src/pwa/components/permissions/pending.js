@@ -84,7 +84,7 @@ export function renderPendingBlock(mount) {
             ${row.suggested
               ? `<span class="perm-pending-suggested">${escapeHtml(row.suggested.kind)}: <code>${escapeHtml(row.suggested.value)}</code></span>`
               : '<span class="perm-pending-suggested none">no rule could be derived</span>'}
-            ${row.count > 1 ? `<span class="perm-pending-count">× ${row.count}</span>` : ''}
+            ${row.count > 1 ? `<span class="perm-pending-count">× ${escapeHtml(String(row.count))}</span>` : ''}
             <span class="perm-pending-when">${escapeHtml(relPast(row.at) ?? '')}</span>
           </div>
         </div>
@@ -112,7 +112,11 @@ export function renderPendingBlock(mount) {
   function paint() {
     const snap = grantsStore.get();
     if (!snap.pendingLoaded) {
-      mount.innerHTML = '<div class="settings-loading">Loading…</div>';
+      // A failed load must say so rather than spin: this panel is the only front door to a
+      // denial, and a permanent "Loading…" makes every waiting verdict invisible.
+      mount.innerHTML = snap.pendingErr
+        ? `<p class="settings-note perm-pending-load-error">Could not load pending denials: ${escapeHtml(snap.pendingErr)}</p>`
+        : '<div class="settings-loading">Loading…</div>';
       return;
     }
     const rows = pendingRows({
