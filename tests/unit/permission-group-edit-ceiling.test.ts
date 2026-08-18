@@ -110,4 +110,43 @@ describe('the edit group git rule is an anchored whitelist, not a verb prefix', 
     const r = validateGroupUpdate('edit', groups.edit!);
     expect(r.ok === false ? r.error : 'ok').toBe('ok');
   });
+
+  // Re-review, round 2: `add`'s repeated-token group had no first-character constraint, so
+  // any flag built from [A-Za-z0-9_./-] passed straight through — `-f` bypasses .gitignore
+  // (live-tested: stages a gitignored file), `-p`/`-i`/`-e`/`-u`/`-n`/`--renormalize` all
+  // reached interactive/rewriting modes no SKILL.md uses. `merge -s ours`/`-X theirs` and
+  // `--no-verify` were never reachable through the group rule itself (that always required a
+  // bare ref or `--abort`) — they leaked only through the colocated `^git merge(\s|$)` extra
+  // removed from fix-ci/resolve-conflicts below, but are pinned here too since this file is
+  // the ceiling's regression net regardless of which layer would have let them through.
+  it('does not let git add or git merge take a flag disguised as an operand', () => {
+    for (const c of [
+      'git add -f secret.env',
+      'git add -p',
+      'git add -i',
+      'git add -e',
+      'git add -u',
+      'git add -n',
+      'git add --renormalize',
+      'git merge -s ours',
+      'git merge -X theirs',
+      'git merge --no-verify',
+    ]) expect(allows(c), c).toBe(false);
+  });
+
+  it('git add still stages plain paths after the charset fix', () => {
+    for (const c of [
+      'git add -A',
+      'git add .',
+      'git add src/foo.ts',
+      'git add a b',
+    ]) expect(allows(c), c).toBe(true);
+  });
+
+  it('git merge still takes a bare ref or --abort after the charset fix', () => {
+    for (const c of [
+      'git merge origin/main',
+      'git merge --abort',
+    ]) expect(allows(c), c).toBe(true);
+  });
 });

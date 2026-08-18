@@ -65,9 +65,9 @@
       "^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\\s|$)",
       "^git checkout --(?:\\s+[A-Za-z0-9_./-]+)+$",
       "^git rebase\\s+[A-Za-z0-9][A-Za-z0-9._/-]*$",
-      "^git merge\\s+(?:--abort|[A-Za-z0-9][A-Za-z0-9._/-]*)$",
+      "^git merge\\s+(?:--abort|[A-Za-z0-9][A-Za-z0-9._/-]*|\"\\$[A-Za-z_][A-Za-z0-9_]*\"|'\\$[A-Za-z_][A-Za-z0-9_]*')$",
       "^git add\\s+-A$",
-      "^git add(?:\\s+[A-Za-z0-9_./-]+)+$"
+      "^git add(?:\\s+[A-Za-z0-9._/][A-Za-z0-9._/-]*)+$"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": [

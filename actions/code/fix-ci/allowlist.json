@@ -1,8 +1,7 @@
 {
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
-    "^gh pr checks(\\s|$)",
-    "^git add(\\s|$)"
+    "^gh pr checks(\\s|$)"
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": []
