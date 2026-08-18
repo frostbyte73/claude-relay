@@ -52,48 +52,6 @@ export function settingsSections(warnFlags = {}, desktop = true) {
     }));
 }
 
-const GROUP_ORDER = ['core', 'read', 'pull', 'edit', 'push'];
-const GROUP_TONE = { core: 'core', read: 'read', pull: 'pull', edit: 'edit', push: 'push' };
-
-export function permissionGroupRows(groups = []) {
-  return [...groups]
-    .sort((a, b) => GROUP_ORDER.indexOf(a.name) - GROUP_ORDER.indexOf(b.name))
-    .map((g) => ({
-      name: g.name,
-      description: g.description ?? '',
-      actionCount: g.actionCount ?? 0,
-      tone: GROUP_TONE[g.name] ?? 'core',
-    }));
-}
-
-function basenameOf(p) {
-  if (typeof p !== 'string' || !p) return p;
-  const parts = p.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? p;
-}
-
-function scopeLabel(scope) {
-  if (scope === 'global') return 'global';
-  if (scope && typeof scope === 'object') {
-    if (scope.project) return `project · ${basenameOf(scope.project)}`;
-    if (scope.action) return `action · ${scope.action}`;
-  }
-  return 'unknown';
-}
-
-// No addedAt/expiry metadata exists on allowlist rules (Allowlist.toConfig()
-// returns bare pattern arrays) — lifecycle is always 'permanent' per D4.4;
-// don't fabricate timestamps the mockup shows but the backend can't back.
-export function allowlistRuleRows(rules = []) {
-  return rules.map((r, i) => ({
-    id: `${r.kind}:${r.value}:${i}`,
-    kind: r.kind,
-    pattern: r.value,
-    scopeText: scopeLabel(r.scope),
-    lifecycle: 'permanent',
-  }));
-}
-
 const MCP_LABEL = { ok: 'Connected', configured: 'Configured (stdio)', unreachable: 'Unreachable' };
 const MCP_TONE = { ok: 'ok', configured: 'ok', unreachable: 'danger' };
 

@@ -16,7 +16,8 @@ import { settings, VALID_DEFAULT_MODELS } from '../../state/settings.js';
 import { sessions } from '../../state/sessions.js';
 import { usage } from '../../state/usage.js';
 import { grantsStore, mcpHasWarning } from '../../state/grants.js';
-import { settingsSections, permissionGroupRows, allowlistRuleRows, mcpServerRows } from '../../vm/settings.js';
+import { settingsSections, mcpServerRows } from '../../vm/settings.js';
+import { groupCards, grantRows } from '../../vm/permissions.js';
 import { renderThemeGrid, renderModeToggle } from '../theme-picker.js';
 import { mountPushSection } from '../push/index.js';
 import { emptyState } from '../shell/placeholder.js';
@@ -270,14 +271,14 @@ function renderPermissions(mount) {
 
   function paint() {
     const state = grantsStore.get();
-    const groupRows = permissionGroupRows(state.groups);
+    const groupRows = groupCards(state.groups);
     groupsSection.innerHTML = `<h3>Groups in use</h3>${
       state.groupsLoaded
         ? (groupRows.length ? groupRows.map(groupRowHtml).join('') : '<p class="settings-note">No actions registered.</p>')
         : '<div class="settings-loading">Loading…</div>'
     }`;
     const rules = visibleRules();
-    const ruleRows = allowlistRuleRows(rules);
+    const ruleRows = grantRows(rules);
     grantsSection.innerHTML = `<h3>Grants${state.rulesLoaded ? ` · ${ruleRows.length}` : ''}</h3>${
       state.rulesLoaded
         ? (ruleRows.length ? ruleRows.map(allowRowHtml).join('') : '<p class="settings-note">No always-allow rules recorded yet.</p>')
