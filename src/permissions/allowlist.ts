@@ -217,22 +217,12 @@ function looksPathLike(value: string): boolean {
   return value.includes('/') || /^[~$`]/.test(value);
 }
 
-// The argv words of a clause, stopping at the first redirection operator (a separate target
-// `redirectsAllowed` already checks) or shell metacharacter. Reuses `readWordAt`'s own word
-// boundaries so a word is never read twice under two different rules about where it ends.
-function commandWords(text: string): string[] {
-  const words: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++;
-    if (i >= text.length) break;
-    const word = readWordAt(text, i);
-    if (!word) break;
-    words.push(word);
-    i += word.length;
-  }
-  return words;
-}
+// A redirect operator at the current scan position, optionally preceded by a bare fd number
+// with no space (`2>`, `0<` — a space there means something else, e.g. `2 > file` is three
+// plain words). Longest-first so `<<<` doesn't read as `<<` plus a stray `<`. Input forms are
+// included (unlike `matchRedirect`, which is write-only) because this scan has to step over
+// every redirect in the clause, read or write, to keep reading the operand words after it.
+const REDIRECT_AT_START = /^([0-9]*)(<<<|<<|<&|<|&>>|&>|>>|>\||>&|>)/;
 
 function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
   if (rules.alwaysAllow.has(toolName)) return true;
@@ -379,24 +369,64 @@ export class Allowlist {
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
     for (const clause of clauses) {
-      const words = commandWords(stripLeadingAssignments(clause.text));
-      const head = words[0];
+      const body = stripLeadingAssignments(clause.text);
+      // The command word is always readable cleanly here: bashPatternsMatch already required
+      // one of `^(mkdir|mv|…)` to match this same `body` for the clause to have gotten this
+      // far, which means it starts with a plain word, not a redirect or a metacharacter.
+      const head = readWordAt(body, 0);
       if (!head || !SCOPED_FILE_OPS.has(head)) continue;
-      let sawMode = head !== 'chmod';
-      for (const word of words.slice(1)) {
-        if (word.startsWith('-')) {
-          const eq = word.indexOf('=');
-          const value = eq >= 0 ? word.slice(eq + 1) : '';
-          if (eq < 0 || !looksPathLike(value)) continue;
-          if (!this.pathArgAllowed(value, scopes, sessionWorktreePath)) return false;
-          continue;
+      if (!this.scopedOperandsAllowed(body.slice(head.length), head, scopes, sessionWorktreePath)) return false;
+    }
+    return true;
+  }
+
+  // Walks the rest of a scoped file-op clause after its command word, classifying every token
+  // as a redirect (skipped whole — redirectsAllowed already owns write targets, and an input
+  // redirect writes nothing so neither needs scoping here), a flag, or an operand a path rule
+  // must cover. A token this scan can't account for — a process substitution standing in for a
+  // path bash would generate dynamically at runtime, or a stray shell metacharacter — denies
+  // rather than ending the scan early: treating "I could not parse this" as "there is nothing
+  // left to check" is exactly the class of bug this whole gate exists to close, one layer up.
+  private scopedOperandsAllowed(
+    rest: string, head: string, scopes: CompiledRules[], sessionWorktreePath?: string,
+  ): boolean {
+    let i = 0;
+    let sawMode = head !== 'chmod';
+    let sawDoubleDash = false;
+    while (i < rest.length) {
+      if (rest[i] === ' ' || rest[i] === '\t') { i++; continue; }
+      const redir = REDIRECT_AT_START.exec(rest.slice(i));
+      if (redir && rest[i + redir[0].length] !== '(') {
+        i += redir[0].length;
+        while (i < rest.length && (rest[i] === ' ' || rest[i] === '\t')) i++;
+        const target = readWordAt(rest, i);
+        if (!target) {
+          if (i >= rest.length) break; // nothing left after the redirect — a genuine end
+          return false; // a redirect target this scan can't read — e.g. another bare metachar
         }
-        if (!sawMode) {
-          sawMode = true;
-          if (CHMOD_MODE_RE.test(word)) continue;
-        }
-        if (!this.pathArgAllowed(word, scopes, sessionWorktreePath)) return false;
+        i += target.length;
+        continue;
       }
+      // `<(...)`/`>(...)`: bash substitutes a dynamically generated path (`/dev/fd/N`) here,
+      // never a literal one this checker can resolve or scope — so it can't be trusted as
+      // either a flag or an in-scope operand. Deny rather than guess at where its span ends.
+      if ((rest[i] === '<' || rest[i] === '>') && rest[i + 1] === '(') return false;
+      const word = readWordAt(rest, i);
+      if (!word) return false; // a shell metacharacter this scan doesn't otherwise account for
+      i += word.length;
+      if (!sawDoubleDash && word === '--') { sawDoubleDash = true; continue; }
+      if (!sawDoubleDash && word.startsWith('-')) {
+        const eq = word.indexOf('=');
+        const value = eq >= 0 ? word.slice(eq + 1) : '';
+        if (eq < 0 || !looksPathLike(value)) continue;
+        if (!this.pathArgAllowed(value, scopes, sessionWorktreePath)) return false;
+        continue;
+      }
+      if (!sawMode) {
+        sawMode = true;
+        if (CHMOD_MODE_RE.test(word)) continue;
+      }
+      if (!this.pathArgAllowed(word, scopes, sessionWorktreePath)) return false;
     }
     return true;
   }

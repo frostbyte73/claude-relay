@@ -96,6 +96,49 @@ describe('edit-group file ops are scoped to the session worktree', () => {
   it('leaves an unrelated command untouched', () => {
     expect(bash(a, 'npx vitest run', wt)).toBe(true);
   });
+
+  // A bare `<`/`<(` mid-clause used to empty out `readWordAt` and the scanner treated that
+  // exactly like reaching the end of the command — silently stopping instead of denying, which
+  // let every argument after the redirect through unscoped. These pin the fix: an operand after
+  // an input redirect, or one that follows a redirect this scan has to step over first, still
+  // gets checked; a process substitution standing in for a path is never trusted at all.
+  describe('a redirect or process substitution never truncates the scan', () => {
+    it('still checks the operand after an input redirect', () => {
+      expect(bash(a, `rm -rf ${wt}/a < /dev/null /Users/x/secret`, wt)).toBe(false);
+    });
+
+    it('never trusts a process substitution as a resolvable path', () => {
+      expect(bash(a, `cp <(cat /etc/passwd) /Users/x/exfil`, wt)).toBe(false);
+    });
+
+    it('an output redirect on an otherwise-scoped clause is still denied (by redirectsAllowed)', () => {
+      expect(bash(a, `cp ${wt}/a > /Users/x/out`, wt)).toBe(false);
+    });
+
+    it('an fd-prefixed redirect does not get misread as a bogus operand', () => {
+      // The "2" in `2>/dev/null` must not be treated as a stray relative-path argument — but
+      // the real destination two words later is still out of scope and still denies.
+      expect(bash(a, `mv ${wt}/a 2>/dev/null /Users/x/b`, wt)).toBe(false);
+    });
+
+    it('a legitimate device-sink redirect does not newly deny an otherwise in-scope clause', () => {
+      expect(bash(a, `rm -rf ${wt}/build 2>/dev/null`, wt)).toBe(true);
+      expect(bash(a, `rm -rf ${wt}/build > /tmp/log 2>&1`, wt)).toBe(true);
+    });
+  });
+
+  // POSIX `--` ends option parsing: everything after it is a literal operand, even one that
+  // looks like a flag. A classifier that treats "starts with -" as "is a flag" unconditionally
+  // would let `-rf` slide right past the relative-path check that denies every other operand.
+  describe('-- ends flag parsing, so a disguised relative path still denies', () => {
+    it('denies a flag-shaped operand after a bare --', () => {
+      expect(bash(a, 'rm -- -rf', wt)).toBe(false);
+    });
+
+    it('denies the real out-of-scope target that follows --', () => {
+      expect(bash(a, 'rm -rf -- /etc', wt)).toBe(false);
+    });
+  });
 });
 
 describe('a session with no worktree path is unaffected', () => {
