@@ -94,7 +94,9 @@ describe('edit-group file ops are scoped to the session worktree', () => {
   });
 
   it('leaves an unrelated command untouched', () => {
-    expect(bash(a, 'npx vitest run', wt)).toBe(true);
+    // Ship 5 narrowed `edit`'s bare `npx` grant away (arbitrary package execution); `npm test`
+    // is still granted and has nothing to do with file-op scoping, which is what this pins.
+    expect(bash(a, 'npm test', wt)).toBe(true);
   });
 
   // A bare `<`/`<(` mid-clause used to empty out `readWordAt` and the scanner treated that

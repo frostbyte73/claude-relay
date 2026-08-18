@@ -1,0 +1,10 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^protoc --version$",
+    "^protoc(?:[ \\t]+--es_out(?:=|[ \\t])\\S+|[ \\t]+--es_opt(?:=|[ \\t])\\S+|[ \\t]+-I=\\S+|[ \\t]+--proto_path(?:=|[ \\t])\\S+)+[ \\t]+\\S+\\.proto$",
+    "^lkctl jkube print[ \\t]+[A-Za-z0-9._/-]+$"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}
