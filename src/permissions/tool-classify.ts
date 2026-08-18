@@ -135,11 +135,13 @@ const MCP_WRITE_TOOL_SET: ReadonlySet<string> = new Set(MCP_WRITE_TOOLS);
 // verb-prefix match is refused if what follows it names a mutation.
 const BASE_READ_VERBS: readonly string[] = ['get', 'list', 'search', 'query', 'find', 'analyze', 'fetch', 'read'];
 
-// Verbs that mean this tool mutates something, checked against whatever text remains after a
-// read-verb prefix/suffix match is stripped off. `replace` is not one of the vendor patterns
-// this table was originally seeded from, but a compound name like `search_and_replace` needs
-// it caught the same way `search_and_delete` would be — the fixed list is a floor, not a
-// ceiling; add to it rather than assume the remainder is safe.
+// Verbs that mean this tool mutates something, checked against a tool's ENTIRE local name once
+// a read-verb prefix/suffix has matched — never just the fragment left over after stripping a
+// verb or a vendor echo off, since either strip can discard the very segment that names the
+// mutation (see the whole-`local`-name scan in classifyTool). `replace` is not one of the
+// vendor patterns this table was originally seeded from, but a compound name like
+// `search_and_replace` needs it caught the same way `search_and_delete` would be — the fixed
+// list is a floor, not a ceiling; add to it rather than assume an unscanned segment is safe.
 const MUTATION_VERBS: readonly string[] = [
   'create', 'update', 'delete', 'remove', 'write', 'set', 'send', 'merge', 'push',
   'close', 'archive', 'revoke', 'save', 'post', 'patch', 'upsert', 'modify', 'rename',
@@ -163,6 +165,12 @@ function mcpParts(toolName: string): { vendor: string; local: string } {
     : { vendor: rest.slice(0, sepIdx), local: rest.slice(sepIdx + 2) };
 }
 
+// Strips a vendor's own name off the front of a tool's local name when the vendor echoes it
+// there (Notion's `notion-fetch`/`notion-search`). This ONLY decides whether a read-verb
+// prefix/suffix matches — the mutation-verb scan in classifyTool always runs against the
+// pre-strip `local` name, specifically so a vendor whose own name is a mutation verb
+// (`merge`/`push`/`update`/`delete`/`create` self-prefixing the same way) can't have that
+// verb discarded by this function before anything checks it.
 function stripVendorEcho(vendor: string, local: string): string {
   const echo = vendor.toLowerCase();
   const lower = local.toLowerCase();
@@ -172,19 +180,15 @@ function stripVendorEcho(vendor: string, local: string): string {
   return local;
 }
 
-// A verb match requires the verb to be the whole local name, or to be followed by `_`/`-` —
-// never just a text prefix. That's what keeps `get_or_create_issue` from matching `get` as
-// cleanly as `get_issue` does; both match here, but `rest` then carries the compound's tail
-// (`or_create_issue` vs `issue`) for `containsMutationVerb` to inspect.
-function matchReadVerb(text: string): { rest: string } | null {
+// A verb match requires the verb to be the whole (post-echo-strip) local name, or to be
+// followed by `_`/`-` — never just a text prefix. That's what keeps `get_or_create_issue` from
+// matching `get` as cleanly as `get_issue` does; both match here as a prefix, and it's the
+// whole-name mutation-verb scan in classifyTool — not anything derived from this function —
+// that then tells them apart.
+function matchesReadVerbPrefix(text: string): boolean {
   const lower = text.toLowerCase();
-  for (const verb of BASE_READ_VERBS) {
-    if (lower === verb) return { rest: '' };
-    if (lower.startsWith(verb) && (lower[verb.length] === '_' || lower[verb.length] === '-')) {
-      return { rest: text.slice(verb.length + 1) };
-    }
-  }
-  return null;
+  return BASE_READ_VERBS.some((verb) =>
+    lower === verb || (lower.startsWith(verb) && (lower[verb.length] === '_' || lower[verb.length] === '-')));
 }
 
 // A hostile or sloppy MCP server's description must never be trusted to grant `read` — only
@@ -213,30 +217,29 @@ export function classifyTool(toolName: string, description?: string): ToolVerdic
     const { vendor, local } = mcpParts(toolName);
     const verbPart = stripVendorEcho(vendor, local);
 
-    const prefixMatch = matchReadVerb(verbPart);
-    if (prefixMatch) {
-      if (containsMutationVerb(prefixMatch.rest)) {
-        return {
-          effect: 'unknown',
-          reason: `${toolName} has a read-verb prefix but the rest of its name ("${prefixMatch.rest}") `
-            + 'names a mutation — refusing to guess read for a compound tool name',
-        };
-      }
-      return { effect: 'read', reason: `${toolName} matches a known read-verb prefix` };
-    }
-
+    const prefixMatch = matchesReadVerbPrefix(verbPart);
     const lowerVerbPart = verbPart.toLowerCase();
     const suffix = lowerVerbPart.endsWith('_show') ? '_show' : lowerVerbPart.endsWith('_list') ? '_list' : null;
-    if (suffix) {
-      const head = verbPart.slice(0, verbPart.length - suffix.length);
-      if (containsMutationVerb(head)) {
+
+    if (prefixMatch || suffix) {
+      // Scan the ORIGINAL, unstripped `local` name — never just the post-strip `verbPart` (or
+      // a fragment of it). `stripVendorEcho` discards the vendor-echo segment before this point,
+      // so a mutation-verb scan limited to what's left can't see it: a vendor literally named
+      // `merge`/`push`/`update`/`delete`/`create` that self-prefixes Notion-style
+      // (`merge_get_status`, `push_get_status`) would otherwise have its own name's mutation
+      // semantics stripped away right along with the echo. Scanning the whole name means no
+      // segment removed by normalisation can carry a mutation verb out of view.
+      if (containsMutationVerb(local)) {
         return {
           effect: 'unknown',
-          reason: `${toolName} has a read-verb suffix but the rest of its name ("${head}") `
-            + 'names a mutation — refusing to guess read for a compound tool name',
+          reason: `${toolName} has a read-verb prefix/suffix but its full name ("${local}") `
+            + 'names a mutation — refusing to guess read for a compound or vendor-echoed tool name',
         };
       }
-      return { effect: 'read', reason: `${toolName} matches a known read-verb suffix` };
+      return {
+        effect: 'read',
+        reason: `${toolName} matches a known read-verb ${prefixMatch ? 'prefix' : 'suffix'}`,
+      };
     }
   }
 

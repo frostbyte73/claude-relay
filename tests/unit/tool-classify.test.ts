@@ -100,6 +100,35 @@ describe('classifyTool — a read-verb prefix/suffix match is refused when a mut
     expect(effectOf('mcp__acme__get_widget')).toBe('read');
     expect(effectOf('mcp__acme__widget_list')).toBe('read');
   });
+
+  it('does not let a mutation-verb vendor echo escape the scan by being stripped off first', () => {
+    // Merge (merge.dev), Trigger (trigger.dev), Push, Update, Delete, Create are all plausible
+    // real vendor/brand names. A vendor self-prefixing Notion-style with its own name would,
+    // without this check, have that name discarded by stripVendorEcho before the mutation scan
+    // ever saw it — because the *stripped* segment IS the mutation verb here, not the remainder.
+    for (const name of [
+      'mcp__merge__merge_get_status',
+      'mcp__push__push_get_status',
+      'mcp__update__update-get-widget',
+      'mcp__delete__delete-list-things',
+      'mcp__create__create_get_report',
+    ]) {
+      expect(effectOf(name), name).toBe('unknown');
+    }
+  });
+
+  it('leaves the legitimate Notion vendor-echo cases unaffected by the whole-name scan', () => {
+    expect(effectOf('mcp__notion__notion-fetch')).toBe('read');
+    expect(effectOf('mcp__notion__notion-search')).toBe('read');
+    expect(effectOf('mcp__notion__notion-create-pages')).toBe('external-write');
+    expect(effectOf('mcp__notion__notion-update-page')).toBe('external-write');
+  });
+
+  it('does not let the added `replace` verb collide with an unrelated real read tool', () => {
+    // \breplace\b must not match inside "replacement" — a hypothetical get_replacement read
+    // tool must not be dragged down to unknown by the word-boundary scan.
+    expect(effectOf('mcp__acme__get_replacement')).toBe('read');
+  });
 });
 
 describe('classifyTool — real read tools across vendors do not regress against the mutation-verb check', () => {
