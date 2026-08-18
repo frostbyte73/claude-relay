@@ -15,10 +15,13 @@ const store = createStore({
   groups: [],
   rules: [],
   mcpServers: [],
+  pendingDenials: [],
   groupsLoaded: false,
   rulesLoaded: false,
   mcpLoaded: false,
   mcpLoading: false,
+  pendingLoaded: false,
+  pendingLoading: false,
   err: null,
 });
 
@@ -64,6 +67,30 @@ export const grantsStore = {
     }
   },
 
+  // Unlike groups/rules, a verdict POST always reloads this from the server rather than
+  // patching local state (the Pending panel repaints from what the daemon actually resolved,
+  // same discipline as commit() in groups.js) — so this is called unconditionally, not just
+  // once per tab.
+  async reloadPending() {
+    store.set((s) => ({ ...s, pendingLoading: true }));
+    try {
+      const data = await metaApi.pending();
+      store.set((s) => ({
+        ...s,
+        pendingDenials: Array.isArray(data?.denials) ? data.denials : [],
+        pendingLoaded: true,
+        pendingLoading: false,
+      }));
+    } catch (e) {
+      store.set((s) => ({ ...s, err: e.message, pendingLoading: false }));
+    }
+  },
+
+  async loadPending() {
+    if (store.get().pendingLoaded) return;
+    await this.reloadPending();
+  },
+
   async ensurePermissionsLoaded() {
     await Promise.all([this.loadGroups(), this.loadRules()]);
   },
@@ -79,4 +106,13 @@ export const grantsStore = {
 // the view-model stays a pure function of already-derived booleans.
 export function mcpHasWarning(state) {
   return (state.mcpServers ?? []).some((s) => s.status === 'unreachable');
+}
+
+// Same signal, denials half: the Permissions nav item lights up while an unresolved denial is
+// waiting on a verdict. Deliberately NOT folded with the MCP catalog's unclassified-tool count
+// (a live per-server tools/list probe the Pending panel fetches on its own, slower schedule,
+// see routes/meta.ts's handleGetPermissionsPending) — that would put a slow network probe back
+// on the nav's paint path, the exact thing splitting the route apart was meant to avoid.
+export function pendingHasWarning(state) {
+  return (state.pendingDenials ?? []).length > 0;
 }

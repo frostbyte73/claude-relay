@@ -40,9 +40,9 @@ export const SETTINGS_SECTIONS = [
   },
 ];
 
-// `warnFlags` is `{ [sectionKey]: boolean }` — currently only 'mcp' is ever
-// true (an unreachable MCP server), computed by the caller from grants store
-// state so this stays a pure function of already-derived booleans.
+// `warnFlags` is `{ [sectionKey]: boolean }` — 'mcp' (an unreachable MCP server) and
+// 'permissions' (an unresolved denial waiting on a verdict) today, computed by the caller from
+// grants store state so this stays a pure function of already-derived booleans.
 export function settingsSections(warnFlags = {}, desktop = true) {
   return SETTINGS_SECTIONS
     .filter((group) => desktop || !group.desktopOnly)

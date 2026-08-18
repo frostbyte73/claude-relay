@@ -121,6 +121,20 @@ export function grantRows(rules = []) {
   }));
 }
 
+// `/api/mcp/catalog`'s raw `{ servers: ServerProposal[] }` payload — fetched separately from,
+// and slower than, the denials half of the pending panel (a live tools/list probe per
+// configured server; see routes/meta.ts's handleGetPermissionsPending comment on why the two
+// don't share a request). A placement's `group: null` is exactly "the classifier couldn't
+// place it, a human must" — i.e. unclassified. The caller composes this together with the
+// denials-route payload into one `pendingRows({ mcp, denials })` call; the shape translation
+// stays here so neither fetch site has to know pendingRows' input shape.
+export function mcpUnclassifiedRows(servers = []) {
+  return servers.map((s) => ({
+    server: s.server,
+    unclassified: (s.placements ?? []).filter((p) => p.group === null).length,
+  }));
+}
+
 export function pendingRows(pending = {}) {
   const mcp = (pending.mcp ?? []).filter((s) => s.unclassified > 0);
 

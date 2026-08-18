@@ -32,7 +32,17 @@ export const metaApi = {
   permissionGroups() { return request('/api/permission-groups'); },
   allowlistRules()   { return request('/api/allowlist/rules'); },
   mcpStatus()        { return request('/api/mcp/status'); },
+  // Live per-server tools/list probe — slower than mcpStatus, called on its own schedule by
+  // the Pending classifications panel so a hung server delays only that sub-panel.
+  mcpCatalog()       { return request('/api/mcp/catalog'); },
   pending()          { return request('/api/permissions/pending'); },
+
+  denialVerdict(actionName, denialId, body) {
+    return request(
+      `/api/actions/${encodeURIComponent(actionName)}/denials/${encodeURIComponent(denialId)}/verdict`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
+    );
+  },
 
   // Replaces the WHOLE group — the caller rebuilds all four pattern arrays.
   putPermissionGroup(name, group, rationale) {

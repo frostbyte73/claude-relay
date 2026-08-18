@@ -190,6 +190,56 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
   text-align: center;
 }
 
+/* ── Pending classifications ─────────────────────────────────────────── */
+.perm-pending-mcp:empty { display: none; }
+.perm-pending-mcp-list { display: flex; flex-direction: column; gap: var(--gap-2); margin-bottom: var(--gap-4); }
+.perm-pending-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  padding: var(--gap-2) 4px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.perm-pending-mcp-row:last-child { border-bottom: none; }
+.perm-pending-mcp-name { font-family: var(--font-mono); color: var(--text); }
+.perm-pending-mcp-count { color: var(--text-dim); font-size: 11px; }
+.perm-pending-mcp-link { margin-left: auto; flex: none; }
+
+.perm-pending-batch + .perm-pending-batch { margin-top: var(--gap-4); }
+.perm-pending-batch h4 { margin: 0 0 var(--gap-2); }
+.perm-pending-row {
+  padding: var(--gap-3) 4px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-2);
+}
+.perm-pending-row:last-child { border-bottom: none; }
+.perm-pending-row-main { display: flex; justify-content: space-between; align-items: baseline; gap: var(--gap-3); flex-wrap: wrap; }
+.perm-pending-command { font-family: var(--font-mono); font-size: 12px; color: var(--text); word-break: break-all; }
+.perm-pending-meta { display: flex; gap: var(--gap-3); align-items: baseline; flex-wrap: wrap; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.perm-pending-suggested code { color: var(--text-mute); }
+.perm-pending-suggested.none { color: var(--warn); }
+.perm-pending-count { font-variant-numeric: tabular-nums; }
+.perm-pending-actions { display: flex; gap: var(--gap-2); }
+/* Promote is the only verdict that grants anything — the danger tone (shared with the `push`
+   group pill) is deliberate so it never reads as just a third peer of Never/Fix's ghost
+   buttons. See groups.js's header comment: this panel only works as the Allow button's
+   replacement if that distinction is visible at a glance. */
+.perm-pending-promote-btn { flex: none; }
+.perm-pending-picker { display: flex; align-items: center; gap: var(--gap-2); flex-wrap: wrap; }
+.perm-pending-group-select {
+  padding: 4px 8px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12px;
+}
+.perm-pending-gated-note { color: var(--warn); flex-basis: 100%; margin: 0; }
+
 /* ── Grants ───────────────────────────────────────────────────────────── */
 .allow-row {
   display: grid;

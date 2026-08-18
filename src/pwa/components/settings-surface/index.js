@@ -19,7 +19,7 @@ import { openAddProjectSheet } from '../cwd-picker.js';
 import { settings, VALID_DEFAULT_MODELS } from '../../state/settings.js';
 import { sessions } from '../../state/sessions.js';
 import { usage } from '../../state/usage.js';
-import { grantsStore, mcpHasWarning } from '../../state/grants.js';
+import { grantsStore, mcpHasWarning, pendingHasWarning } from '../../state/grants.js';
 import { settingsSections, mcpServerRows } from '../../vm/settings.js';
 import { renderThemeGrid, renderModeToggle } from '../theme-picker.js';
 import { mountPushSection } from '../push/index.js';
@@ -43,7 +43,7 @@ export function renderList(mount) {
 
   function paint() {
     const sel = nav.get().selectionBySurface.settings ?? null;
-    const warnFlags = { mcp: mcpHasWarning(grantsStore.get()) };
+    const warnFlags = { mcp: mcpHasWarning(grantsStore.get()), permissions: pendingHasWarning(grantsStore.get()) };
     const groups = settingsSections(warnFlags, isDesktop());
     mount.innerHTML = groups.map((g) => `
       <div class="settings-nav-group">
@@ -69,9 +69,10 @@ export function renderList(mount) {
   paint();
   const unsubNav = nav.subscribe(paint);
   const unsubGrants = grantsStore.subscribe(paint);
-  // Kick off the lazy loads whose results feed the MCP warn-dot as soon as the
-  // surface opens, not only once the user drills into MCP connections.
+  // Kick off the lazy loads whose results feed the MCP and Permissions warn-dots as soon as
+  // the surface opens, not only once the user drills into MCP connections or Permissions.
   void grantsStore.ensureMcpLoaded();
+  void grantsStore.loadPending();
 
   // Deferred to its own microtask: renderList runs synchronously inside the
   // shell frame's paint(), and nav.setSelection() notifies subscribers
