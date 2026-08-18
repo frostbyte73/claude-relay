@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRegistry } from '../actions/index.js';
 import type { ActionAllowlist } from '../actions/types.js';
-import { literalRedirectPath, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
+import { literalRedirectPath, readWordAt, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
 import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
 import { assertNotWriteShaped } from './write-shape.js';
 
@@ -198,6 +198,42 @@ function bashPatternsMatch(rules: CompiledRules, clauseText: string): boolean {
   return body === '' || rules.bashPatterns.some((p) => p.test(body));
 }
 
+// The bash verbs `edit`'s `^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\s|$)` pattern hands out with
+// no path scoping at all. `Write` and `Edit` are already confined to the session worktree (or
+// a `Write:`-style path grant); this is the same treatment for their bash equivalents.
+const SCOPED_FILE_OPS = new Set(['mkdir', 'mv', 'cp', 'touch', 'rm', 'rmdir', 'ln', 'chmod']);
+
+// chmod's first non-flag word is a mode (`777`, `+x`, `u+rwx,go-w`), not a path — recognising
+// it is what keeps chmod usable at all once its paths are scoped. Anything that doesn't match
+// falls through to the same strict default every other argument gets: treated as a path and
+// required to be in scope.
+const CHMOD_MODE_RE = /^(?:[0-7]{1,4}|[ugoa]*[+\-=][rwxXstugo]*(?:,[ugoa]*[+\-=][rwxXstugo]*)*)$/;
+
+// A `--flag=value` word starting with `-` reads as a flag to the classifier below, which would
+// let `cp --target-directory=/etc file` smuggle a destination past it. Only worth the extra
+// look when the value has a shape a path or an unresolvable expansion would have — a bare
+// word like `--preserve=mode` is neither and isn't worth flagging.
+function looksPathLike(value: string): boolean {
+  return value.includes('/') || /^[~$`]/.test(value);
+}
+
+// The argv words of a clause, stopping at the first redirection operator (a separate target
+// `redirectsAllowed` already checks) or shell metacharacter. Reuses `readWordAt`'s own word
+// boundaries so a word is never read twice under two different rules about where it ends.
+function commandWords(text: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++;
+    if (i >= text.length) break;
+    const word = readWordAt(text, i);
+    if (!word) break;
+    words.push(word);
+    i += word.length;
+  }
+  return words;
+}
+
 function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
   if (rules.alwaysAllow.has(toolName)) return true;
   if (toolName === 'Bash') {
@@ -333,6 +369,49 @@ export class Allowlist {
     return true;
   }
 
+  // A second bar a scoped file-op clause has to clear, mirroring redirectsAllowed: `mkdir`,
+  // `mv`, `cp`, `touch`, `rm`, `rmdir`, `ln`, `chmod` are granted against any path on the
+  // machine today — `cp ~/.ssh/id_rsa /tmp/x`, `rm -rf ~/Documents`, `chmod 777 /etc/passwd`
+  // all auto-approve. Every argument that isn't confidently a flag is treated as a path and
+  // must resolve inside the session worktree or a granted Write-style path rule; getting that
+  // wrong in the permissive direction is exactly the hole this closes, so the default is strict.
+  private fileOpArgsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    const clauses = splitShellClauses(cmd);
+    if (clauses === null) return false;
+    for (const clause of clauses) {
+      const words = commandWords(stripLeadingAssignments(clause.text));
+      const head = words[0];
+      if (!head || !SCOPED_FILE_OPS.has(head)) continue;
+      let sawMode = head !== 'chmod';
+      for (const word of words.slice(1)) {
+        if (word.startsWith('-')) {
+          const eq = word.indexOf('=');
+          const value = eq >= 0 ? word.slice(eq + 1) : '';
+          if (eq < 0 || !looksPathLike(value)) continue;
+          if (!this.pathArgAllowed(value, scopes, sessionWorktreePath)) return false;
+          continue;
+        }
+        if (!sawMode) {
+          sawMode = true;
+          if (CHMOD_MODE_RE.test(word)) continue;
+        }
+        if (!this.pathArgAllowed(word, scopes, sessionWorktreePath)) return false;
+      }
+    }
+    return true;
+  }
+
+  // One argument word, resolved exactly like a redirect target: unresolvable ($VAR, $(…),
+  // backtick, ~, glob, or any relative path — the checker sees command text, never the cwd the
+  // clause will actually run in) denies before any rule is consulted; otherwise it must be
+  // under the session's own worktree or covered by a granted Write-style path rule.
+  private pathArgAllowed(word: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    const path = literalRedirectPath(word);
+    if (path === null) return false;
+    if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
+    return scopes.some((s) => rulesAllow(s, 'Write', { file_path: path }));
+  }
+
   // Why a denied Bash command was denied, in the only terms a one-click grant can answer.
   // Order matters and mirrors the gates in allows(): a target no rule could ever name is
   // fatal whatever else is wrong, so it outranks the clause that also has no rule — grant
@@ -372,6 +451,7 @@ export class Allowlist {
       // be theatre. The gate exists to stop *pattern*-matched clauses from smuggling one.
       if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
         if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+        if (!this.fileOpArgsAllowed(cmd, scopes, sessionWorktreePath)) return false;
         if (!clausesShellSafe(cmd)) return false;
       }
     }
