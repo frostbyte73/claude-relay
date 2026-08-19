@@ -6,6 +6,7 @@ outpost:
   category: code
   side_effects: worktree-edit
   runner: claude
+  plannable: false
   permissions: [read, edit]
   timeout_sec: 3600
   retries: 0

@@ -6,6 +6,7 @@ outpost:
   category: meta
   side_effects: none
   runner: claude
+  plannable: false
   permissions: [read, pull]
   timeout_sec: 1800
   retries: 0
@@ -39,7 +40,7 @@ cat "$OUTPOST_ENVELOPE"
 | `job.externalRef.linearUuid` | Linear's internal UUID — use this to call the Linear GraphQL API. |
 | `launchContext` (initial only) | Free-text the user attached when launching the planner. Treat it as high-signal extra guidance from the user on top of `job.description` — priorities, constraints, hints about where to look. Absent if the user launched without typing anything. |
 | `stepTypeCatalog` | The step-kind catalog (`action`, `orchestrated`). **The orchestrator consumes plans in this shape — use it.** |
-| `actionCatalog` | The full action registry — every available action's `name`, `description`, `category`, `runner`, `side_effects`, and JSON Schemas. Use it to pick the right `action` name for an `action`-kind step and to understand what each action expects/produces. |
+| `actionCatalog` | Every action you may plan as a step — `name`, `description`, `category`, `runner`, `side_effects`, and JSON Schemas. Already filtered to the plannable ones: a controller's internal rounds (`code.implement`, `code.fix-ci`, …) are absent because the controller composes those itself, and so are the actions the daemon and the UI trigger directly. If an action you expected isn't here, it isn't yours to plan. |
 | `currentSteps` (replan only) | The existing plan with state. Each entry has an `id` you need for `keepId`, and completed steps carry their `output`/`findings`. |
 | `userFeedback` (replan only) | The message the user just sent. Highest-signal context. |
 | `rejectedIterations` | Prior orchestrator outputs the user rejected, with their feedback. |
@@ -254,8 +255,7 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
 
 **Picking the action name.** Skim `actionCatalog` for an action whose description matches what the step should do. The catalog is the ONLY source of valid action names — if nothing fits, don't invent one (`"claude"`, `"generic"`, `"vanilla"` etc. are not actions), drop the step and surface the gap in `risks`. Common picks:
 
-- `read.investigate` — anything investigation-shaped.
-- `read.linear-issue` — when a downstream step needs the ticket as structured data (team, comments, etc.).
+- `read.investigate` — anything investigation-shaped, including reading a Linear ticket for context.
 - `write.linear-comment` / `write.linear-issue` — for the write-back side of customer-incident flows. Each runs unattended, composes the exact team/title/body (or comment body), and drafts it via `mcp__outpost__submit_write_draft` — the step parks itself for the user's approval before it posts. You do **not** need to insert a `meta.wait` in front just to gate the write — the action gates itself. A leading `meta.wait` is only for a combined hold on the verdict before the writes are even prepared for drafting.
 - `code.review-diff` — only for diffs in OUR worktrees, not someone else's PR.
 - `meta.wait` — a daemon-side hold between steps. Two shapes: a **manual hold** (omit `duration_sec`) that parks the job until the user resumes or abandons — for "given these findings, promote when ready"; and a **timed soak** (`inputs.duration_sec`) that auto-resumes after N seconds, then the next step runs on its own. The timed soak is how you bake a deploy before acting on it — e.g. a PR step that ships the change, then `meta.wait` with `duration_sec: 3600`, then `read.investigate` to check health an hour after rollout (set `forwardOutput: true` on nothing here — the wait's own output is just `{resumed_by}`; the investigate reads live signal fresh). Never use `meta.wait` to *assess* something — "is staging healthy?" is `read.investigate`. And never use it as a stand-in for actual work — a "deploy" step is an `orchestrated` PR step (the merge IS the deploy).

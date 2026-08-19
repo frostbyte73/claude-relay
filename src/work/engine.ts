@@ -22,7 +22,7 @@ import type {
   StepEventKind,
   WorkspaceRef,
 } from './work-types.js';
-import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
+import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
 import { readonlyView, workspaceError } from './workspace.js';
 import { expectRepoOf, parsePrUrl } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
@@ -941,7 +941,7 @@ export class WorkEngine {
       jobId,
       job: { source: after.source, title: after.title, description: after.description, externalRef: after.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog(),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
       userFeedback: trimmed,
       rejectedIterations: after.plan?.iterationsRejected,
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
@@ -960,7 +960,7 @@ export class WorkEngine {
       jobId,
       job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog(),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
       currentSteps: j.steps,
       userFeedback: feedback,
       rejectedIterations: j.plan?.iterationsRejected,
@@ -1953,7 +1953,9 @@ export class WorkEngine {
       // Persisted on the step by drainForDelivery, so a cold resume still shows what woke it.
       ...(s.lastDelivered?.length ? { delivered: s.lastDelivered } : {}),
       writeGate,
-      actionCatalog: this.buildActionCatalog(),
+      // Scoped to the controller, not to `boundAction` — a work turn hands back to a decision
+      // turn in the same session, and that turn picks the next round out of this same catalog.
+      actionCatalog: this.buildActionCatalog({ kind: 'controller', controller: s.controller }),
     };
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
     augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(boundAction) ?? []);
@@ -2389,7 +2391,7 @@ export class WorkEngine {
       jobId,
       job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog(),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
       currentSteps: j.steps,
       completedStepId,
       rejectedIterations: j.plan?.iterationsRejected,
@@ -2428,7 +2430,7 @@ export class WorkEngine {
       jobId: j.id,
       job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog(),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
       ...(launchContext ? { launchContext } : {}),
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
     };
@@ -2436,8 +2438,8 @@ export class WorkEngine {
     await this.spawnOrchestratorSession(j.id, 'initial', path, actionName, opts);
   }
 
-  private buildActionCatalog(): ActionCatalogEntry[] | undefined {
-    return buildActionCatalog(this.opts.actionRegistry);
+  private buildActionCatalog(scope: CatalogScope): ActionCatalogEntry[] | undefined {
+    return buildActionCatalog(this.opts.actionRegistry, scope);
   }
 
   // Cwd for orchestrator sessions: the daemon's cwd (Outpost repo) is fine — the

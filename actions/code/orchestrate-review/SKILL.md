@@ -6,6 +6,13 @@ outpost:
   category: code
   side_effects: none
   runner: claude
+  roster:
+    - code.review-diff
+    - code.security-review
+    - code.review-ui
+    - code.post-pr-review
+    - code.verify-resolutions
+    - code.submit-pr-verdict
   permissions: [read, pull]
   timeout_sec: 900
   retries: 0
@@ -54,7 +61,7 @@ cat "$OUTPOST_ENVELOPE"
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
 | `writeGate` | Present only while **you** (not a bound round) have raised a write draft. Absent otherwise — see `SHARED-write-drafts.md`. This step's ladder never raises one directly either; each write is drafted by the bound round doing it. |
-| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. The only valid action names; never invent one. |
+| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. This is your declared roster (`outpost.roster` in your own frontmatter) plus yourself, not the whole registry: an action missing here is one another controller owns. The only valid action names; never invent one. |
 | `previousSteps` | Findings from earlier steps of the job. |
 | `recentLessons` | Journal lines from past runs of this action. |
 

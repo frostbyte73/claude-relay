@@ -966,9 +966,10 @@ async function main() {
     },
   });
 
-  // Same shape meta.orchestrate's envelope carries (WorkEngine.buildActionCatalog),
-  // reproduced here rather than exposed off WorkEngine — the schedule builder only
-  // needs it as a read-only hint of what already exists.
+  // Same shape meta.orchestrate's envelope carries, reproduced here rather than exposed off
+  // WorkEngine — the schedule builder only needs it as a read-only hint of what already exists.
+  // Deliberately unscoped, unlike buildActionCatalog's two slices: a schedule can run an action
+  // no job plan may emit (meta.improve-actions is exactly that), so `plannable` isn't its question.
   const scheduleRoutes = registerScheduleEditRoutes(server, {
     manager, engine, notifyAll, config, secret, runtimeDir: RUNTIME_DIR,
     actionCatalog: () => actionRegistry.listActions().map((a) => ({

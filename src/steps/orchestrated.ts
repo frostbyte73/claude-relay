@@ -44,7 +44,7 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
     // Turn 1 comes through here, not through resumeControllerRound — so the two fields the
     // SKILL leans on hardest have to be set here too: which hat the controller is wearing
     // (its own, on a cold spawn) and what it may dispatch.
-    const actionCatalog = buildActionCatalog(ctx.actionRegistry);
+    const actionCatalog = buildActionCatalog(ctx.actionRegistry, { kind: 'controller', controller: s.controller });
     // The controller's own draft (never one raised by a dispatch child — those carry their own
     // writeGate on their own dispatch envelope). Needed here, not just in resumeControllerRound,
     // because reconcileInterruptedSteps clears `sessionId` on a `running` step after a daemon

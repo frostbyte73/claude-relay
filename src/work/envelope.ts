@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Dispatch, InboxItem, JobRecord, PlanIteration, PrFacts, Step, StepAttempt, WorkspaceRef } from './work-types.js';
 import type { JournalEntry } from '../storage/journal-store.js';
 import type { ActionRegistry } from '../actions/registry.js';
+import type { ActionDef } from '../actions/types.js';
 import type { WriteGatePayload } from './write-draft.js';
 
 export interface StepTypeCatalogEntry {
@@ -80,12 +81,25 @@ export interface ActionCatalogEntry {
   output_schema: unknown;
 }
 
+// Who is choosing. The two readers want disjoint slices: the orchestrator plans job steps and
+// must not see a controller's internal rounds, a controller rebinds and dispatches within its
+// own roster and has no use for the rest. Required rather than defaulted, so a new call site
+// has to say which it is instead of silently getting all of both.
+export type CatalogScope =
+  | { kind: 'plannable' }
+  | { kind: 'controller'; controller: string };
+
 // Every envelope that offers a choice of actions — the orchestrator's plan, a controller's
 // dispatch — reads the catalog from the same place, so a controller's turn 1 sees exactly what
-// the planner saw.
-export function buildActionCatalog(reg: ActionRegistry | undefined): ActionCatalogEntry[] | undefined {
+// its later decision turns see.
+export function buildActionCatalog(
+  reg: ActionRegistry | undefined, scope: CatalogScope,
+): ActionCatalogEntry[] | undefined {
   if (!reg) return undefined;
-  return reg.listActions().map((a) => ({
+  const visible = scope.kind === 'plannable'
+    ? (a: ActionDef) => a.frontmatter.outpost.plannable !== false
+    : rosterFilter(reg, scope.controller);
+  return reg.listActions().filter(visible).map((a) => ({
     name: a.name,
     description: a.frontmatter.description,
     kind: a.frontmatter.outpost.kind,
@@ -95,6 +109,17 @@ export function buildActionCatalog(reg: ActionRegistry | undefined): ActionCatal
     input_schema: a.inputSchema,
     output_schema: a.outputSchema,
   }));
+}
+
+// A controller sees its roster plus itself — it stays in its own catalog because `boundAction`
+// on a decision turn names the controller, and the SKILL tells it to read its own entry there.
+// An undeclared roster falls back to the whole catalog: over-showing costs tokens, but showing
+// a controller less than it needs strands the step with no way to name what it wanted.
+function rosterFilter(reg: ActionRegistry, controller: string): (a: ActionDef) => boolean {
+  const roster = reg.getAction(controller)?.frontmatter.outpost.roster;
+  if (!roster) return () => true;
+  const visible = new Set([...roster, controller]);
+  return (a) => visible.has(a.name);
 }
 
 export interface OrchestratorEnvelope {

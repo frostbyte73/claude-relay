@@ -21,6 +21,13 @@ export interface ActionFrontmatter {
     runner: ActionRunner;
     // Inherited permission groups (read/pull/edit/push); core is implicit for claude-runners.
     permissions?: string[];
+    // May meta.orchestrate emit this as a job step? Defaults true. False marks an action only
+    // ever reached some other way — a controller round, a UI button, a schedule — so it stays
+    // out of the orchestrator's catalog instead of competing with the actions it can plan.
+    plannable?: boolean;
+    // step-orchestrator only: the sub-actions this controller may rebind to or dispatch. Its
+    // decision turns see exactly these plus itself. Omitted means the whole catalog.
+    roster?: string[];
     timeout_sec?: number;
     retries?: number;
   };

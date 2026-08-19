@@ -94,10 +94,10 @@ describe('the bar is skipped for an action that holds a whole-tool Read grant', 
 });
 
 describe('the shipped catalog still works under the bar', () => {
-  it('covers every cat/jq shape the four core-only actions use', () => {
-    // read.linear-issue [pull], write.linear-comment [push], write.linear-issue [push],
-    // write.run-github-workflow [pull, push] — none has a read grant, and none reads anything
-    // but the envelope. Verified against their SKILL.md files when this bar was added.
+  it('covers every cat/jq shape the three core-only actions use', () => {
+    // write.linear-comment [push], write.linear-issue [push], write.run-github-workflow
+    // [pull, push] — none has a read grant, and none reads anything but the envelope.
+    // Verified against their SKILL.md files when this bar was added.
     for (const c of [
       'cat "$OUTPOST_ENVELOPE"',
       'jq -r \'.issueId\' "$OUTPOST_ENVELOPE"',

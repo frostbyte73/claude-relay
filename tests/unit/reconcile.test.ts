@@ -131,7 +131,7 @@ describe('validateDispositions — a completed step is history', () => {
   });
 
   it('rejects a patch that swaps a resolved step\'s action', () => {
-    const proposed = [{ ...proposedAction('s1', 's1'), action: 'read.linear-issue' } as ProposedStep];
+    const proposed = [{ ...proposedAction('s1', 's1'), action: 'code.review-diff' } as ProposedStep];
     const result = validateDispositions([done('s1')], proposed, []);
     expect(result.ok).toBe(false);
     if (result.ok) return;

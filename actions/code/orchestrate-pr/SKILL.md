@@ -6,6 +6,17 @@ outpost:
   category: code
   side_effects: none
   runner: claude
+  roster:
+    - code.spec
+    - code.plan
+    - code.implement
+    - code.review-diff
+    - code.triage-pr-comments
+    - code.fix-pr-comment
+    - code.reply-pr-comments
+    - code.resolve-conflicts
+    - code.fix-ci
+    - code.merge-pr
   permissions: [read, push]
   timeout_sec: 900
   retries: 0
@@ -47,7 +58,7 @@ cat "$OUTPOST_ENVELOPE"
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
-| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. The only valid action names; never invent one. |
+| `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. This is your declared roster (`outpost.roster` in your own frontmatter) plus yourself, not the whole registry: an action missing here is one another controller owns. The only valid action names; never invent one. |
 | `previousSteps` | Findings from earlier steps of the job. |
 | `recentLessons` | Journal lines from past runs of this action. |
 

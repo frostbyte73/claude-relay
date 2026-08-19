@@ -6,6 +6,7 @@ outpost:
   category: meta
   side_effects: gated-write
   runner: claude
+  plannable: false
   permissions: [read]
   timeout_sec: 600
   retries: 0

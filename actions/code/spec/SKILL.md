@@ -6,6 +6,7 @@ outpost:
   category: code
   side_effects: none
   runner: claude
+  plannable: false
   permissions: [read, pull]
   timeout_sec: 1800
   retries: 0

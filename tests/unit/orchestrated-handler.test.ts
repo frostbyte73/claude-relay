@@ -115,6 +115,9 @@ describe('orchestratedHandler.buildEnvelope', () => {
   // how it learns what it may dispatch), so omitting them left the first turn blind.
   it('carries boundAction and the action catalog on the cold-spawn turn', () => {
     const actionRegistry = {
+      // buildActionCatalog scopes the catalog to the controller's roster; undefined here means
+      // this stub declares none, which falls back to everything listActions returns.
+      getAction: () => undefined,
       listActions: () => [{
         name: 'code.review-diff',
         frontmatter: {

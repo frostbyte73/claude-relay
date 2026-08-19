@@ -6,6 +6,7 @@ outpost:
   category: code
   side_effects: external-write
   runner: claude
+  plannable: false
   permissions: [read, pull, push]
   timeout_sec: 600
   retries: 0

@@ -80,6 +80,14 @@ export class ActionRegistry {
     const errors: RegistryLoadError[] = [];
     this.actionsByName.clear();
     if (existsSync(this.actionsDir)) this.walkActions(this.actionsDir, errors);
+    // Rosters resolve only once every action is loaded. A name that doesn't is a rebind target
+    // the controller can never reach — it would fail mid-step, after the work leading up to it.
+    for (const def of this.actionsByName.values()) {
+      for (const entry of def.frontmatter.outpost.roster ?? []) {
+        if (!this.actionsByName.has(entry))
+          errors.push({ path: def.dir, message: `outpost.roster names an unknown action: ${entry}` });
+      }
+    }
     if (errors.length > 0) {
       const detail = errors.map(e => `  ${e.path}: ${e.message}`).join('\n');
       throw new Error(`Action registry: ${errors.length} invalid entr${errors.length === 1 ? 'y' : 'ies'}\n${detail}`);
@@ -222,6 +230,17 @@ export class ActionRegistry {
       throw new Error('outpost.permissions must be a string[] of group names');
     }
 
+    if (o.plannable !== undefined && typeof o.plannable !== 'boolean')
+      throw new Error('outpost.plannable must be a boolean');
+
+    const roster = o.roster;
+    if (roster !== undefined) {
+      if (!(Array.isArray(roster) && roster.every((x) => typeof x === 'string')))
+        throw new Error('outpost.roster must be a string[] of action names');
+      if (kind !== 'step-orchestrator')
+        throw new Error('outpost.roster is only meaningful on kind: step-orchestrator');
+    }
+
     return {
       name: r.name,
       description: r.description,
@@ -231,6 +250,8 @@ export class ActionRegistry {
         side_effects: o.side_effects as SideEffects,
         runner: o.runner as ActionRunner,
         permissions: permissions as string[] | undefined,
+        plannable: o.plannable as boolean | undefined,
+        roster: roster as string[] | undefined,
         timeout_sec: typeof o.timeout_sec === 'number' ? o.timeout_sec : undefined,
         retries: typeof o.retries === 'number' ? o.retries : undefined,
       },

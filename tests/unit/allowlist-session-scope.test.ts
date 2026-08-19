@@ -107,7 +107,7 @@ describe('rule id encode/decode', () => {
     const cases = [
       { kind: 'bash' as const, value: '^git push ', scope: 'global' as const },
       { kind: 'tool' as const, value: 'Write', scope: { project: '/Users/x/repo' } },
-      { kind: 'mcp' as const, value: '^mcp__linear__', scope: { action: 'read.linear-issue' } },
+      { kind: 'mcp' as const, value: '^mcp__linear__', scope: { action: 'read.investigate' } },
       { kind: 'path' as const, value: 'Write:^/tmp/', scope: 'global' as const },
     ];
     for (const c of cases) {
