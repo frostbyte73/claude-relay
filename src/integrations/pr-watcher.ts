@@ -21,7 +21,9 @@ interface GhPrView {
   mergeable?: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
   headRefOid?: string;
   statusCheckRollup?: GhCheckRollup[];
-  reviews?: Array<{ id: string; author: { login: string }; body: string; createdAt: string; state: string; url?: string }>;
+  // A review is timestamped `submittedAt`, not `createdAt` — only `comments` carries that
+  // spelling — and it has no `url` at all. Both were read off a review as if it were a comment.
+  reviews?: Array<{ id: string; author: { login: string }; body: string; submittedAt: string; state: string }>;
   comments?: Array<{ id: string; author: { login: string }; body: string; createdAt: string; url?: string }>;
 }
 
@@ -111,6 +113,14 @@ interface GhInlineComment {
   in_reply_to_id?: number | null;
 }
 
+// Never hand a NaN to the sort below: `Array.prototype.sort` treats a NaN comparator result as
+// "equal", so ONE undated comment doesn't misplace itself — it silently stops the whole list
+// from sorting. Sinking an unparseable date to 0 keeps the other comments in order.
+function epochOf(iso: string | undefined): number {
+  const t = Date.parse(String(iso ?? ''));
+  return Number.isNaN(t) ? 0 : t;
+}
+
 function inlineCommentsFrom(inline: GhInlineComment[]): PrComment[] {
   const nodeIdByInt = new Map<number, string>();
   for (const c of inline) nodeIdByInt.set(c.id, c.node_id);
@@ -119,7 +129,7 @@ function inlineCommentsFrom(inline: GhInlineComment[]): PrComment[] {
       id: `review:${c.node_id}`,
       author: c.user.login,
       body: c.body,
-      createdAt: new Date(c.created_at).getTime(),
+      createdAt: epochOf(c.created_at),
     };
     if (c.html_url) out.url = c.html_url;
     if (c.path) out.file = c.path;
@@ -138,15 +148,13 @@ function inlineCommentsFrom(inline: GhInlineComment[]): PrComment[] {
 function commentsFrom(view: GhPrView, inline: GhInlineComment[]): PrComment[] {
   const out: PrComment[] = [];
   for (const c of view.comments ?? []) {
-    const x: PrComment = { id: `issue:${c.id}`, author: c.author.login, body: c.body, createdAt: new Date(c.createdAt).getTime() };
+    const x: PrComment = { id: `issue:${c.id}`, author: c.author.login, body: c.body, createdAt: epochOf(c.createdAt) };
     if (c.url) x.url = c.url;
     out.push(x);
   }
   for (const r of view.reviews ?? []) {
     if (!r.body) continue;
-    const x: PrComment = { id: `review:${r.id}`, author: r.author.login, body: r.body, createdAt: new Date(r.createdAt).getTime() };
-    if (r.url) x.url = r.url;
-    out.push(x);
+    out.push({ id: `review:${r.id}`, author: r.author.login, body: r.body, createdAt: epochOf(r.submittedAt) });
   }
   out.push(...inlineCommentsFrom(inline));
   return out.sort((a, b) => a.createdAt - b.createdAt);
