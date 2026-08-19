@@ -154,7 +154,7 @@ mcp__outpost__submit_schedule_proposal({
   name: "<short human-readable schedule name>",
   summary: "<one paragraph for the human reviewing the draft>",
   trigger: { kind: "cron", expr: "0 9 * * *" },
-  what: { kind: "script", script: "...", cwd: "/Users/dc/some-project" }
+  what: { kind: "script", script: "...", cwd: "/Users/testuser/some-project" }
 })
 ```
 

@@ -47,11 +47,11 @@ describe('a core-only action reads its envelope and nothing else', () => {
   it('denies every other file, through either command', () => {
     for (const c of [
       'cat /etc/passwd',
-      'cat /Users/dc/.ssh/id_rsa',
-      'cat /Users/dc/.outpost/.env',
+      'cat /Users/testuser/.ssh/id_rsa',
+      'cat /Users/testuser/.outpost/.env',
       // The second spelling of the same read. Closing one without the other is theatre.
-      'jq . /Users/dc/.ssh/id_rsa',
-      'jq -r .foo /Users/dc/.aws/credentials',
+      'jq . /Users/testuser/.ssh/id_rsa',
+      'jq -r .foo /Users/testuser/.aws/credentials',
       'jq -r \'.x\' /etc/passwd',
     ]) expect(coreOnly(c), c).toBe(false);
   });
@@ -85,10 +85,10 @@ describe('the bar is skipped for an action that holds a whole-tool Read grant', 
     // `read` grants `alwaysAllow: ["Read", ...]` — an explicit "read anything". Gating the bash
     // equivalents under it would deny nothing while breaking every code action.
     for (const c of [
-      'cat /Users/dc/frostbyte73/outpost/package.json',
+      'cat /Users/testuser/repos/outpost/package.json',
       'cat ~/.outpost/projects.json',
-      'jq . /Users/dc/frostbyte73/outpost/package.json',
-      'head -50 /Users/dc/some/repo/src/main.go',
+      'jq . /Users/testuser/repos/outpost/package.json',
+      'head -50 /Users/testuser/some/repo/src/main.go',
     ]) expect(withRead(c), c).toBe(true);
   });
 });

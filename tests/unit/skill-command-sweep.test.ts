@@ -28,10 +28,10 @@ const CASES: Array<[string, string]> = [
   // which quoting the variable does nothing to stop. This is the corrected literal form.
   ['code.resolve-conflicts', 'git merge origin/main'],
   ['code.submit-pr-verdict', 'gh pr review 12 --approve --body-file /tmp/outpost-verdict-12.md'],
-  ['write.add-project', 'gh repo clone acme/example /Users/dc/acme/example'],
-  ['write.add-project', 'git clone https://github.com/acme/example.git /Users/dc/acme/example'],
-  ['write.add-project', 'mkdir -p /Users/dc/acme'],
-  ['write.add-project', 'git -C /Users/dc/acme/example log -1 --oneline'],
+  ['write.add-project', 'gh repo clone acme/example /Users/testuser/acme/example'],
+  ['write.add-project', 'git clone https://github.com/acme/example.git /Users/testuser/acme/example'],
+  ['write.add-project', 'mkdir -p /Users/testuser/acme'],
+  ['write.add-project', 'git -C /Users/testuser/acme/example log -1 --oneline'],
   ['write.run-github-workflow', 'gh workflow run "deploy.yml" --ref "main"'],
   ['write.run-github-workflow', 'gh run watch 8123456 --interval 60 --exit-status'],
 ];

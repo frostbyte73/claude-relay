@@ -71,7 +71,7 @@ describe('errorTarget', () => {
 describe('grantRows', () => {
   const RULES = [
     { id: 'a1', kind: 'bash', value: '^ls(\\s|$)', scope: 'global', source: '/x/allowlist.json' },
-    { id: 'b2', kind: 'bash', value: '^rg ', scope: { project: '/Users/dc/frostbyte73/outpost' }, source: '/x/p.json' },
+    { id: 'b2', kind: 'bash', value: '^rg ', scope: { project: '/Users/testuser/repos/outpost' }, source: '/x/p.json' },
     { id: 'c3', kind: 'mcp', value: '^mcp__linear__list_issues$', scope: { action: 'read.investigate' }, source: '/x/actions.json' },
   ];
 

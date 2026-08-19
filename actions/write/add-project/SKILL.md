@@ -239,7 +239,7 @@ Success:
 mcp__outpost__submit_step_output({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  output: "{\"ok\": true, \"repo\": \"livekit/cloud-io\", \"url\": \"https://github.com/livekit/cloud-io\", \"cwd\": \"/Users/dc/livekit/cloud-io\", \"cloned\": true, \"alreadyCloned\": false, \"registered\": true, \"alreadyRegistered\": false, \"defaultBranch\": \"main\", \"checkedOutBranch\": \"main\", \"headCommit\": \"a1b2c3d fix egress timeout\", \"isPrivate\": true, \"summary\": \"Cloned livekit/cloud-io to /Users/dc/livekit/cloud-io and registered it as an Outpost project; on main at a1b2c3d.\"}"
+  output: "{\"ok\": true, \"repo\": \"livekit/cloud-io\", \"url\": \"https://github.com/livekit/cloud-io\", \"cwd\": \"/Users/testuser/livekit/cloud-io\", \"cloned\": true, \"alreadyCloned\": false, \"registered\": true, \"alreadyRegistered\": false, \"defaultBranch\": \"main\", \"checkedOutBranch\": \"main\", \"headCommit\": \"a1b2c3d fix egress timeout\", \"isPrivate\": true, \"summary\": \"Cloned livekit/cloud-io to /Users/testuser/livekit/cloud-io and registered it as an Outpost project; on main at a1b2c3d.\"}"
 })
 ```
 
@@ -250,7 +250,7 @@ concrete unblock.
 mcp__outpost__submit_step_failed({
   jobId: "<$JOB_ID>",
   stepId: "<$STEP_ID>",
-  reason: "Could not clone livekit/cloud-io: gh repo view returns 404 and `gh auth status` shows the active login has no access to the livekit org. Unblock: run `gh auth refresh -s read:org` (or re-auth as an org member) and re-run this step. Destination /Users/dc/livekit/cloud-io is untouched."
+  reason: "Could not clone livekit/cloud-io: gh repo view returns 404 and `gh auth status` shows the active login has no access to the livekit org. Unblock: run `gh auth refresh -s read:org` (or re-auth as an org member) and re-run this step. Destination /Users/testuser/livekit/cloud-io is untouched."
 })
 ```
 

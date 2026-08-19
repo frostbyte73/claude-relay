@@ -309,13 +309,13 @@ describe('a whole-tool write grant is refused like the path rule it stands in fo
 
   it('is refusing a grant that really does reach outside any scratch root', () => {
     const al = wholeTool('Write');
-    for (const p of ['/Users/dc/.ssh/authorized_keys', '/Users/dc/Library/LaunchAgents/evil.plist',
+    for (const p of ['/Users/testuser/.ssh/authorized_keys', '/Users/testuser/Library/LaunchAgents/evil.plist',
       '/etc/crontab']) {
       expect(al.allows('Write', { file_path: p }), p).toBe(true);
     }
     // The half a path-only lint would never have seen: the redirect gate resolves through the
     // same whole-tool grant.
-    expect(al.allows('Bash', { command: 'echo x > /Users/dc/.zshrc' })).toBe(true);
+    expect(al.allows('Bash', { command: 'echo x > /Users/testuser/.zshrc' })).toBe(true);
   });
 });
 

@@ -214,7 +214,7 @@ function bashPatternsMatch(rules: CompiledRules, clauseText: string): boolean {
 // here" collapsed into one grant. Three review rounds (see the ship's report) each tried to
 // scope that one rule narrowly enough to cover only the directory-creation case and each still
 // over-granted the `Write` tool — `Write:^/Users/[^/]+/` (any home directory), then a version
-// unconstrained below its first segment (`/Users/dc/livekit/.git/hooks/post-commit` writable),
+// unconstrained below its first segment (`/Users/testuser/livekit/.git/hooks/post-commit` writable),
 // then one unconstrained on `/Users/Shared`, other users' homes, and unbounded repo-tree depth.
 // The mechanism, not the regex, was wrong: one path-rule vocabulary was being asked to answer two
 // different questions ("may this directory be created" vs "may this file be written"). `rmdir`
