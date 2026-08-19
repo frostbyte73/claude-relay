@@ -7,7 +7,11 @@ import { suggestRule } from '../../src/permissions/denial-suggestion.js';
 // the daemon says plainly that nothing would.
 function checker(extra: Partial<AllowlistConfig> = {}): Allowlist {
   return new Allowlist({
-    alwaysAllow: [],
+    // `Read` stands in for an ordinary read grant (every action inheriting `read` has one), so
+    // the read-scope bar is out of the picture and these cases isolate what they're about:
+    // which rule a denial should SUGGEST. Without it, `cat /etc/hosts > …` would be denied for
+    // the read rather than the redirect, and the suggestion under test never reached.
+    alwaysAllow: ['Read'],
     alwaysAllowBashPatterns: ['^cat ', '^ls(\\s|$)'],
     alwaysAllowMcpPatterns: [],
     alwaysAllowPathPatterns: ['Write:^/tmp/'],

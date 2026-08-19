@@ -31,7 +31,7 @@ function hasUnquotedExpansion(clause: string): boolean {
 // out. Approximate — an expansion survives as its literal text — but exact enough for flag
 // matching, which is the whole point: `find . -delete`, `find . '-delete'`, `find . "-delete"`
 // and `find . -de""lete` reach argv as one flag that a regex blocklist reads as four strings.
-function clauseArgv(clause: string): string[] {
+export function clauseArgv(clause: string): string[] {
   const body = stripLeadingAssignments(clause);
   const words: string[] = [];
   let cur = '';

@@ -8,7 +8,10 @@ const targetsOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.writeTar
 // The grants a code-shaped action actually carries, so the cases read as "would this SKILL
 // line have stalled the step" rather than as an abstract regex exercise.
 const a = new Allowlist({
-  alwaysAllow: [],
+  // `Read` stands in for an ordinary read grant, which every action inheriting `read` has.
+  // Without it the read-scope bar (readArgsAllowed) would refuse `cat x` for its relative
+  // path, and these cases are about COMMENT stripping, not about which files may be read.
+  alwaysAllow: ['Read'],
   alwaysAllowBashPatterns: ['^git (log|fetch|status|diff)(\\s|$)', '^cat ', '^ls(\\s|$)', '^echo '],
   alwaysAllowMcpPatterns: [],
 });

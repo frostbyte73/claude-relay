@@ -155,7 +155,32 @@ describe('parseDraftCalls — files', () => {
 
   it('accepts a files entry keyed to a path the same call\'s bash actually references', () => {
     const calls = parseDraftCalls([{ bash, files: { '/tmp/review.json': '{"body":"ok"}' } }]);
-    expect(calls).toEqual([{ id: 'c1', bash, files: { '/tmp/review.json': '{"body":"ok"}' } }]);
+    // toMatchObject, not toEqual: parseDraftCalls also attaches the classifier's `findings`
+    // (this one is a POST, so it carries an `api-write` warning), and this case is about the
+    // files map, not about what the card will render alongside it.
+    expect(calls).toMatchObject([{ id: 'c1', bash, files: { '/tmp/review.json': '{"body":"ok"}' } }]);
+  });
+
+  // The warn half of the deny/warn split only exists if it reaches the approval card, and the
+  // card can't run the TypeScript classifier — so the findings are attached here, server-side,
+  // and ride out on the draft. A call with nothing notable carries no `findings` key at all.
+  it('attaches the classifier findings so the approval card can render them', () => {
+    const merge = parseDraftCalls([{ bash: 'gh pr merge 12 --squash --repo other/repo' }]);
+    const codes = merge?.[0]?.findings?.map((f) => f.code) ?? [];
+    expect(codes).toContain('foreign-repo');
+    expect(codes).toContain('pr-merge');
+    expect(merge?.[0]?.findings?.every((f) => f.risk === 'warn')).toBe(true);
+
+    // A confirm-tier call gets a finding the card renders with an acknowledgement checkbox;
+    // acceptDraft refuses the accept unless the code comes back in `ack`.
+    const forced = parseDraftCalls([{ bash: 'git push --force origin main' }]);
+    expect(forced?.[0]?.findings?.[0]?.risk).toBe('confirm');
+    expect(forced?.[0]?.findings?.[0]?.code).toBe('force-push');
+
+    expect(parseDraftCalls([{ bash: 'git push origin feature/x' }])?.[0]?.findings).toBeUndefined();
+    // An MCP call has no command text to classify.
+    expect(parseDraftCalls([{ tool: { name: 'mcp__github__create_pull_request', args: {} } }])?.[0]?.findings)
+      .toBeUndefined();
   });
 
   it('rejects a files key the command does not reference', () => {

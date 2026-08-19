@@ -1,4 +1,5 @@
 import type { JobRecord, Step } from './work-types.js';
+import { confirmationsRequired } from '../permissions/dangerous-writes.js';
 import {
   extractFileReferences, hashFileContents, sameRaiser, writeFileContents,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -181,6 +182,26 @@ export async function acceptDraft(
   // write the approved body, then dropped — the persisted pin is the digest, never a second
   // copy of the content.
   const rebuilt = keep.map((c) => ({ id: c.id, label: c.label, bash: c.bash, tool: c.tool }));
+
+  // A `confirm`-risk finding (force-push, --mirror, gh pr merge --admin) is pinnable only when
+  // the user acknowledged that specific finding for that specific call. Recomputed HERE from
+  // the submitted command, not read off the draft: the user edits the command in the textarea,
+  // so a force flag typed in after the draft was raised has to face this too. `ack` is dropped
+  // from `rebuilt` above by the explicit field pick, so nothing about the acknowledgement is
+  // persisted onto the pin — it governs whether the pin is created at all.
+  for (const c of keep) {
+    if (!c.bash) continue;
+    const required = confirmationsRequired(c.bash);
+    const acked = new Set(c.ack ?? []);
+    const missing = required.filter((f) => !acked.has(f.code));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: `"${c.bash}" needs an explicit confirmation before it can run: `
+          + missing.map((f) => f.message).join(' '),
+      };
+    }
+  }
 
   // A call whose payload references a file (--input/--body-file/--notes-file) is pinned by
   // command TEXT only, which says nothing about the file's CONTENT at execution time. If the

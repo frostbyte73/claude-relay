@@ -1,9 +1,10 @@
 {
   "core": {
-    "description": "Envelope-I/O baseline for every action: read the job envelope, jq, curl to the loopback hook server, ToolSearch. Implicit for every runner:claude action.",
-    "alwaysAllow": ["ToolSearch"],
+    "description": "Envelope-I/O baseline for every action: cat, jq, the mcp__outpost__ submit tools, ToolSearch. Implicit for every runner:claude action. The cat/jq rules name the verb only — which FILE they may open is decided structurally by readArgsAllowed (allowlist.ts), which confines them to $OUTPOST_ENVELOPE, the session's own worktree, and any granted Read: path. That bar is skipped entirely for an action holding a whole-tool Read grant (i.e. anything inheriting `read`), so it binds exactly the actions that never asked to read files. Grants no network access — an action that POSTs back to the daemon carries its own anchored curl rule in its allowlist.json.",
+    "alwaysAllow": [
+      "ToolSearch"
+    ],
     "alwaysAllowBashPatterns": [
-      "^cat \"\\$OUTPOST_ENVELOPE\"$",
       "^cat ",
       "^jq "
     ],
@@ -14,7 +15,13 @@
   },
   "read": {
     "description": "Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch, sed restricted to a line-range print).",
-    "alwaysAllow": ["Read", "Glob", "Grep", "LS", "NotebookRead"],
+    "alwaysAllow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+      "NotebookRead"
+    ],
     "alwaysAllowBashPatterns": [
       "^(ls|head|tail|file|wc|stat|du|pwd|whoami|date|printenv|which|type|echo|printf|tree|sort|uniq|cut|comm|diff|cmp|column|basename|dirname|realpath|nl|xxd|od)(\\s|$)",
       "^git (-C [^-\\s]\\S* )?(status|log|diff|show|blame|branch|remote -v|remote get-url|config --get|fetch|rev-parse|merge-base|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list)(\\s|$)",
@@ -27,7 +34,12 @@
   },
   "pull": {
     "description": "Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident-io/Grafana, curl -s, and read-only gh commands.",
-    "alwaysAllow": ["WebFetch", "WebSearch", "ListMcpResourcesTool", "ReadMcpResourceTool"],
+    "alwaysAllow": [
+      "WebFetch",
+      "WebSearch",
+      "ListMcpResourcesTool",
+      "ReadMcpResourceTool"
+    ],
     "alwaysAllowBashPatterns": [
       "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|[\"']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s\"'<>&|;\\\\]*[\"']?))*(?:\\s|\\\\\\n)*$",
       "^gh api(?:(?:\\s|\\\\\\n)+(?:--paginate|--slurp|(?:--cache|--hostname|-H|--header|-q|--jq|-t|--template)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:--method|-X)(?:(?:\\s|\\\\\\n)+|=)GET|(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)))*(?:\\s|\\\\\\n)*$",
@@ -77,28 +89,17 @@
     ]
   },
   "push": {
-    "description": "External writes, each anchored to the worktree's own repo: git push (no force, no --delete, bare remote name), gh pr merge/review/comment/create/edit/close and the issue/release verbs (no --repo, no PR URL, no --admin, --body-file pinned to /tmp), git commit/tag, and an explicit list of write-side MCP tools.",
+    "description": "External writes. Every call here is gated: it runs only when pinned by a write draft the user approved, so these rules name the WRITE and let the approval card show the payload, rather than enumerating every permissible flag. Rules must match writes ONLY — matching a read (bare `git tag`, a GET `gh api`) would demand a draft before an action could read. Two structural bars are enforced in code rather than spelled into each rule: --input/--body-file/--notes-file must point under /tmp so the card can render the body being sent (allowlist.ts fileFlagsAllowed), and a force-push, `--mirror`, or `gh pr merge --admin` is refused outright, pin or no pin (dangerous-writes.ts). Everything else dangerous — merging, deleting a ref, a foreign --repo, a raw API write, a URL remote, pushing to a default branch — is surfaced as a warning on the draft instead of being unreachable.",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
-      "^git push(?:[ \\t]+(?:-u|--set-upstream|-q|--quiet|--porcelain))*(?:[ \\t]+[A-Za-z][A-Za-z0-9._-]*(?:[ \\t]+(?!(?:[mM][aA][iI][nN]|[mM][aA][sS][tT][eE][rR]|[tT][rR][uU][nN][kK]|[dD][eE][vV][eE][lL][oO][pP]|[dD][eE][vV]|[rR][eE][lL][eE][aA][sS][eE][/-][^\\s]*|(?:[rR][eE][fF][sS]/)?[hH][eE][aA][dD][sS]/[^\\s]*)[ \\t]*$)(?:HEAD|[A-Za-z0-9_][A-Za-z0-9._/-]*))?)?[ \\t]*$",
-      "^git commit(?:[ \\t]+(?:-a|-n|-s|-q|--all|--no-verify|--signoff|--quiet|--allow-empty|--no-edit|--no-gpg-sign|(?:-m|-am|-an|-as|--message)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)))*[ \\t]*$",
-      "^git tag(?:[ \\t]+(?:-a|-s|--annotate|(?:-m|--message)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)))*[ \\t]+(?:\"[A-Za-z0-9_][^\"$`\\n]*\"|'[A-Za-z0-9_][^'\\n]*'|[A-Za-z0-9_][^\\s\"'$`\\n]*)(?:[ \\t]+(?:\"[A-Za-z0-9_][^\"$`\\n]*\"|'[A-Za-z0-9_][^'\\n]*'|[A-Za-z0-9_][^\\s\"'$`\\n]*))?[ \\t]*$",
-      "^gh pr comment[ \\t]+[0-9]+[ \\t]+(?:--(?:body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?)[ \\t]*$",
-      "^gh pr merge[ \\t]+[0-9]+[ \\t]+(?:--squash|--merge|--rebase)(?:[ \\t]+(?:--auto|--(?:subject|body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?))*[ \\t]*$",
-      "^gh pr review[ \\t]+[0-9]+[ \\t]+(?:--approve|--request-changes|--comment)(?:[ \\t]+(?:--(?:body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?))?[ \\t]*$",
-      "^gh pr create(?:[ \\t]+(?:--draft|--fill|--fill-verbose|--(?:title|body|base|head|assignee|reviewer|label|milestone)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?))*[ \\t]*$",
-      "^gh pr edit[ \\t]+[0-9]+(?:[ \\t]+(?:--(?:title|body|base|add-label|remove-label|add-reviewer|add-assignee|milestone)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?))*[ \\t]*$",
-      "^gh pr ready[ \\t]+[0-9]+(?:[ \\t]+--undo)?[ \\t]*$",
-      "^gh pr close[ \\t]+[0-9]+(?:[ \\t]+--(?:comment)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))?[ \\t]*$",
-      "^gh issue create(?:[ \\t]+(?:--(?:title|body|label|assignee|milestone|project)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?))*[ \\t]*$",
-      "^gh issue comment[ \\t]+[0-9]+[ \\t]+(?:--(?:body)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--body-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?)[ \\t]*$",
-      "^gh issue close[ \\t]+[0-9]+(?:[ \\t]+--(?:comment|reason)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*[ \\t]*$",
-      "^gh release create[ \\t]+(?:\"[A-Za-z0-9_][^\"$`\\n]*\"|'[A-Za-z0-9_][^'\\n]*'|[A-Za-z0-9_][^\\s\"'$`\\n]*)(?:[ \\t]+(?:--draft|--prerelease|--generate-notes|--latest|--(?:title|notes|target)(?:[ \\t]+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--notes-file(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?))*[ \\t]*$",
-      "^git push[ \\t]+[A-Za-z][A-Za-z0-9._-]*[ \\t]+--delete(?:[ \\t]+--)?[ \\t]+(?:\"[^\"\\s]+\"|'[^'\\s]+'|[^-\\t\\n \"'][^\\t\\n \"']*)[ \\t]*$",
-      "^git push[ \\t]+--delete[ \\t]+[A-Za-z][A-Za-z0-9._-]*(?:[ \\t]+--)?[ \\t]+(?:\"[^\"\\s]+\"|'[^'\\s]+'|[^-\\t\\n \"'][^\\t\\n \"']*)[ \\t]*$",
-      "^gh api[ \\t]+(?:--method|-X)(?:[ \\t]+|=)POST[ \\t]+[\"']?repos/\\{owner\\}/\\{repo\\}/pulls/[0-9]+/reviews[\"']?[ \\t]+--input(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?[ \\t]*$",
-      "^gh api[ \\t]+(?:--method|-X)(?:[ \\t]+|=)POST[ \\t]+[\"']?repos/\\{owner\\}/\\{repo\\}/pulls/comments/[0-9]+/replies[\"']?[ \\t]+(?:-f(?:[ \\t]+|=)body=(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*)|--input(?:[ \\t]+|=)[\"']?/tmp/[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*[\"']?)[ \\t]*$",
-      "^gh workflow run(?:[ \\t]|\\\\\\n)+(?:\"[A-Za-z0-9][A-Za-z0-9._ -]*\"|'[A-Za-z0-9][A-Za-z0-9._ -]*'|[A-Za-z0-9][A-Za-z0-9._-]*)(?:[ \\t]|\\\\\\n)+--ref(?:(?:[ \\t]|\\\\\\n)+|=)(?:\"[A-Za-z0-9][A-Za-z0-9._/-]*\"|'[A-Za-z0-9][A-Za-z0-9._/-]*'|[A-Za-z0-9][A-Za-z0-9._/-]*)(?:(?:[ \\t]|\\\\\\n)+-f(?:(?:[ \\t]|\\\\\\n)+|=)[A-Za-z_][A-Za-z0-9_-]*=(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*(?:[ \\t]|\\\\\\n)*$"
+      "^git push(\\s|$)",
+      "^git commit(\\s|$)",
+      "^git tag[ \\t]+(?!-l\\b|--list\\b|-n)",
+      "^gh pr (create|edit|merge|review|comment|close|ready)(\\s|$)",
+      "^gh issue (create|comment|close|edit)(\\s|$)",
+      "^gh release (create|edit|upload)(\\s|$)",
+      "^gh workflow run(\\s|$)",
+      "^gh api[^\\n]*(?:--method|-X)(?:[ \\t]+|=)(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)(?:\\s|$)"
     ],
     "alwaysAllowMcpPatterns": [
       "^mcp__claude_ai_Linear__(save_|create_)",

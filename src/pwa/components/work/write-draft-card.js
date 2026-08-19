@@ -118,7 +118,44 @@ export function callHtml(draftId, call, idx) {
   const releasedNote = call.releasedAfterFailure
     ? `<div class="wd-call-released">⚠ A previous attempt at this call failed and was re-armed — it may already have taken effect. Verify before accepting again.</div>`
     : '';
-  // `.wd-call-label` is the VISIBLE caption; `<legend>` gives the <fieldset> the same text
+  const findings = findingsHtml(draftId, idx, call.findings);
+  // What the server's classifier flagged about this call (dangerous-writes.ts), rendered above
+// the payload so it is read before the Approve button rather than after.
+//
+// These describe the payload as DRAFTED. A `refuse` finding is not something the user can wave
+// through — `allows()` re-checks it at execution — so it is rendered as a blocker, not a
+// warning, and says the call will not run. `warn` is genuinely advisory: the risk is visible in
+// the command text, and the point is that it does not scroll past unremarked.
+function findingsHtml(draftId, idx, findings) {
+  if (!Array.isArray(findings) || findings.length === 0) return '';
+  const rows = findings.map((f, n) => {
+    // `confirm` is the only tier with an affordance, because it's the only one where the user
+    // has something to decide that the server will actually check. A `refuse` is already
+    // decided; a `warn` is read and moved past.
+    if (f.risk === 'confirm') {
+      const id = `wd-ack-${cssId(draftId)}-${idx}-${n}`;
+      return `<li class="wd-finding is-confirm">
+        <span class="wd-finding-tag">Confirm</span>
+        <span class="wd-finding-msg">
+          <span class="wd-finding-text">${escapeHtml(f.message ?? '')}</span>
+          <label class="wd-ack" for="${id}">
+            <input type="checkbox" id="${id}" class="wd-ack-box"
+              data-call-idx="${idx}" data-ack-code="${escapeHtml(f.code ?? '')}">
+            <span>I understand — allow this</span>
+          </label>
+        </span>
+      </li>`;
+    }
+    const blocking = f.risk === 'refuse';
+    return `<li class="wd-finding ${blocking ? 'is-blocking' : 'is-warning'}">
+      <span class="wd-finding-tag">${blocking ? 'Will not run' : 'Check'}</span>
+      <span class="wd-finding-msg">${escapeHtml(f.message ?? '')}</span>
+    </li>`;
+  }).join('');
+  return `<ul class="wd-findings" role="list">${rows}</ul>`;
+}
+
+// `.wd-call-label` is the VISIBLE caption; `<legend>` gives the <fieldset> the same text
   // as its accessible name without printing it twice — visually hidden, not removed.
   if (call.bash !== undefined) {
     const fileFields = Object.entries(call.files ?? {})
@@ -129,6 +166,7 @@ export function callHtml(draftId, call, idx) {
         <legend class="o-sr-only">${escapeHtml(label)}</legend>
         <div class="wd-call-label o-microhead" aria-hidden="true">${escapeHtml(label)}</div>
         ${releasedNote}
+        ${findings}
         <label class="field-label" for="${bashId}">Command</label>
         <textarea class="field-textarea wd-bash" id="${bashId}" data-call-idx="${idx}" data-kind="bash">${escapeHtml(call.bash)}</textarea>
         ${fileFields}
@@ -141,6 +179,7 @@ export function callHtml(draftId, call, idx) {
       <legend class="o-sr-only">${escapeHtml(label)}${call.tool?.name ? ` (${escapeHtml(call.tool.name)})` : ''}</legend>
       <div class="wd-call-label o-microhead" aria-hidden="true">${escapeHtml(label)} <span class="field-hint">${escapeHtml(call.tool?.name ?? '')}</span></div>
       ${releasedNote}
+      ${findings}
       ${fields || '<div class="field-hint">No arguments.</div>'}
     </fieldset>`;
 }
@@ -219,6 +258,18 @@ export function renderWriteDraft(draft, ctx = {}) {
 // (the server rebuilds them; see write-draft.ts's parseDraftCalls). Returns per-field parse
 // errors instead of throwing so the caller can show all of them at once rather than
 // stopping at the first.
+// The finding codes the user ticked for this call. Sent as a per-call verdict alongside the
+// edits; acceptDraft re-derives what SHOULD have been acknowledged from the submitted command
+// and refuses the accept if any of it is missing, so this is a convenience for the user rather
+// than the enforcement — ticking nothing and editing `--force` in still fails server-side.
+function ackFor(fieldset) {
+  const ack = [...(fieldset?.querySelectorAll('.wd-ack-box') ?? [])]
+    .filter((el) => el.checked)
+    .map((el) => el.dataset.ackCode)
+    .filter(Boolean);
+  return ack.length ? { ack } : {};
+}
+
 function collectCalls(card, draft) {
   const errors = [];
   const calls = draft.calls.map((call, idx) => {
@@ -268,7 +319,7 @@ function collectCalls(card, draft) {
         }
         files[path] = JSON.stringify({ ...base, [jsonKey]: el.value });
       });
-      return withLabel({ bash, ...(Object.keys(files).length ? { files } : {}) });
+      return withLabel({ bash, ...(Object.keys(files).length ? { files } : {}), ...ackFor(fieldset) });
     }
     const args = {};
     fieldset?.querySelectorAll('[data-arg-key]').forEach((el) => {

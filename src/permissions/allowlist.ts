@@ -5,6 +5,8 @@ import type { ActionRegistry } from '../actions/index.js';
 import type { ActionAllowlist } from '../actions/types.js';
 import { literalRedirectPath, readWordAt, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
 import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
+import { extractFileReferences, isValidTmpFilePath } from './file-flags.js';
+import { refusedWrite } from './dangerous-writes.js';
 import { assertNotWriteShaped } from './write-shape.js';
 
 export interface AllowlistConfig {
@@ -219,6 +221,21 @@ function bashPatternsMatch(rules: CompiledRules, clauseText: string): boolean {
 // stays scoped — it acts on an existing directory, not the low-damage "doesn't exist yet" case.
 const SCOPED_FILE_OPS = new Set(['mv', 'cp', 'touch', 'rm', 'rmdir', 'ln', 'chmod']);
 
+// Commands whose operands are files they READ. The read-side mirror of SCOPED_FILE_OPS, and
+// deliberately a superset of what `core` grants today (`cat`, `jq`): a bar that only covered
+// the two commands currently reachable would have to be revisited the first time a reading
+// verb is added to a group, which is exactly when nobody is looking.
+const READ_COMMANDS = new Set([
+  'cat', 'jq', 'head', 'tail', 'nl', 'xxd', 'od', 'wc', 'file', 'stat', 'sort', 'cut', 'uniq',
+]);
+
+// The one path an action may name without being able to resolve it. Double-quoted only: bare
+// `$OUTPOST_ENVELOPE` is refused upstream as an unquoted expansion (shell-safety.ts), and the
+// single-quoted spelling would reach the program as a literal filename that does not exist.
+const ENVELOPE_WORDS: ReadonlySet<string> = new Set([
+  '"$OUTPOST_ENVELOPE"', '"${OUTPOST_ENVELOPE}"',
+]);
+
 // chmod's first non-flag word is a mode (`777`, `+x`, `u+rwx,go-w`), not a path — recognising
 // it is what keeps chmod usable at all once its paths are scoped. Anything that doesn't match
 // falls through to the same strict default every other argument gets: treated as a path and
@@ -375,6 +392,71 @@ export class Allowlist {
     return true;
   }
 
+  // The third bar, and the one that lets `push`'s rules be verb-anchored instead of
+  // flag-by-flag enumerations. A file-referencing flag (`--input`/`--body-file`/`--notes-file`)
+  // names a file whose CONTENTS travel to the destination, while the command text — all the
+  // write-draft card can show, and all `matchPinnedCall` pins — says only which path. So
+  // `gh pr create --body-file /Users/you/.ssh/id_rsa` reads as an ordinary approval and posts a
+  // private key to a public PR.
+  //
+  // `isValidTmpFilePath` is deliberately the SAME predicate `parseDraftCalls` gates a draft's
+  // inline `files` map with, and that identity is the entire guarantee: a call may only
+  // reference a file whose contents the approval card is able to render, so the user is never
+  // asked to approve a path standing in for a payload they cannot see. Enforced structurally
+  // here rather than spelled into every rule, because it was previously re-stated in ten
+  // separate `push` patterns and a new rule that forgot it silently reopened the hole.
+  //
+  // Unresolvable input fails closed: extractFileReferences returns null for a command that
+  // doesn't parse, a flag with no value, or a value carrying `$`/backtick — the checker sees
+  // command text, never the path that will actually be opened.
+  private fileFlagsAllowed(cmd: string): boolean {
+    const paths = extractFileReferences(cmd);
+    if (paths === null) return false;
+    return paths.every(isValidTmpFilePath);
+  }
+
+  // The read-side counterpart of fileOpArgsAllowed, and the reason `core` can keep `^cat ` and
+  // `^jq ` as two-word rules instead of growing a regex that tries to spell out which file an
+  // action may open. A bash rule gates a clause by its leading command, which says nothing
+  // about the paths it reads — `^cat ` is every file on the machine, and `^jq ` is the same
+  // reach in a second spelling, so narrowing one and not the other would be theatre.
+  //
+  // Exempt under a whole-tool `Read` grant, exactly as redirectsAllowed is under a whole-tool
+  // `Bash` one: `alwaysAllow: ['Read']` is an explicit "read anything", so gating its bash
+  // equivalents would deny nothing while breaking every action that legitimately reads a repo.
+  // In practice that means this bar applies to precisely the actions that inherit `core` and
+  // no read grant — the ones that never declared a wish to read files at all.
+  private readArgsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    if (scopes.some((s) => s.alwaysAllow.has('Read'))) return true;
+    const clauses = splitShellClauses(cmd);
+    if (clauses === null) return false;
+    for (const clause of clauses) {
+      const body = stripLeadingAssignments(clause.text);
+      const head = readWordAt(body, 0);
+      if (!head || !READ_COMMANDS.has(head)) continue;
+      const ok = this.walkOperands(
+        body.slice(head.length),
+        head === 'jq' ? () => true : undefined,
+        (operand) => this.readArgAllowed(operand, scopes, sessionWorktreePath),
+      );
+      if (!ok) return false;
+    }
+    return true;
+  }
+
+  // One operand of a read command. `$OUTPOST_ENVELOPE` is the single path an action can name
+  // without knowing its value — the daemon exports it into every spawned session
+  // (claude-proc.ts) — and the checker sees command text, never the expansion, so it is
+  // recognised by spelling. That recognition lives HERE, in one place, rather than in every
+  // rule that wants to permit reading the envelope.
+  private readArgAllowed(word: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+    if (ENVELOPE_WORDS.has(word)) return true;
+    const path = literalRedirectPath(word);
+    if (path === null) return false;
+    if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
+    return scopes.some((s) => rulesAllow(s, 'Read', { file_path: path }));
+  }
+
   // A second bar a scoped file-op clause has to clear, mirroring redirectsAllowed: `mkdir`,
   // `mv`, `cp`, `touch`, `rm`, `rmdir`, `ln`, `chmod` are granted against any path on the
   // machine today — `cp ~/.ssh/id_rsa /tmp/x`, `rm -rf ~/Documents`, `chmod 777 /etc/passwd`
@@ -396,18 +478,27 @@ export class Allowlist {
     return true;
   }
 
-  // Walks the rest of a scoped file-op clause after its command word, classifying every token
-  // as a redirect (skipped whole — redirectsAllowed already owns write targets, and an input
-  // redirect writes nothing so neither needs scoping here), a flag, or an operand a path rule
-  // must cover. A token this scan can't account for — a process substitution standing in for a
+  // Walks the rest of a clause after its command word, classifying every token as a redirect
+  // (skipped whole — redirectsAllowed already owns write targets, and an input redirect writes
+  // nothing so neither needs scoping here), a flag, or an operand, and hands each operand to
+  // `check`. A token this scan can't account for — a process substitution standing in for a
   // path bash would generate dynamically at runtime, or a stray shell metacharacter — denies
   // rather than ending the scan early: treating "I could not parse this" as "there is nothing
   // left to check" is exactly the class of bug this whole gate exists to close, one layer up.
-  private scopedOperandsAllowed(
-    rest: string, head: string, scopes: CompiledRules[], sessionWorktreePath?: string,
+  //
+  // Shared by the write-side scoping (fileOpArgsAllowed) and the read-side one
+  // (readArgsAllowed). They ask different questions ABOUT the operands, but they have to FIND
+  // them identically, and the finding is where the subtle failures live.
+  //
+  // `firstOperandNotAPath` covers the commands whose leading operand isn't a file: chmod's mode
+  // (`777`, `u+rwx`) and jq's filter (`.pr.number`). Consulted once, on the first operand only.
+  private walkOperands(
+    rest: string,
+    firstOperandNotAPath: ((word: string) => boolean) | undefined,
+    check: (operand: string) => boolean,
   ): boolean {
     let i = 0;
-    let sawMode = head !== 'chmod';
+    let sawFirstOperand = false;
     let sawDoubleDash = false;
     while (i < rest.length) {
       if (rest[i] === ' ' || rest[i] === '\t') { i++; continue; }
@@ -435,16 +526,26 @@ export class Allowlist {
         const eq = word.indexOf('=');
         const value = eq >= 0 ? word.slice(eq + 1) : '';
         if (eq < 0 || !looksPathLike(value)) continue;
-        if (!this.pathArgAllowed(value, scopes, sessionWorktreePath)) return false;
+        if (!check(value)) return false;
         continue;
       }
-      if (!sawMode) {
-        sawMode = true;
-        if (CHMOD_MODE_RE.test(word)) continue;
+      if (!sawFirstOperand) {
+        sawFirstOperand = true;
+        if (firstOperandNotAPath?.(word)) continue;
       }
-      if (!this.pathArgAllowed(word, scopes, sessionWorktreePath)) return false;
+      if (!check(word)) return false;
     }
     return true;
+  }
+
+  private scopedOperandsAllowed(
+    rest: string, head: string, scopes: CompiledRules[], sessionWorktreePath?: string,
+  ): boolean {
+    return this.walkOperands(
+      rest,
+      head === 'chmod' ? (w) => CHMOD_MODE_RE.test(w) : undefined,
+      (operand) => this.pathArgAllowed(operand, scopes, sessionWorktreePath),
+    );
   }
 
   // One argument word, resolved exactly like a redirect target: unresolvable ($VAR, $(…),
@@ -477,6 +578,34 @@ export class Allowlist {
     const unsafe = unsafeClauseReason(cmd);
     if (unsafe) return { kind: 'none', reason: unsafe };
 
+    const refused = refusedWrite(cmd);
+    if (refused) return { kind: 'none', reason: refused.message };
+
+    if (!this.readArgsAllowed(cmd, scopes, ctx.sessionWorktreePath)) {
+      return {
+        kind: 'none',
+        reason: 'a read of a file outside this action\'s reach — cat/jq may open '
+          + '"$OUTPOST_ENVELOPE", a path inside the session\'s own worktree, or a path a Read: '
+          + 'rule grants; an action that needs more should inherit the `read` group',
+      };
+    }
+
+    // Fatal whatever else is wrong, and no rule can express a fix — the constraint is
+    // structural (see fileFlagsAllowed), so it outranks a missing clause rule the same way
+    // an unresolvable redirect target does.
+    const fileRefs = extractFileReferences(cmd);
+    if (fileRefs === null) {
+      return { kind: 'none', reason: 'a --input/--body-file/--notes-file path this checker cannot read literally' };
+    }
+    const offending = fileRefs.find((p) => !isValidTmpFilePath(p));
+    if (offending !== undefined) {
+      return {
+        kind: 'none',
+        reason: `--input/--body-file/--notes-file must point under /tmp/ so the approval card can `
+          + `show the body being sent; got "${offending}"`,
+      };
+    }
+
     const unmatched = clauses.find((c) => !scopes.some((s) => bashPatternsMatch(s, c.text)));
     if (unmatched) return { kind: 'clause', clause: unmatched.text };
 
@@ -498,6 +627,12 @@ export class Allowlist {
       if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
         if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
         if (!this.fileOpArgsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+        if (!this.readArgsAllowed(cmd, scopes, sessionWorktreePath)) return false;
+        if (!this.fileFlagsAllowed(cmd)) return false;
+        // The short refuse-list (see dangerous-writes.ts): the handful of writes where a
+        // human clicking approve is not an outcome worth having, so no pin can authorise
+        // them. Everything else dangerous is surfaced as a warning on the draft instead.
+        if (refusedWrite(cmd)) return false;
         if (!clausesShellSafe(cmd)) return false;
       }
     }

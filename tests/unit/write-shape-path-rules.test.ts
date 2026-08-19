@@ -192,7 +192,9 @@ function shippedRules(): ShippedRule[] {
 describe('the shipped permission groups still lint clean', () => {
   it('passes every rule of every kind, in the groups and in the action allowlists', () => {
     const rules = shippedRules();
-    expect(rules.length).toBeGreaterThan(110);
+    // Dropped from ~116 when `push` traded nineteen flag enumerations for eight verb anchors;
+    // the bar is a "this sweep still covers the real config" guard, not a target.
+    expect(rules.length).toBeGreaterThan(100);
     for (const { where, kind, rule, gated } of rules) {
       expect(lintPermissionRule(kind, rule, gated).ok, `${where} (${kind}): ${rule}`).toBe(true);
     }
@@ -553,11 +555,15 @@ describe('the bash whitelists are why the bound stops where it does', () => {
 
   it('records how badly the path bound would misfire on them', () => {
     const rules = bash();
-    expect(rules.length).toBeGreaterThan(70);
+    expect(rules.length).toBeGreaterThan(60);
     const overLength = rules.filter((r) => r.rule.length > 200);
     const unbounded = rules.filter((r) => backtrackingDegree(r.rule) === Infinity);
-    expect(overLength.length).toBeGreaterThan(15);
-    expect(unbounded.length).toBeGreaterThan(15);
+    // Smaller than it was: `push` used to contribute most of these and now contributes none.
+    // What remains is `pull` plus the action-local curl whitelists, which are still pinned to a
+    // host and still legitimately intricate — so the argument the bound would misfire on real
+    // rules is unchanged, it just rests on fewer of them.
+    expect(overLength.length).toBeGreaterThan(5);
+    expect(unbounded.length).toBeGreaterThan(5);
     expect(Math.max(...rules.map((r) => r.rule.length))).toBeGreaterThan(800);
   });
 

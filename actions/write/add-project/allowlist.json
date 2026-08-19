@@ -5,7 +5,7 @@
     "^gh repo clone[ \\t]+[\"']?[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*[\"']?[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?(?:[ \\t]+--[ \\t]+--recurse-submodules)?[ \\t]*$",
     "^git clone(?:[ \\t]+--recurse-submodules)?[ \\t]+[\"']?https://github\\.com/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.git)?[\"']?[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?(?:[ \\t]+--recurse-submodules)?[ \\t]*$",
     "^mkdir -p[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?[ \\t]*$",
-    "^git -C [^-\\s]\\S* checkout(\\s|$)",
+    "^git -C [\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?[ \\t]+checkout[ \\t]+[A-Za-z0-9][A-Za-z0-9._/-]*[ \\t]*$",
     "^curl(?:[ \\t]+(?:-[fsSL]+|--(?:silent|fail|show-error|location)))*[ \\t]+(?:-X|--request)(?:[ \\t]+|=)POST[ \\t]+[\"']?(?:\\$OUTPOST_API_URL|\\$\\{OUTPOST_API_URL\\}|http://(?:127\\.0\\.0\\.1|localhost):[0-9]+)/api/projects[\"']?(?:(?:[ \\t]|\\\\\\n)+(?:-H|--header|-d|--data|--data-raw)(?:(?:[ \\t]|\\\\\\n)+|=)(?:\"[^\"$`\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][^\\s\"'$`\\n]*))*(?:[ \\t]|\\\\\\n)*$"
   ],
   "alwaysAllowMcpPatterns": [],
