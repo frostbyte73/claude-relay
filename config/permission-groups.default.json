@@ -59,7 +59,7 @@
     "alwaysAllowPathPatterns": []
   },
   "edit": {
-    "description": "Local writes and test runners: Edit/Write/MultiEdit scoped to /tmp/, npm/yarn/pnpm/go/pytest/cargo/turbo, mage limited to its two evidenced targets, npx limited to the one evidenced typecheck invocation, docker limited to a status check, local git as an anchored whitelist (git rebase <ref> with no --exec/-x, git checkout -- <path>, git merge <ref>/--abort, git add -A/<path> — no -C <path> prefix, no stash/reset/restore/cherry-pick/revert/clean/switch/apply/mv/rm; none evidenced by any edit-inheriting SKILL.md, see permission-group-edit-ceiling.test.ts). node/tsx/vitest/jest/playwright/eslint/prettier/make dropped as bare grants — none had evidenced direct use, and a bare npx/make can't be anchored safely (the danger is in the target, not the command line); see permission-group-edit.test.ts.",
+    "description": "Local writes, dependency manifests, and test runners: Edit/Write/MultiEdit scoped to /tmp/, npm/yarn/pnpm/go/pytest/cargo/turbo, the dependency-manifest commands a bump needs in each ecosystem it's evidenced for — Go (go get, go mod tidy/download, go mod edit with flags only), Rust (cargo add/remove/update), Python via uv (uv add/remove/lock/sync). Those last two allow no operand containing a path separator, which is what confines them to the manifest in their own cwd: every escape (--manifest-path, --project, --target-dir, -C/--directory) needs one. go generate/run, cargo run/install, uv run, and uv pip/tool install stay denied — they execute code or install machine-wide. Bare pip is absent by design: with no venv it writes machine-wide site-packages. mage limited to its two evidenced targets, npx limited to the one evidenced typecheck invocation, docker limited to a status check, local git as an anchored whitelist (git rebase <ref> with no --exec/-x, git checkout -- <path>, git merge <ref>/--abort, git add -A/<path> — no -C <path> prefix, no stash/reset/restore/cherry-pick/revert/clean/switch/apply/mv/rm; none evidenced by any edit-inheriting SKILL.md, see permission-group-edit-ceiling.test.ts). node/tsx/vitest/jest/playwright/eslint/prettier/make dropped as bare grants — none had evidenced direct use, and a bare npx/make can't be anchored safely (the danger is in the target, not the command line); see permission-group-edit.test.ts.",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
       "^mage$",
@@ -68,10 +68,15 @@
       "^npm (test|run|install|ci)(\\s|$)",
       "^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)",
       "^go (test|build|vet)(\\s|$)",
+      "^go get(\\s|$)",
+      "^go mod (tidy|download)(\\s|$)",
+      "^go mod edit(?:\\s+-[a-z]+(?:=\\S+)?)+$",
       "^(golangci-lint|gofmt|goimports)(\\s|$)",
       "^pytest(\\s|$)",
       "^(ruff|black)(\\s|$)",
       "^cargo (build|test|check|clippy|fmt)(\\s|$)",
+      "^cargo (add|remove|update)(?:\\s+(?:--[a-z][a-z-]*(?:=[^\\s/]+)?|-[A-Za-z]+|[A-Za-z0-9][A-Za-z0-9._@+,=-]*))*$",
+      "^uv (add|remove|lock|sync)(?:\\s+(?:--[a-z][a-z-]*(?:=[^\\s/]+)?|-[A-Za-z]+|'[A-Za-z0-9][A-Za-z0-9._@+,<>=~!-]*'|[A-Za-z0-9][A-Za-z0-9._@+,=~!-]*))*$",
       "^turbo (format|lint|test|build)(\\s|$)",
       "^docker info$",
       "^(mkdir|mv|cp|touch|rm|rmdir|ln|chmod)(\\s|$)",

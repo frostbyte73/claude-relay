@@ -81,6 +81,8 @@ Match the repo's existing conventions, then apply the house-style rules and the 
 
 Don't expand scope. A bug fix fixes the bug; it doesn't refactor the surrounding function. If you spot something else worth changing while you're in there, mention it in your final summary — don't bundle it into the diff.
 
+**When the goal is (or needs) a dependency change, make it — that's implementation, not a separate errand.** Update the manifest and lockfile with the ecosystem's own tooling — `go get <module>@<version>` then `go mod tidy`, `cargo add <crate>@<version>` / `cargo update -p <crate>`, `uv add '<pkg>==<version>'` (quote any specifier containing `>`, or the shell reads it as a redirect), `npm install <pkg>@<version>`, `yarn add` — never by hand-editing a lockfile, and build/test against the new version before you report. Run these from the worktree root, plain: a flag that redirects the command at another manifest or output dir (`--manifest-path`, `--project`, `--target-dir`, `-C`, `--directory`) is denied, because it would write outside the worktree you own. A bump you leave for "someone else" is half a step, and the controller has nowhere to put the other half.
+
 Run the project's tests at least once before declaring done. If the repo has linting or type-checking, run that too. The command lives in the repo's `CLAUDE.md` / `README.md` / `package.json` scripts — use what the repo defines, not a guess.
 
 ## Step 3 — Self-review the diff

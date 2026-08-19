@@ -40,10 +40,33 @@ describe('the edit group anchors every interpreter it grants', () => {
       'go test ./...',
       'go build ./...',
       'go vet ./...',
+      // A dependency bump is implementation work, not a privilege: these download and rewrite
+      // go.mod/go.sum but run no project code — unlike `npm install` above, which runs whatever
+      // postinstall script the registry hands it and has been granted all along.
+      'go get github.com/livekit/server-sdk-go/v2@v2.9.0',
+      'go get -u ./...',
+      'go mod tidy',
+      'go mod download',
+      'go mod edit -require=github.com/livekit/server-sdk-go/v2@v2.9.0',
+      'go mod edit -replace=example.com/a=example.com/b@v1.0.0 -go=1.24',
       'pytest',
       'pytest -k thing',
       'cargo test',
       'cargo clippy',
+      'cargo add serde@1.0.200',
+      'cargo add --dev tokio --features macros,rt-multi-thread',
+      'cargo remove serde',
+      'cargo update',
+      'cargo update -p serde --precise 1.0.200',
+      'cargo update --workspace --dry-run',
+      // python-sdks is a uv project (uv.lock), so uv is the evidenced tool, not bare pip.
+      // A PEP 508 specifier needs quoting — unquoted `>=` is a shell redirect, not an operand.
+      'uv add httpx==0.27.0',
+      "uv add 'httpx>=0.27,<0.29'",
+      'uv add --dev pytest',
+      'uv remove httpx',
+      'uv lock --upgrade-package httpx',
+      'uv sync',
       'turbo test',
       'turbo build --filter=docs',
       'docker info',
@@ -76,9 +99,41 @@ describe('the edit group anchors every interpreter it grants', () => {
       'make',
       'make anything',
       'make deploy',
-      // go: only test/build/vet are named; run/generate execute arbitrary code.
+      // go: run/generate execute arbitrary code, and no `go -C <dir>` reaches another module.
       'go run ./x',
       'go generate ./...',
+      'go -C /repos/other mod tidy',
+      'go tool nm ./x',
+      // `go mod edit` takes flags only — a trailing file operand would rewrite a go.mod
+      // anywhere on the machine, which nothing in the group's file bars covers.
+      'go mod edit -fmt /repos/other/go.mod',
+      'go mod edit',
+      // the rest of `go mod` isn't evidenced; `go mod vendor` writes a whole tree.
+      'go mod vendor',
+      'go mod init example.com/x',
+      // Every dependency-manifest escape needs a path separator, so no operand may carry one:
+      // that one property is what confines cargo/uv to the manifest in their own cwd. `-C` and
+      // `--directory` sit before the subcommand, so the leading anchor excludes them outright.
+      'cargo add serde --manifest-path /repos/other/Cargo.toml',
+      'cargo add serde --manifest-path=../../other/Cargo.toml',
+      'cargo update --manifest-path ../sibling/Cargo.toml',
+      'cargo add serde --target-dir /etc/ssh',
+      'cargo -C /repos/other add serde',
+      'uv add httpx --project /repos/other',
+      'uv sync --directory ../other',
+      'uv --directory ../other add httpx',
+      // uv/cargo verbs that run code or install machine-wide are not part of a bump.
+      'uv run python -c "import os; os.system(\'id\')"',
+      'uv run pytest',
+      'uv pip install --system requests',
+      'uv tool install ruff',
+      'cargo install cargo-audit',
+      'cargo run --bin x',
+      // bare pip is deliberately absent: with no venv it writes machine-wide site-packages,
+      // and no registered project uses it (python-sdks is uv).
+      'pip install requests',
+      'pip3 install -r requirements.txt',
+      'python -m pip install requests',
       // mage: only its two evidenced targets are named.
       'mage clean',
       'mage deploy',
