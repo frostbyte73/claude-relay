@@ -157,22 +157,7 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
 .lib-edit-evidence { margin-bottom: 10px; }
 .lib-edit-evidence ul { margin: 6px 0 0; padding-left: 18px; }
 .lib-edit-evidence li { font-size: 12px; color: var(--text-mute); line-height: 1.5; }
-.lib-edit-diff { margin-bottom: 10px; }
-.lib-edit-diff summary { font-size: 12px; color: var(--accent); cursor: pointer; }
-.lib-edit-md {
-  margin: 8px 0 0;
-  padding: 10px 12px;
-  background: var(--bg);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-control);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-mute);
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
+.lib-edit-card .lib-diff { margin-bottom: 10px; }
 .lib-edit-rules { font-size: 12px; color: var(--text-mute); margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .lib-edit-feedback {
   width: 100%;
@@ -415,9 +400,10 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   margin-top: 6px;
 }
 .lib-rev-pruned { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
-.lib-rev-diff { margin-top: 6px; }
-.lib-rev-diff summary { font-size: 12px; color: var(--accent); cursor: pointer; }
-.lib-rev-lines {
+/* Shared by the revision rows and the proposal review card — see skill-diff-view.js. */
+.lib-diff { margin-top: 6px; }
+.lib-diff summary { font-size: 12px; color: var(--accent); cursor: pointer; }
+.lib-diff-lines {
   margin-top: 8px;
   padding: 8px 0;
   background: var(--bg);
@@ -429,14 +415,29 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   max-height: 320px;
   overflow: auto;
 }
-.lib-rev-line {
+.lib-diff-line {
   padding: 0 10px;
   white-space: pre-wrap;
   color: var(--text-mute);
 }
-.lib-rev-line.add { background: var(--ok-soft); color: var(--ok); }
-.lib-rev-line.del { background: var(--danger-soft); color: var(--danger); }
-.lib-rev-line.hunk { color: var(--text-dim); }
+.lib-diff-line.add { background: var(--ok-soft); color: var(--ok); }
+.lib-diff-line.del { background: var(--danger-soft); color: var(--danger); }
+.lib-diff-line.hunk { color: var(--text-dim); }
+/* The other half of the same block: a new action's SKILL.md, rendered as the file. */
+.lib-diff-body {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-control);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-mute);
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
 .lib-rev-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
 
 /* The shell's list-tab header already shows "Skills" — hide the in-body

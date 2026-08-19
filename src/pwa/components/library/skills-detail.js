@@ -19,6 +19,7 @@ import { startScheduleDraft } from '../schedules/draft.js';
 import { renderComposeForm } from './compose.js';
 import { scorecardSectionHtml, wireScorecard } from './scorecard-card.js';
 import { revisionsSectionHtml, wireRevisions } from './revisions-card.js';
+import { skillBodyHtml, skillDiffHtml } from './skill-change-view.js';
 import { mountInlineSession } from '../work/inline-session.js';
 
 export function renderDetail(mount, deps) {
@@ -202,10 +203,7 @@ function editCardHtml(edit, state) {
       <h4 class="lib-section-hdr o-microhead">Proposal ready</h4>
       ${p.summary ? `<div class="lib-edit-summary">${escapeHtml(p.summary)}</div>` : ''}
       ${evidenceHtml(p.evidence)}
-      <details class="lib-edit-diff">
-        <summary>Proposed SKILL.md (${p.skillMdAfter.length} bytes)${deltaPillHtml(p.netLineDelta)}</summary>
-        <pre class="lib-edit-md">${escapeHtml(p.skillMdAfter)}</pre>
-      </details>
+      ${proposedChangeHtml(p)}
       ${rules ? `<div class="lib-edit-rules">Allowlist additions: ${rules}</div>` : ''}
       <textarea class="lib-edit-feedback" rows="2" placeholder="Feedback for another draft (optional)…"></textarea>
       <div class="lib-edit-actions">
@@ -216,6 +214,21 @@ function editCardHtml(edit, state) {
       <div class="lib-edit-error" hidden></div>
     </div>
   `;
+}
+
+// The daemon sends whichever half is meaningful: `body` for a new action (a file creation —
+// render the file), `diff` for a revision (a change — render the change, the same way a
+// revision row does). The net-delta pill rides the diff only; on a new file "+120 lines" is
+// the file's length, not growth. An identical proposed body is a real if useless proposal, and
+// leaves neither field — without this it would render as a card with nothing in it.
+function proposedChangeHtml(p) {
+  if (p.body !== undefined) return skillBodyHtml(p.body, { label: 'New SKILL.md' });
+  if (!p.diff) return '<div class="lib-edit-status">No change to SKILL.md — the proposed body is identical.</div>';
+  return skillDiffHtml(p.diff, {
+    label: 'Proposed change',
+    suffix: deltaPillHtml(p.netLineDelta),
+    defaultOpen: true,
+  });
 }
 
 // What the proposer cited. An improver must ground every change in observed runs, so this is

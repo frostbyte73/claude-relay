@@ -26,6 +26,7 @@ import {
   type ActionEdit, type ActionProposal,
 } from '../storage/action-edits-store.js';
 import { intakeProposal, ledgerActionFor, onSessionGone } from '../actions/proposal-intake.js';
+import { unifiedSkillDiff } from '../actions/skill-diff.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
@@ -322,6 +323,20 @@ export function applyAllowlistAdds(
     catch (e) { console.warn(`[action-edit] skipping invalid rule ${rule.kind}=${rule.value}: ${(e as Error).message}`); }
   }
   return applied;
+}
+
+// What the review card gets. A revision is a change, so it ships the diff and leaves both
+// bodies here — a reviewer reads a two-line edit as two lines. A brand-new action has no prior
+// body, so there is no change to show and it ships the file itself; diffing it against nothing
+// would only put a `+` in front of every line. Derived on read for the same reason a revision's
+// diff is: the bodies are the source of truth, so a stored diff can disagree with them.
+type ProposalView = Omit<ActionProposal, 'skillMdBefore' | 'skillMdAfter'>
+  & { diff?: string; body?: string };
+
+export function proposalView(p: ActionProposal): ProposalView {
+  const { skillMdBefore, skillMdAfter, ...rest } = p;
+  if (skillMdBefore === '') return { ...rest, body: skillMdAfter };
+  return { ...rest, diff: unifiedSkillDiff(skillMdBefore, skillMdAfter) };
 }
 
 // Hook-facing handlers the daemon wires into HookServer/MCP after this factory
@@ -640,7 +655,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       sessionId: e.sessionId,
       status: e.status,
       startedAt: e.startedAt,
-      proposal: e.proposal,
+      proposal: e.proposal && proposalView(e.proposal),
     }));
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');

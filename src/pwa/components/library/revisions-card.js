@@ -5,7 +5,8 @@
 import { escapeHtml } from '../../util.js';
 import { actionsApi } from '../../net/actions.js';
 import { library } from '../../state/library.js';
-import { revisionDiffLines, revisionRows } from '../../vm/library.js';
+import { revisionRows } from '../../vm/library.js';
+import { skillDiffHtml } from './skill-change-view.js';
 
 export function revisionsSectionHtml(item, libState) {
   if (item.kind !== 'action') return '';
@@ -40,19 +41,9 @@ function diffHtml(row) {
   if (!row.hasBody) {
     return '<div class="lib-rev-pruned">Body no longer retained — too old to restore.</div>';
   }
-  if (!row.diff) return '';
-  // The `diff --git`/`---`/`+++` preamble is noise here — the card is already scoped to one
-  // action's SKILL.md. It stays in the wire format so the diff parses as git output.
-  const lines = revisionDiffLines(row.diff)
-    .filter((l) => l.cls !== 'meta')
-    .map((l) => `<div class="lib-rev-line ${l.cls}">${escapeHtml(l.text)}</div>`)
-    .join('');
-  return `
-    <details class="lib-rev-diff">
-      <summary>View diff${row.bytesText ? ` · ${escapeHtml(row.bytesText)}` : ''}</summary>
-      <div class="lib-rev-lines">${lines}</div>
-    </details>
-  `;
+  return skillDiffHtml(row.diff, {
+    suffix: row.bytesText ? ` · ${escapeHtml(row.bytesText)}` : '',
+  });
 }
 
 function rowHtml(row) {
