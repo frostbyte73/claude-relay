@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   coalesceExternal, deliverImmediate, drainForDelivery, hasUserMessage, shouldDeliver, waitSatisfied,
+  EXTERNAL_QUIET_MS,
 } from '../../src/steps/orchestrated-inbox.js';
 import type { Dispatch, InboxItem, OrchestratedStep, WatchedEvent } from '../../src/work/work-types.js';
 
@@ -154,6 +155,56 @@ describe('shouldDeliver', () => {
   it('delivers only a user message to a gated step', () => {
     expect(shouldDeliver(step({ state: 'gate_pending_approval', inbox: [ci] }), false, 500)).toBe(false);
     expect(shouldDeliver(step({ state: 'gate_pending_approval', inbox: [msg] }), false, 500)).toBe(true);
+  });
+});
+
+// A reviewer leaving four comments over two minutes is one piece of news, not four rounds. The
+// quiet period collapses a burst into a single wake; everything that is not a watcher event goes
+// straight through, because none of it arrives in bursts and all of it is somebody waiting.
+describe('shouldDeliver — the external quiet period', () => {
+  const ext = (at: number, events: WatchedEvent[] = ['pr-comments']) =>
+    item({ kind: 'external', source: 'pr-watcher', summary: 's', events, at } as Partial<InboxItem> & { kind: 'external' });
+  const waiting = (inbox: InboxItem[], over: Partial<OrchestratedStep> = {}) => step({
+    state: 'waiting',
+    waitingOn: { reason: 'watching', events: ['ci', 'pr-comments'] },
+    inbox, ...over,
+  });
+
+  it('holds a matching event until the quiet period elapses', () => {
+    const s = waiting([ext(1000)]);
+    expect(shouldDeliver(s, false, 1000 + EXTERNAL_QUIET_MS - 1)).toBe(false);
+    expect(shouldDeliver(s, false, 1000 + EXTERNAL_QUIET_MS)).toBe(true);
+  });
+
+  // Measured from the OLDEST held item, never the newest — a PR that keeps churning would
+  // otherwise push the deadline out forever and the controller would never hear about any of it.
+  it('measures from the oldest held item, so sustained chatter cannot starve the wake', () => {
+    const s = waiting([ext(1000), ext(1000 + EXTERNAL_QUIET_MS - 1)]);
+    expect(shouldDeliver(s, false, 1000 + EXTERNAL_QUIET_MS)).toBe(true);
+  });
+
+  it('lets a user message through immediately, even mixed in with held events', () => {
+    const said = item({ kind: 'user-message', body: 'stop' } as Partial<InboxItem> & { kind: 'user-message' });
+    expect(shouldDeliver(waiting([ext(1000), said]), false, 1500)).toBe(true);
+  });
+
+  // A settled dispatch is the controller's own child reporting back, not PR chatter.
+  it('lets a settled dispatch through immediately', () => {
+    const done = item({ kind: 'dispatch-done', dispatchId: 'd1', at: 1000 } as Partial<InboxItem> & { kind: 'dispatch-done' });
+    const s = waiting([done], { waitingOn: { reason: 'children', untilAllDispatchesDone: true } });
+    expect(shouldDeliver(s, false, 1500)).toBe(true);
+  });
+
+  it('does not hold a soak whose timer is already due', () => {
+    const s = waiting([ext(1000)], { waitingOn: { reason: 'soak', events: ['ci'], resumeAt: 1200 } });
+    expect(shouldDeliver(s, false, 1200)).toBe(true);
+  });
+
+  // The hold is about batching news, not about suppressing it — an event that its wait does not
+  // name is still refused outright rather than held and then let through.
+  it('still refuses an event the wait does not name, however long it sits', () => {
+    const s = waiting([ext(1000, ['head-moved'])]);
+    expect(shouldDeliver(s, false, 1000 + EXTERNAL_QUIET_MS * 10)).toBe(false);
   });
 });
 

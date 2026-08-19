@@ -1,5 +1,7 @@
 import { validateNext, type ActionInfo } from '../steps/orchestrated-policy.js';
-import { coalesceExternal, deliverImmediate, drainForDelivery, shouldDeliver } from '../steps/orchestrated-inbox.js';
+import {
+  coalesceExternal, deliverImmediate, drainForDelivery, externalHoldUntil, shouldDeliver,
+} from '../steps/orchestrated-inbox.js';
 import type { Dispatch, InboxItem, NextMove, OrchestratedStep, WatchedEvent } from './work-types.js';
 
 export interface OrchestratedHost {
@@ -12,6 +14,11 @@ export interface OrchestratedHost {
   spawnDispatch(jobId: string, stepId: string, dispatch: Dispatch): void;
   resolveStep(jobId: string, stepId: string, output: string): void;
   failStep(jobId: string, stepId: string, reason: string): void;
+  // Re-run delivery for this step at `at` (epoch ms). The only thing that ever un-holds a batch
+  // parked by the external quiet period: nothing else is guaranteed to come along, since the
+  // watcher pushes only when a signal moves and a quiet PR moves nothing. Idempotent per step —
+  // a later call replaces an earlier one.
+  scheduleDelivery(jobId: string, stepId: string, at: number): void;
   actionInfo: ActionInfo;
   newId(): string;
   now(): number;
@@ -234,7 +241,15 @@ export function deliverInbox(host: OrchestratedHost, jobId: string, stepId: stri
     step = host.getStep(jobId, stepId)!;
   }
   const working = step.sessionId ? host.sessionWorking(step.sessionId) : false;
-  if (!shouldDeliver(step, working, host.now())) return;
+  if (!shouldDeliver(step, working, host.now())) {
+    // Arm the wake the quiet period is waiting on. Only when the session is idle: a batch held
+    // behind a live turn is re-checked when that turn ends, and arming here would race it.
+    if (!working) {
+      const at = externalHoldUntil(step, host.now());
+      if (at !== undefined) host.scheduleDelivery(jobId, stepId, at);
+    }
+    return;
+  }
   host.mutateStep(jobId, stepId, (s) => drainForDelivery(s).step);
   host.resumeController(jobId, stepId, undefined, undefined);
 }

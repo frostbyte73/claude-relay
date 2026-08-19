@@ -155,12 +155,26 @@ function commentsFrom(view: GhPrView, inline: GhInlineComment[]): PrComment[] {
 
 
 
-// Which watched signals the freshly polled facts actually moved. This is the whole of
-// what the watcher tells a controller: what changed, never what it means.
-function changedSignals(prev: PrFacts, next: Partial<PrFacts>): WatchedEvent[] {
+// Is this CI result one the controller's ladder has a row for? `pending` is not: row 9 needs a
+// SETTLED failure and row 13 needs success, so a wake carrying "CI started" can only re-arm the
+// same wait — and it is the controller's own fix-ci push that causes it. Plain green is not
+// either, until review has approved: row 13 is the only row reading `success`, and it reads
+// `reviewState` alongside it. Suppressing green *with* an approval would strand the step, since
+// nothing moves afterwards to carry the news, which is why this asks about both.
+function ciWorthWaking(prev: PrFacts, next: Partial<PrFacts>): boolean {
+  if (next.ciState === 'failure') return true;
+  if (next.ciState !== 'success') return false;
+  return (next.reviewState ?? prev.reviewState) === 'approved';
+}
+
+// Which watched signals the freshly polled facts actually moved AND are worth a round. This is
+// the whole of what the watcher tells a controller: what changed, never what it means.
+function changedSignals(
+  prev: PrFacts, next: Partial<PrFacts>, actionableComments: boolean,
+): WatchedEvent[] {
   const moved = <K extends keyof PrFacts>(k: K) => next[k] !== undefined && next[k] !== prev[k];
   const events: WatchedEvent[] = [];
-  if (moved('ciState')) events.push('ci');
+  if (moved('ciState') && ciWorthWaking(prev, next)) events.push('ci');
   if (moved('reviewState')) events.push('review-state');
   // Mergeability rides on `pr-state`: a PR that just started conflicting is the
   // controller's problem now, and there is no separate signal for it to wait on.
@@ -170,10 +184,27 @@ function changedSignals(prev: PrFacts, next: Partial<PrFacts>): WatchedEvent[] {
   // reporting the sha it just learned as a push would send a live controller off to
   // re-verify a head nobody touched.
   if (prev.headRefOid !== undefined && moved('headRefOid')) events.push('head-moved');
-  if (next.comments && hashComments(next.comments) !== hashComments(prev.comments ?? [])) {
+  if (next.comments && hashComments(next.comments) !== hashComments(prev.comments ?? [])
+      && actionableComments) {
     events.push('pr-comments');
   }
   return events;
+}
+
+// Did the comment set change in a way the controller did not cause itself? Row 10 only matches
+// comments that are "not yours", so a wake carrying nothing but our own just-posted reply is
+// spent re-arming the same wait. A change with no fresh ids (an edit, a deletion) is nobody's
+// post in particular and still wakes — we cannot attribute it, and it is rare.
+function commentsWorthWaking(fresh: PrComment[], viewer: string | undefined): boolean {
+  if (!fresh.length) return true;
+  if (!viewer) return true;
+  return fresh.some((c) => normalizeLogin(c.author) !== viewer);
+}
+
+// GitHub spells a bot's login `name[bot]` in some payloads and `name` in others, and casing is
+// not significant. Only ever compared against another normalized login.
+function normalizeLogin(login: string): string {
+  return login.toLowerCase().replace(/\[bot\]$/, '');
 }
 
 // Deliberately not a watched signal: individual checks finish constantly while the
@@ -258,6 +289,8 @@ export class PrWatcher {
   // 15m so a fresh push (CI back to pending), a new review, etc. surface within
   // a minute instead of on the next hourly sweep. A new change resets the ladder.
   private readonly escalationTimers = new Map<string, NodeJS.Timeout[]>();
+  // undefined until `gh api user` answers; see viewer().
+  private viewerLogin?: string;
   private static readonly ESCALATION_MS = [60_000, 5 * 60_000, 15 * 60_000];
 
   constructor(private readonly opts: PrWatcherOpts) {
@@ -437,13 +470,33 @@ export class PrWatcher {
     if (kept.length !== iterations.length) this.opts.engine.applyPrFacts(jobId, s.id, facts, kept);
     else this.opts.engine.applyPrFacts(jobId, s.id, facts);
 
-    const events = changedSignals(fromKnownUrl ? { ...prev, prUrl } : prev, facts);
+    const viewer = await this.viewer(cwd);
+    const ours = viewer ? fresh.filter((c) => normalizeLogin(c.author) === viewer).length : 0;
+    const events = changedSignals(
+      fromKnownUrl ? { ...prev, prUrl } : prev, facts, commentsWorthWaking(fresh, viewer),
+    );
     if (events.length) {
       this.opts.engine.pushStepInbox(jobId, s.id, {
-        kind: 'external', source: 'pr-watcher', summary: summarize(events, facts, fresh.length), events,
+        kind: 'external', source: 'pr-watcher', summary: summarize(events, facts, fresh.length - ours), events,
       });
     }
     if (events.length || checksMoved(prev, facts)) this.noteChanged(jobId);
+  }
+
+  // The account this daemon posts as, normalized, so a comment we just wrote is not mistaken for
+  // news. Resolved once and cached for the process; a failure is NOT cached, so a momentarily
+  // broken `gh` costs one extra call per sweep rather than disabling the filter until restart.
+  // Unresolved means every comment wakes — the filter fails open by construction.
+  private async viewer(cwd: string): Promise<string | undefined> {
+    if (this.viewerLogin !== undefined) return this.viewerLogin;
+    try {
+      const login = (JSON.parse(await this.runGh(cwd, ['api', 'user'])) as { login?: string }).login;
+      if (login) this.viewerLogin = normalizeLogin(login);
+      return this.viewerLogin;
+    } catch (e) {
+      console.error(`[pr-watcher] viewer lookup: ${(e as Error).message}`);
+      return undefined;
+    }
   }
 
   private async discoverPr(cwd: string, branch: string): Promise<string | undefined> {

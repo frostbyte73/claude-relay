@@ -3,6 +3,7 @@ import {
   applyMove, deliverInbox, pushInbox, resolveGate, type OrchestratedHost,
 } from '../../src/work/orchestrated-runner.js';
 import { MAX_CONSECUTIVE_SELF_ROUNDS, MAX_ROUNDS } from '../../src/steps/orchestrated-policy.js';
+import { EXTERNAL_QUIET_MS } from '../../src/steps/orchestrated-inbox.js';
 import type { InboxItem, OrchestratedStep } from '../../src/work/work-types.js';
 
 function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
@@ -17,6 +18,7 @@ function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
 function host(initial: OrchestratedStep, working = false) {
   let cur = initial;
   let ids = 0;
+  let clock = 1000;
   const h: OrchestratedHost = {
     getStep: () => cur,
     mutateStep: (_j, _s, fn) => { cur = fn(cur); },
@@ -25,6 +27,7 @@ function host(initial: OrchestratedStep, working = false) {
     spawnDispatch: vi.fn(),
     resolveStep: vi.fn(),
     failStep: vi.fn(),
+    scheduleDelivery: vi.fn(),
     actionInfo: {
       sideEffects: (a) => ({
         'code.implement': 'worktree-edit', 'code.fix-ci': 'external-write',
@@ -32,9 +35,9 @@ function host(initial: OrchestratedStep, working = false) {
       } as Record<string, 'none' | 'worktree-edit' | 'external-write'>)[a],
     },
     newId: () => `n${++ids}`,
-    now: () => 1000,
+    now: () => clock,
   };
-  return { h, get: () => cur };
+  return { h, get: () => cur, advance: (ms: number) => { clock += ms; } };
 }
 
 describe('applyMove', () => {
@@ -469,15 +472,46 @@ describe('pushInbox / deliverInbox', () => {
     expect(get().inbox).toHaveLength(2);
   });
 
+  // A watcher event parked by the quiet period has nothing else coming to release it: the watcher
+  // pushes only when a signal MOVES, and a PR that has gone quiet moves nothing. Without this the
+  // batch would sit in the inbox until the next unrelated event, or forever.
+  it('arms the wake that ends a held quiet period', () => {
+    const { h } = host(step({ state: 'waiting', waitingOn: { reason: 'watching', events: ['ci'] } }));
+    pushInbox(h, 'j1', 's1', { kind: 'external', source: 'pr-watcher', summary: 'CI failure', events: ['ci'] });
+    expect(h.resumeController).not.toHaveBeenCalled();
+    expect(h.scheduleDelivery).toHaveBeenCalledWith('j1', 's1', 1000 + EXTERNAL_QUIET_MS);
+  });
+
+  // The turn ending is itself a delivery re-check, so arming here would race it.
+  it('does not arm one while the session is mid-turn', () => {
+    const { h } = host(step({ state: 'waiting', waitingOn: { reason: 'watching', events: ['ci'] } }), true);
+    pushInbox(h, 'j1', 's1', { kind: 'external', source: 'pr-watcher', summary: 'CI failure', events: ['ci'] });
+    expect(h.scheduleDelivery).not.toHaveBeenCalled();
+  });
+
+  it('arms nothing when there is no hold to end', () => {
+    const { h } = host(step({ state: 'waiting', waitingOn: { reason: 'ci', events: ['ci'] } }));
+    pushInbox(h, 'j1', 's1', msg);
+    expect(h.resumeController).toHaveBeenCalledTimes(1);
+    expect(h.scheduleDelivery).not.toHaveBeenCalled();
+  });
+
   it('holds a non-matching watcher event, then delivers both at once on a match', () => {
-    const { h, get } = host(step({ state: 'waiting', waitingOn: { reason: 'c', events: ['pr-comments'] } }));
+    const { h, get, advance } = host(step({ state: 'waiting', waitingOn: { reason: 'c', events: ['pr-comments'] } }));
     pushInbox(h, 'j1', 's1', { kind: 'external', source: 'pr-watcher', summary: 'ci red', events: ['ci'] });
     expect(h.resumeController).not.toHaveBeenCalled();
     expect(get().inbox).toHaveLength(1);
 
     pushInbox(h, 'j1', 's1', { kind: 'external', source: 'pr-watcher', summary: 'new comment', events: ['pr-comments'] });
+    // A matching event alone is no longer enough — the burst still sits out its quiet period.
+    expect(h.resumeController).not.toHaveBeenCalled();
+    expect(get().inbox).toHaveLength(2);
+
+    advance(EXTERNAL_QUIET_MS);
+    deliverInbox(h, 'j1', 's1');
     expect(h.resumeController).toHaveBeenCalledTimes(1);
     expect(get().inbox).toEqual([]);
+    expect(get().lastDelivered).toHaveLength(2);
   });
 
   it('deliverInbox is a no-op on an empty inbox', () => {

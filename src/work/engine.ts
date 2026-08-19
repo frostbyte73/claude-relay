@@ -214,6 +214,9 @@ export class WorkEngine {
   // step enters a timed wait, cleared on resume/resolve/abandon, and rebuilt at boot by
   // reconcileWaits (setTimeout does not survive a daemon restart).
   private readonly waitTimers = new Map<string, NodeJS.Timeout>();
+  // Per orchestrated step: the pending re-check that ends an external quiet period. Same
+  // restart story as waitTimers — see scheduleDelivery.
+  private readonly deliveryTimers = new Map<string, NodeJS.Timeout>();
   // Per step session: a pending "ended without submitting" check, armed at the Stop hook
   // and cancelled by further activity on the session. A turn boundary is not proof the
   // round is over — a session that yields while background subagents run gets re-invoked
@@ -1182,6 +1185,23 @@ export class WorkEngine {
     this.waitTimers.set(key, t);
   }
 
+  // Re-run delivery once a step's external quiet period lapses. Ticking the job is enough: the
+  // orchestrated handler's decide() re-asks shouldDeliver and returns deliver-inbox when the hold
+  // has expired, so this needs no state beyond the timer itself. Like the soak timers, these do
+  // not survive a restart — a held batch is then re-armed by whatever poll or resume comes next,
+  // and the watcher sweep is on a 5-minute cron, so nothing strands for long.
+  private scheduleDelivery(jobId: string, stepId: string, at: number): void {
+    const key = `${jobId}:${stepId}`;
+    const existing = this.deliveryTimers.get(key);
+    if (existing) clearTimeout(existing);
+    const t = setTimeout(() => {
+      this.deliveryTimers.delete(key);
+      void this.tick(jobId);
+    }, Math.min(Math.max(0, at - this.ctx.now()), 2_147_483_647));
+    if (typeof t.unref === 'function') t.unref();
+    this.deliveryTimers.set(key, t);
+  }
+
   private clearWaitTimer(jobId: string, stepId: string): void {
     const key = `${jobId}:${stepId}`;
     const t = this.waitTimers.get(key);
@@ -1765,6 +1785,7 @@ export class WorkEngine {
       },
       resolveStep: (jobId, stepId, output) => this.resolveStepByController(jobId, stepId, output),
       failStep: (jobId, stepId, reason) => this.onStepFailed(jobId, stepId, reason),
+      scheduleDelivery: (jobId, stepId, at) => this.scheduleDelivery(jobId, stepId, at),
       actionInfo: {
         sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
       },

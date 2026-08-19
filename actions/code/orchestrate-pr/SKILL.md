@@ -330,6 +330,24 @@ before deciding — never infer the state of the world from the event name.
 
 The five signals are `ci`, `review-state`, `pr-state`, `pr-comments` and `head-moved`.
 
+**Silence is not the absence of change.** The daemon wakes you when a signal reaches a value
+this ladder has a row for — not every time one moves — because every wake costs you a round.
+Three things deliberately happen without waking you:
+
+- **CI going to `pending`.** Your own `code.fix-ci` push causes it, and no row reads it.
+- **CI going green while review has not approved.** Row 13 is the only row that reads
+  `success`, and it needs the approval too. When the approval lands, `review-state` wakes you
+  and `pr.ciState` is already green — so read both, never assume the green was announced.
+- **A comment posted by the account this daemon writes as.** Your own replies are not news.
+
+So `pr` in your envelope can legitimately be *ahead* of anything you were ever told about. That
+is the same discipline §4 already demands — re-derive from `pr`, never from the event name —
+just with more riding on it.
+
+**Wakes are batched.** A watcher event is held for a short quiet period so a reviewer leaving
+four comments over two minutes costs one round, not four. One `external` item can therefore
+stand for several changes at once, and its `events[]` is the union of them.
+
 **`head-moved` is not for you — wait on the four.** It fires when the PR's head commit changes,
 and on this step the head moves because *you* moved it: `code.fix-ci` and
 `code.resolve-conflicts` both push. Naming it in a `wait` means every fix you dispatch wakes you

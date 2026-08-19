@@ -47,6 +47,26 @@ export function coalesceExternal(inbox: InboxItem[], incoming: InboxItem): Inbox
   return [...kept, incoming];
 }
 
+// How long a batch of watcher events sits before it is handed over. A reviewer leaving four
+// comments over two minutes is one piece of news, and each delivery costs the controller a round
+// against MAX_ROUNDS — so the wake it gets should describe the whole burst, not its first frame.
+export const EXTERNAL_QUIET_MS = 120_000;
+
+// When the currently-held batch of watcher events becomes deliverable, or undefined if nothing is
+// being held back. Measured from the OLDEST held item so a PR that keeps churning still gets its
+// wake on schedule; deadline-from-newest would let sustained chatter defer it forever.
+//
+// Only a batch that is ENTIRELY watcher events is ever held. A user message, a settled dispatch, a
+// resolved gate, a policy rejection or a due soak timer is somebody actually waiting on the
+// controller, and none of them arrive in bursts, so batching them would buy nothing.
+export function externalHoldUntil(step: OrchestratedStep, now: number): number | undefined {
+  if (!step.inbox.length || !step.inbox.every((i) => i.kind === 'external')) return undefined;
+  const resumeAt = step.waitingOn?.resumeAt;
+  if (resumeAt !== undefined && now >= resumeAt) return undefined;
+  const until = Math.min(...step.inbox.map((i) => i.at)) + EXTERNAL_QUIET_MS;
+  return until > now ? until : undefined;
+}
+
 export function shouldDeliver(step: OrchestratedStep, sessionWorking: boolean, now: number): boolean {
   if (sessionWorking) return false;
   if (step.inbox.length === 0) return false;
@@ -54,7 +74,9 @@ export function shouldDeliver(step: OrchestratedStep, sessionWorking: boolean, n
   // A gated step is the user's turn, not the controller's — except that a message may
   // be the instruction to abandon the gate entirely.
   if (step.state === 'gate_pending_approval') return hasUserMessage(step);
-  return hasUserMessage(step) || waitSatisfied(step, now);
+  if (hasUserMessage(step)) return true;
+  if (!waitSatisfied(step, now)) return false;
+  return externalHoldUntil(step, now) === undefined;
 }
 
 export function drainForDelivery(step: OrchestratedStep): { step: OrchestratedStep; items: InboxItem[] } {

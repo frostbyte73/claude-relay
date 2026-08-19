@@ -19,7 +19,7 @@ interface Facts {
   prState?: string;
   mergeable?: string;
   headRefOid?: string;
-  comments?: Array<{ id: string; body: string }>;
+  comments?: Array<{ id: string; body: string; author?: string }>;
 }
 
 function orchestratedStepWithPr(pr: Facts) {
@@ -36,27 +36,36 @@ function orchestratedStepWithPr(pr: Facts) {
 }
 
 // Wraps the `gh pr view` fixture with `over` merged in, spelled the way GitHub spells it.
-function stubGh(over: Facts = {}) {
+function stubGh(over: Facts = {}, viewer = 'dc') {
   const view = JSON.stringify({
     number: 15282, url: PR_URL, state: PR_STATE[over.prState ?? 'open'],
     reviews: [],
     comments: (over.comments ?? []).map((c) => ({
-      id: c.id, author: { login: 'devin' }, body: c.body, createdAt: '2026-01-01T00:00:00Z',
+      id: c.id, author: { login: c.author ?? 'devin' }, body: c.body, createdAt: '2026-01-01T00:00:00Z',
     })),
     ...(over.ciState ? { statusCheckRollup: [ROLLUP[over.ciState]] } : {}),
     ...(over.reviewState ? { reviewDecision: REVIEW[over.reviewState] } : {}),
     ...(over.mergeable ? { mergeable: over.mergeable.toUpperCase() } : {}),
     ...(over.headRefOid ? { headRefOid: over.headRefOid } : {}),
   });
-  return async (_cwd: string, args: string[]) => (args[0] === 'api' ? '[]' : view);
+  return async (_cwd: string, args: string[]) => {
+    if (args[0] === 'api' && args[1] === 'user') return JSON.stringify({ login: viewer });
+    return args[0] === 'api' ? '[]' : view;
+  };
 }
 
-function harness(step: ReturnType<typeof orchestratedStepWithPr>, gh: Facts = {}) {
+function harness(step: ReturnType<typeof orchestratedStepWithPr>, gh: Facts = {}, viewer = 'dc') {
   const job = { id: 'j1', steps: [step] };
   const queue = { get: () => job, list: () => [job] } as never;
   const engine = { applyPrFacts: vi.fn(), pushStepInbox: vi.fn() };
-  const watcher = new PrWatcher({ queue, engine: engine as never, runGh: stubGh(gh) });
+  const watcher = new PrWatcher({ queue, engine: engine as never, runGh: stubGh(gh, viewer) });
   return { watcher, engine };
+}
+
+// The events pushed by a single sync, or [] if the watcher stayed quiet.
+function eventsFrom(engine: { pushStepInbox: { mock: { calls: unknown[][] } } }): string[] {
+  const call = engine.pushStepInbox.mock.calls[0];
+  return call ? ((call[2] as { events: string[] }).events) : [];
 }
 
 describe('PrWatcher over an orchestrated step', () => {
@@ -210,12 +219,24 @@ describe('PrWatcher over an orchestrated step', () => {
     // fold them together, never drop one.
     it('leaves the other four signals exactly as they were', async () => {
       const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'pending', headRefOid: 'abc1234' }),
+        { ciState: 'failure', headRefOid: 'def4567' },
+      );
+      await watcher.syncJob('j1');
+      const [, , item] = engine.pushStepInbox.mock.calls[0]!;
+      expect(new Set(item.events)).toEqual(new Set(['ci', 'head-moved']));
+    });
+
+    // The same push with CI merely restarting: head-moved still stands on its own, and the
+    // `pending` rung is dropped rather than riding along on the back of a real signal.
+    it('reports the head move alone when the push only restarted CI', async () => {
+      const { watcher, engine } = harness(
         orchestratedStepWithPr({ ciState: 'success', headRefOid: 'abc1234' }),
         { ciState: 'pending', headRefOid: 'def4567' },
       );
       await watcher.syncJob('j1');
       const [, , item] = engine.pushStepInbox.mock.calls[0]!;
-      expect(new Set(item.events)).toEqual(new Set(['ci', 'head-moved']));
+      expect(new Set(item.events)).toEqual(new Set(['head-moved']));
     });
 
     it('reports only ci when the head held still', async () => {
@@ -320,6 +341,121 @@ describe('PrWatcher over an orchestrated step', () => {
       await watcher.syncJob('j1');
       expect(ghCalls).toHaveLength(0);
       expect(engine.applyPrFacts).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// The watcher's job is to wake a controller when a signal reaches a value its ladder can act
+// on — not whenever a signal moves. Every wake costs a round, and one that lands on a rung the
+// ladder has no row for is spent re-arming the same wait. See `orchestrate-pr/SKILL.md`.
+describe('PrWatcher — waking only on what the ladder can act on', () => {
+  describe('CI', () => {
+    // Row 9 needs a SETTLED failure; row 13 needs success. `pending` is neither, so the
+    // controller can do nothing but wait again — and it is the controller's own fix-ci push
+    // that puts CI back into it.
+    it('stays quiet when CI goes back to pending on a fresh push', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'success' }), { ciState: 'pending' },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).not.toContain('ci');
+    });
+
+    it('wakes on a CI failure — that is row 9', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'pending' }), { ciState: 'failure' },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toContain('ci');
+    });
+
+    // Green with nothing to merge into is the expected case, and row 13 needs the approval too.
+    it('stays quiet when CI goes green but review has not approved yet', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'pending', reviewState: 'review_required' }),
+        { ciState: 'success', reviewState: 'review_required' },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toEqual([]);
+    });
+
+    // ...but green on an already-approved PR IS row 13 firing. Suppressing this one strands the
+    // step: nothing else moves afterwards, so no later wake would ever carry the news.
+    it('wakes when CI goes green on an already-approved PR', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'pending', reviewState: 'approved' }),
+        { ciState: 'success', reviewState: 'approved' },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toContain('ci');
+    });
+
+    it('wakes when the approval and the green land in the same poll', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'pending', reviewState: 'review_required' }),
+        { ciState: 'success', reviewState: 'approved' },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toContain('ci');
+    });
+
+    // Suppressing the wake must not suppress the fact — the controller reads ciState off its
+    // envelope on whatever wakes it next, and the badge in the PWA reads the same field.
+    it('still records a suppressed CI state', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ ciState: 'success' }), { ciState: 'pending' },
+      );
+      await watcher.syncJob('j1');
+      expect(engine.applyPrFacts).toHaveBeenCalledWith('j1', 's1', expect.objectContaining({ ciState: 'pending' }));
+    });
+  });
+
+  describe('comments', () => {
+    it('stays quiet when the only new comment is one we posted ourselves', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ comments: [] }),
+        { comments: [{ id: '1', body: 'replying to the review', author: 'dc' }] },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).not.toContain('pr-comments');
+    });
+
+    it('wakes on a comment from anybody else', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ comments: [] }),
+        { comments: [{ id: '1', body: 'this looks wrong', author: 'milos' }] },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toContain('pr-comments');
+    });
+
+    it('wakes when our own reply arrives alongside somebody elses', async () => {
+      const { watcher, engine } = harness(
+        orchestratedStepWithPr({ comments: [] }),
+        { comments: [
+          { id: '1', body: 'replying', author: 'dc' },
+          { id: '2', body: 'one more thing', author: 'milos' },
+        ] },
+      );
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toContain('pr-comments');
+    });
+
+    // Fail open: an identity we could not resolve must never silence a real comment.
+    it('wakes on every comment when the viewer login cannot be resolved', async () => {
+      const job = { id: 'j1', steps: [orchestratedStepWithPr({ comments: [] })] };
+      const queue = { get: () => job, list: () => [job] } as never;
+      const engine = { applyPrFacts: vi.fn(), pushStepInbox: vi.fn() };
+      const inner = stubGh({ comments: [{ id: '1', body: 'mine', author: 'dc' }] });
+      const watcher = new PrWatcher({
+        queue, engine: engine as never,
+        runGh: async (cwd: string, args: string[]) => {
+          if (args[0] === 'api' && args[1] === 'user') throw new Error('gh: not authenticated');
+          return inner(cwd, args);
+        },
+      });
+      await watcher.syncJob('j1');
+      expect(eventsFrom(engine)).toContain('pr-comments');
     });
   });
 });
