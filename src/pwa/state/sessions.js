@@ -484,13 +484,16 @@ function makeSliceApi(id) {
       store.set((s) =>
         withSlice(s, id, (sl) => (sl.pendingDefaultPush === next ? sl : { ...sl, pendingDefaultPush: next })));
     },
-    startThinking() {
+    // `startedAt` lets a client that learned about an already-running turn (the
+    // daemon's session_state on attach) show the real elapsed time rather than
+    // restarting the clock at whatever moment it happened to connect.
+    startThinking(startedAt) {
       store.set((s) => {
         const withEnsured = ensureSliceInState(s, id);
         return withSlice(withEnsured, id, (sl) => ({
           ...sl,
           thinking: true,
-          thinkingStartedAt: Date.now(),
+          thinkingStartedAt: typeof startedAt === 'number' && startedAt > 0 ? startedAt : Date.now(),
           thinkingOutputTokens: 0,
           thinkingOutputChars: 0,
         }));
@@ -538,6 +541,31 @@ function seedEditExpansion(expandedTools, msg) {
   const next = new Set(expandedTools);
   next.add(msg.toolUseId);
   return next;
+}
+
+// Reconcile the thinking strip against the daemon's authoritative turn state,
+// carried on every `session_state` frame (i.e. on every attach + reattach).
+//
+// Everything else the client knows about the strip is inferred from the model's
+// own stream: it starts on the first event of a turn and stops on the terminal
+// stop_reason. A client that isn't connected when that terminal event goes past
+// never learns the turn ended — and replay can't always save it, since the
+// daemon's event log is bounded (10 min / 5000 events) and a respawn starts a
+// fresh one. That left the strip and its interrupt button spinning forever on a
+// session that had finished, which is exactly what a long turn plus a
+// backgrounded PWA produces. The daemon knows (SessionManager.working, cleared
+// at the Stop hook), so it now says so and this applies the answer.
+//
+// A daemon that doesn't send the field (older build) gets no opinion imposed.
+export function reconcileTurnState(id, { working, workingSince } = {}) {
+  if (!id || typeof working !== 'boolean') return;
+  const sl = store.get().sessionsById.get(id);
+  if (!sl) return;
+  if (!working) {
+    if (sl.thinking) makeSliceApi(id).stopThinking();
+    return;
+  }
+  if (!sl.thinking) makeSliceApi(id).startThinking(workingSince);
 }
 
 // ── Tool-tracking helpers ───────────────────────────────────────────────

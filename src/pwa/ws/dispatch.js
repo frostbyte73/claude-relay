@@ -295,6 +295,16 @@ const sessionHandlers = {
     if (touched && isCurrent) deps.renderSession();
   },
 
+  // The daemon's Stop hook fired: the assistant ended its turn. The stream's own
+  // terminal stop_reason normally gets there first — this is the backstop for a
+  // client that was disconnected across it, or that never saw one (an assistant
+  // frame carrying no block this handler recognises returns before the check).
+  daemon_turn_end(_msg, sid, isCurrent) {
+    if (!sessions.getSlice(sid)?.thinking) return;
+    deps.stopThinking(sid);
+    if (isCurrent) deps.renderSession();
+  },
+
   daemon_error(msg, sid, isCurrent) {
     if (deps.state.pendingNewSession && deps.state.pendingNewSession.id === sid) {
       const failedCwd = deps.state.pendingNewSession.cwd;

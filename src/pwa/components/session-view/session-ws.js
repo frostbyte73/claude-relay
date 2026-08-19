@@ -13,7 +13,7 @@
 // is published to state/conn.js so the UI's indicator and disconnect banner
 // stay in sync without polling.
 
-import { sessions } from '../../state/sessions.js';
+import { sessions, reconcileTurnState } from '../../state/sessions.js';
 import { conn } from '../../state/conn.js';
 import { catchUpFromDisk, openSession, refreshSessions } from '../../app-bridge.js';
 
@@ -101,6 +101,10 @@ function connect(id) {
           && id === sessions.get().currentSessionId) {
         sessions.set((s) => ({ ...s, currentSessionSpawnCwd: msg.spawnCwd }));
       }
+      // The daemon's turn state is authoritative — a reconnect that lands past the
+      // replay window would otherwise inherit whatever the strip believed before the
+      // socket dropped. See reconcileTurnState.
+      reconcileTurnState(id, msg);
       return;
     }
     if (msg.type === 'replay_gap') {

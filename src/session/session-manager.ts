@@ -166,12 +166,18 @@ export class SessionManager {
     s.clients.add(ws);
     this.cancelIdleTimer(s);
 
-    // Protocol frame, no _seq.
+    // Protocol frame, no _seq. `working`/`workingSince` are the authoritative turn state:
+    // the client's thinking strip is otherwise a pure guess derived from the event stream,
+    // and a reconnect that lands past the replay window (or after a respawn, which resets
+    // the log) never sees the turn's terminal event — leaving the strip spinning forever
+    // on a session that finished minutes ago.
     ws.send(JSON.stringify({
       type: 'session_state',
       latestSeq: s.eventLog.latestSeq(),
       earliestSeq: s.eventLog.earliestSeq(),
       spawnCwd: s.spawnCwd,
+      working: this.isWorking(s.id),
+      workingSince: this.workingSince(s.id),
     }));
 
     if (since > 0 && since < s.eventLog.earliestSeq() - 1) {
@@ -196,7 +202,9 @@ export class SessionManager {
     const s = this.active.get(sessionId);
     if (!s) throw new Error(`session ${sessionId} not active`);
     s.lastActivity = Date.now();
-    this.working.add(sessionId);
+    // Don't restamp a turn already in flight — a queued follow-up message would
+    // otherwise reset the strip's elapsed clock mid-turn.
+    if (!this.working.has(sessionId)) this.working.set(sessionId, Date.now());
     if (typeof message === 'object' && message !== null
         && (message as { type?: string }).type === 'user'
         && this.opts.onTurnStart) {
@@ -241,6 +249,14 @@ export class SessionManager {
     return this.active.has(sessionId) && this.working.has(sessionId);
   }
 
+  // When the in-flight turn started, or null if the session isn't working. Lets a
+  // client that attached mid-turn show a truthful elapsed time instead of restarting
+  // the clock at whatever moment it happened to reconnect.
+  workingSince(sessionId: string): number | null {
+    if (!this.isWorking(sessionId)) return null;
+    return this.working.get(sessionId) ?? null;
+  }
+
   // 'foreground' = live proc with a PWA client attached; 'background' = live proc,
   // no client (detached step sessions, backgrounded tabs); 'idle' = no proc.
   runState(sessionId: string): 'foreground' | 'background' | 'idle' {
@@ -267,7 +283,7 @@ export class SessionManager {
     if (this.active.has(sessionId)) return;
     if (permissionMode) this.permissionModes.set(sessionId, permissionMode);
     const s = this.spawn(sessionId, cwd, extraEnv);
-    this.working.add(sessionId);
+    this.working.set(sessionId, Date.now());
     // Detached sessions have no WS to trigger the idle timer on close — arm it at spawn
     // so a session that finishes its turn and is never approved/rejected gets reaped.
     // Subsequent PWA attach/detach cycles cancel and re-arm normally.
@@ -282,12 +298,12 @@ export class SessionManager {
 
   private readonly permissionModes = new Map<string, 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'>();
   private readonly sessionModels = new Map<string, SessionModel>();
-  // Sessions currently executing a turn. Set when a session is spawned or sent a
-  // prompt; cleared at the Stop hook (markTurnEnded) or when the proc goes away.
-  // This is the liveness signal for the PWA Tracked "Running" bucket — a session
-  // kept alive after finishing its turn (idle-reap is 15 min out) must NOT read
-  // as working.
-  private readonly working = new Set<string>();
+  // Sessions currently executing a turn → the ms timestamp that turn started. Set
+  // when a session is spawned or sent a prompt; cleared at the Stop hook
+  // (markTurnEnded) or when the proc goes away. This is the liveness signal for the
+  // PWA Tracked "Running" bucket — a session kept alive after finishing its turn
+  // (idle-reap is 15 min out) must NOT read as working.
+  private readonly working = new Map<string, number>();
 
   private spawn(sessionId: string, cwd: string, extraEnv?: Record<string, string>): ActiveSession {
     this.sessionCwds.set(sessionId, cwd);
@@ -366,7 +382,11 @@ export class SessionManager {
     this.active.delete(oldId);
     s.id = newId;
     this.active.set(newId, s);
-    if (this.working.delete(oldId)) this.working.add(newId);
+    const workingSince = this.working.get(oldId);
+    if (workingSince !== undefined) {
+      this.working.delete(oldId);
+      this.working.set(newId, workingSince);
+    }
     this.sessionCwds.set(newId, s.spawnCwd);
     const model = this.sessionModels.get(oldId);
     if (model) this.sessionModels.set(newId, model);

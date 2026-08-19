@@ -570,6 +570,12 @@ async function main() {
       const sessionId = payload.session_id;
       if (!sessionId) return;
       manager.markTurnEnded(sessionId);
+      // Mirror that onto the wire. The PWA's thinking strip is otherwise driven purely by
+      // the model's own stream, so a client that misses the turn's terminal event keeps
+      // spinning; this rides the event log, so a reconnect inside the replay window
+      // recovers it too. Kept next to markTurnEnded so `working` and what clients believe
+      // can't drift — including on a stale Stop, which clears `working` all the same.
+      manager.broadcast(sessionId, { type: 'daemon_turn_end' });
       // Free the governor slot this turn held BEFORE the stale-Stop / handoff logic below —
       // this must run even on a stale Stop (which skips onSessionTurnEnded) and for orchestrator
       // sessions (which onSessionTurnEnded early-returns on), or a queued follow-up round would
