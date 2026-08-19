@@ -192,6 +192,9 @@ export interface WaitSpec {
   reason: string;
   events?: Array<WatchedEvent | 'dispatches'>;
   untilAllDispatchesDone?: boolean;
+  // Legacy read-only. A controller may no longer arm its own timer — validateNext refuses a
+  // wait carrying this, and the MCP schema doesn't offer it. The runtime half stays because
+  // steps parked before that cutover still hold one on disk and must not hang forever.
   resumeAt?: number;
 }
 
@@ -228,6 +231,12 @@ export interface PrFacts {
   // The PR's head commit. The only fact that tells a controller the author pushed:
   // a fixup on a repo with no CI moves nothing else the watcher can see.
   headRefOid?: string;
+  // origin's head for the step's own branch, polled ONLY while no PR is known yet. Before a
+  // PR exists there is no `gh pr view` to read and nothing else the watcher can see move, so
+  // this is what turns "the user pushed" into a `head-moved` wake instead of a controller
+  // sitting on a self-armed timer. Stops updating once `prUrl` resolves — `headRefOid` is the
+  // same commit from then on, read from the PR itself.
+  branchHeadOid?: string;
   comments?: PrComment[];
   threadHash?: string;
 }

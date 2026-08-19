@@ -69,7 +69,8 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 `delivered` entries are one of: `user-message` (the user typed something — highest signal,
 read it first), `dispatch-done` (a child settled; read its record in `dispatches`),
 `external` (the PR watcher, with `events[]` naming which signals moved — see §4),
-`gate-resolved` (`approved` + optional `feedback`), `timer` (a `resumeAt` elapsed), or
+`gate-resolved` (`approved` + optional `feedback`), `timer` (a legacy soak elapsed — you cannot
+arm one, so you will not normally see this), or
 `policy-rejection` (your last move was refused; `reason` says why, and you get exactly one
 corrective turn — a second rejection with no accepted move in between fails the step).
 
@@ -99,7 +100,7 @@ Your six moves:
 |---|---|---|
 | `self-round` | `{kind:"self-round", action?, note?}` | Resumes *your* session, optionally rebound to `action`'s skill and permissions, with `note` as `boundNote`. |
 | `dispatch` | `{kind:"dispatch", dispatches:[{action, brief, inputs?, workspace?, retryOf?}]}` | Spawns one fresh child session per entry and parks you until all settle. Each child sees **only its brief** — no memo, no artifacts, no envelope of yours. |
-| `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?, resumeAt?}}` | Parks the step until one of `events` fires, all dispatches settle, or `resumeAt` passes. `reason` is shown to the user. |
+| `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?}}` | Parks the step until one of `events` fires or all dispatches settle. `reason` is shown to the user. **You cannot arm a timer** — a wait carrying `resumeAt` is refused (§4). |
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user, showing `draft` as the thing being approved. |
 | `resolve` | `{kind:"resolve", output}` | Step done — **the PR merged**. `output` is the summary the job keeps. Refused while `pr.prUrl` is set and `pr.prState` is not `merged` (§ Budgets). |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
@@ -197,21 +198,14 @@ git fetch origin
 git rev-parse --verify origin/<branch>
 ```
 
-- **Non-zero exit (no `origin/<branch>`):** the user hasn't pushed yet. Do not draft. There is
-  no event this step can wait on for "the user pushed but hasn't opened a PR" — `pr-state` only
-  fires once a PR actually exists (`discoverPr` finds nothing until then), so an event-only
-  `wait` here would park the step permanently. Arm a bounded poll instead:
-  `{kind:"wait", wait:{reason:"Implementation done — waiting for you to push (checking again in
-  an hour)", events:["pr-state"], resumeAt:<now + 1 hour, epoch ms>}}`. Compute `resumeAt`
-  yourself from the current time (`date +%s` gives seconds; multiply by 1000, add the offset) —
-  there's no shell arithmetic needed since this is a plain field on the MCP call, not a Bash
-  command. Re-run this check on every wake, whether it fired from the timer or from `pr-state`
-  (the user may have pushed **and** opened the PR themselves, which also satisfies this row).
-  If you're still re-arming this same wait after roughly six wakes (about half a day with no
-  push), say so plainly in `memo` — how long it's been waiting — so the user sees it, rather
-  than silently re-arming the same wait forever; if `roundsRemaining` is genuinely getting low
-  by then, fall through to "Round budget nearly spent" (§ Failure modes) instead of continuing
-  to poll.
+- **Non-zero exit (no `origin/<branch>`):** the user hasn't pushed yet. Do not draft, and do
+  **not** arm a timer to come back and look again — the daemon watches origin for you. While no
+  PR exists the watcher polls the branch itself and fires `head-moved` the moment it lands, so
+  park indefinitely on both signals and stop thinking about it:
+  `{kind:"wait", wait:{reason:"Implementation done — waiting for you to push", events:["head-moved","pr-state"]}}`.
+  `head-moved` is the push; `pr-state` covers the user pushing **and** opening the PR in one go.
+  Re-run the `git rev-parse` check on whichever one wakes you — an indefinite wait costs zero
+  rounds until something real happens, and a poll costs two every time it finds nothing.
 - **Zero exit (`origin/<branch>` exists):** the push has landed — draft the PR.
 
 Once the branch is confirmed pushed, draft one yourself rather than sitting in a `wait` for the
@@ -348,13 +342,21 @@ just with more riding on it.
 four comments over two minutes costs one round, not four. One `external` item can therefore
 stand for several changes at once, and its `events[]` is the union of them.
 
-**`head-moved` is not for you — wait on the four.** It fires when the PR's head commit changes,
-and on this step the head moves because *you* moved it: `code.fix-ci` and
-`code.resolve-conflicts` both push. Naming it in a `wait` means every fix you dispatch wakes you
-to be told your own push landed, at one round each. It exists for `code.orchestrate-review`,
-which watches somebody else's branch and has no other way to see the author push. Row 14 waits
-on `["ci","review-state","pr-state","pr-comments"]` and that is the right set. (`pr.headRefOid`
-is still worth *reading* — it is how you tell whether a dispatched fix actually pushed.)
+**You never arm your own timer.** There is no `resumeAt` — a wait carrying one is refused by
+the daemon, and the refusal costs you a corrective round. The daemon is what wakes you, and it
+watches everything this ladder can act on, including the branch before any PR exists. If you
+catch yourself wanting to "check back in an hour", the honest moves are: `wait` indefinitely on
+the events that would actually change your answer, or `gate` the user if nothing would. Both
+cost zero rounds while parked; a poll costs two every time it finds nothing changed.
+
+**`head-moved` is for row 5 only — after the PR exists, wait on the four.** Before there is a
+PR it is the *user's* push landing on origin, which is exactly what row 5 is parked for and the
+only signal that exists at that point. Once the PR is open the head moves because *you* moved
+it: `code.fix-ci` and `code.resolve-conflicts` both push, so naming `head-moved` from row 14
+onward means every fix you dispatch wakes you to be told your own push landed, at one round
+each. Row 14 waits on `["ci","review-state","pr-state","pr-comments"]` and that is the right
+set. (`pr.headRefOid` is still worth *reading* — it is how you tell whether a dispatched fix
+actually pushed.)
 
 This matters most for **`mergeable`, which has no event of its own and rides on `pr-state`**.
 A `pr-state` wake means the PR closed, *or* merged, *or* started conflicting. Never read

@@ -62,8 +62,8 @@ describe('validateNext', () => {
       .toBe('allow');
   });
 
-  // Nothing can ever satisfy it: no event to match, no dispatches to finish, no timer to arm.
-  // The step parks with no gate for the user to resolve — a permanent hang.
+  // Nothing can ever satisfy it: no event to match, no dispatches to finish. The step parks
+  // with no gate for the user to resolve — a permanent hang.
   it('rejects a wait that names nothing to wake on', () => {
     const v = validateNext(step(), { kind: 'wait', wait: { reason: 'thinking' } }, info);
     expect(v).toMatchObject({ kind: 'reject' });
@@ -75,10 +75,28 @@ describe('validateNext', () => {
       { reason: 'CI', events: ['ci' as const] },
       { reason: 'the author pushes', events: ['head-moved' as const] },
       { reason: 'children', untilAllDispatchesDone: true },
-      { reason: 'soak', resumeAt: 1_700_000_000_000 },
     ];
     for (const wait of waits) {
       expect(validateNext(step(), { kind: 'wait', wait }, info).kind, wait.reason).toBe('allow');
+    }
+  });
+
+  // The daemon is the only thing that wakes a step. A self-armed timer wakes the controller to
+  // learn nothing changed and costs two rounds each time (the delivery + the re-armed wait) —
+  // which is how a step burns its budget polling instead of working. Refused at the boundary
+  // rather than discouraged in skill prose, because prose did not hold.
+  it('refuses a controller-armed resumeAt, even alongside real events', () => {
+    for (const wait of [
+      { reason: 'soak', resumeAt: 1_700_000_000_000 },
+      { reason: 'check back', events: ['pr-state' as const], resumeAt: 1_700_000_000_000 },
+    ]) {
+      const v = validateNext(step(), { kind: 'wait', wait }, info);
+      expect(v, wait.reason).toMatchObject({ kind: 'reject' });
+      // The refusal has to hand back both alternatives, or the controller's only read is
+      // "that move is illegal" and its next guess is as likely to be `fail`.
+      const reason = (v as { reason: string }).reason;
+      expect(reason).toContain('head-moved');
+      expect(reason).toContain('gate');
     }
   });
 

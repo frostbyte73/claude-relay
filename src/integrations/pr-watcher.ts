@@ -5,12 +5,16 @@ import type {
   CiCheck, IterationRecord, OrchestratedStep, PrComment, PrFacts, WatchedEvent,
 } from '../work/work-types.js';
 import { PR_URL_RE, parsePrUrl } from '../work/pr-url.js';
+import { gitRemoteBranchHead } from '../git/git-ops.js';
 import { runGh as defaultRunGh, type RunGh } from './gh-cli.js';
+
+export type RemoteHead = (cwd: string, branch: string) => Promise<string | undefined>;
 
 export interface PrWatcherOpts {
   queue: JobQueue;
   engine: WorkEngine;
   runGh?: RunGh;
+  remoteHead?: RemoteHead;
 }
 
 interface GhPrView {
@@ -293,6 +297,7 @@ export class PrWatcher {
   readonly name = 'GitHub — tracked PRs';
   readonly description = 'Refreshes CI, review, and comment state for tracked PRs.';
   private readonly runGh: RunGh;
+  private readonly remoteHead: RemoteHead;
   // Adaptive follow-up polling: after a job's PR changes we re-poll at 1m / 5m /
   // 15m so a fresh push (CI back to pending), a new review, etc. surface within
   // a minute instead of on the next hourly sweep. A new change resets the ladder.
@@ -303,6 +308,7 @@ export class PrWatcher {
 
   constructor(private readonly opts: PrWatcherOpts) {
     this.runGh = opts.runGh ?? defaultRunGh;
+    this.remoteHead = opts.remoteHead ?? gitRemoteBranchHead;
   }
 
   async runOnce(): Promise<{ outcome: 'ok' | 'error' }> {
@@ -425,7 +431,13 @@ export class PrWatcher {
       // writable step — and every controller that holds one opens a PR, so the population it
       // would save is empty.
       prUrl = await this.discoverPr(cwd, branch);
-      if (!prUrl) return;
+      if (!prUrl) {
+        // No PR yet — but the branch landing on origin is itself news the controller acts on
+        // (it's the falsifier for "waiting for you to push"). Report it, so nothing downstream
+        // has to poll on a timer to find out.
+        await this.syncBranchHead(jobId, s, cwd, branch, prev);
+        return;
+      }
       facts.prUrl = prUrl;
     }
 
@@ -505,6 +517,28 @@ export class PrWatcher {
       console.error(`[pr-watcher] viewer lookup: ${(e as Error).message}`);
       return undefined;
     }
+  }
+
+  // The pre-PR half of the watcher: while `discoverPr` is still missing, origin's head for the
+  // step's own branch is the only signal there is. Unlike the PR's `headRefOid`, a FIRST
+  // observation fires — the branch appearing where there was none is exactly the event a
+  // controller parked on "waiting for the user to push" needs, and it cannot fire spuriously
+  // because an unpushed branch reads as absent, not as an unknown sha.
+  private async syncBranchHead(
+    jobId: string, s: OrchestratedStep, cwd: string, branch: string, prev: PrFacts,
+  ): Promise<void> {
+    const head = await this.remoteHead(cwd, branch);
+    if (!head || head === prev.branchHeadOid) return;
+    this.opts.engine.applyPrFacts(jobId, s.id, { branchHeadOid: head });
+    this.opts.engine.pushStepInbox(jobId, s.id, {
+      kind: 'external',
+      source: 'pr-watcher',
+      summary: prev.branchHeadOid
+        ? `${branch} head now ${head.slice(0, 12)}`
+        : `${branch} pushed to origin (${head.slice(0, 12)}) — no PR yet`,
+      events: ['head-moved'],
+    });
+    this.noteChanged(jobId);
   }
 
   private async discoverPr(cwd: string, branch: string): Promise<string | undefined> {

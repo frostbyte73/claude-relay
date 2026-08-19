@@ -472,6 +472,18 @@ export async function gitRemoteBranchExists(cwd: string, branch: string): Promis
   return res.ok;
 }
 
+// origin's current head for this branch, or undefined if origin doesn't have it (or the
+// call failed). Same ls-remote reason as above — a remote-tracking ref only moves on fetch,
+// and the daemon never fetches on the caller's behalf. Undefined is deliberately not
+// distinguished from "no such branch": both mean "nothing to report", and the one caller
+// (the PR watcher's pre-PR branch poll) treats a transient failure as no news either way.
+export async function gitRemoteBranchHead(cwd: string, branch: string): Promise<string | undefined> {
+  if (!BRANCH_NAME_RE.test(branch)) return undefined;
+  const res = await runGit(cwd, ['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]);
+  if (!res.ok) return undefined;
+  return /^([0-9a-f]{40,64})\s/m.exec(res.stdout)?.[1];
+}
+
 // Conservative "is there an open PR on this branch?" probe. Returns true when gh
 // reports one — and ALSO true when we can't tell (bad name, gh error), so callers
 // default to plain-append and never risk a duplicate/erroring `gh pr create`.

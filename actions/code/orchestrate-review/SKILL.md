@@ -72,8 +72,8 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 `delivered` entries are one of: `user-message` (the user typed something — highest signal,
 read it first, and it **overrides the ladder**, see §3), `dispatch-done` (a lens settled; read
 its record in `dispatches`), `external` (the PR watcher, with `events[]` naming which signals
-moved — see §4), `gate-resolved` (`approved` + optional `feedback`), `timer` (a `resumeAt`
-elapsed), or `policy-rejection` (your last move was refused; `reason` says why, and you get
+moved — see §4), `gate-resolved` (`approved` + optional `feedback`), `timer` (a legacy soak
+elapsed — you cannot arm one, so you will not normally see this), or `policy-rejection` (your last move was refused; `reason` says why, and you get
 exactly one corrective turn — a second rejection with no accepted move in between fails the
 step).
 
@@ -159,7 +159,7 @@ Your six moves:
 |---|---|---|
 | `self-round` | `{kind:"self-round", action?, note?}` | Resumes *your* session, optionally rebound to `action`'s skill and permissions, with `note` as `boundNote`. |
 | `dispatch` | `{kind:"dispatch", dispatches:[{action, brief, inputs?, workspace?, retryOf?}]}` | Spawns one fresh child session per entry and parks you until all settle. A child's envelope is built fresh: its brief (as `goal` and `description`), whatever you put in `inputs`, its workspace, the job's `source`/`title`/`description`/`externalRef`, and journal lessons for its own action. **Nothing of yours travels with it** — no memo, no artifacts, no `pr` facts, no sibling's output, and `previousSteps` is empty. |
-| `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?, resumeAt?}}` | Parks the step until one of `events` fires, all dispatches settle, or `resumeAt` passes. `reason` is shown to the user. |
+| `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?}}` | Parks the step until one of `events` fires or all dispatches settle. `reason` is shown to the user. **You cannot arm a timer** — a wait carrying `resumeAt` is refused (rung 13). |
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user. **You never need this one** — see below. |
 | `resolve` | `{kind:"resolve", output}` | Step done. `output` is the summary the job keeps. |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
@@ -341,20 +341,20 @@ that matters: the watcher fires it when the PR's head commit changes, which is e
 author pushed." A silent fixup on a repo with no CI checks, a force-push, an amend — all of
 them move the head and all of them wake you, with no timer and no polling of your own.
 
-**Do not arm a `resumeAt` on this row** — with one exception below. A wait on `head-moved` ends
-on its own when the thing you are waiting for happens, so a timer adds nothing but cost: every
-timer wake that finds an unchanged head burns two rounds (the delivery, plus the `wait` you
-re-arm) out of eighty. An indefinite wait costs zero until something real happens. If the author
-never pushes, the step should sit there — that is the correct outcome, and the user's "Mark
-resolved" is the way out of it, the same as rung 12's vigil.
+**You cannot arm a `resumeAt`, on this row or any other** — the daemon refuses a wait carrying
+one, and the refusal costs you a corrective round. That is not a restriction you have to work
+around; it is the shape that already works. A wait on `head-moved` ends on its own when the
+thing you are waiting for happens, so a timer could only add cost: every timer wake that finds
+an unchanged head burns two rounds (the delivery, plus the `wait` you re-arm) out of eighty. An
+indefinite wait costs zero until something real happens. If the author never pushes, the step
+should sit there — that is the correct outcome, and the user's "Mark resolved" is the way out
+of it, the same as rung 12's vigil.
 
-**The exception: `pr.headRefOid` absent.** `head-moved` fires by comparing the head the watcher
-just read against the one it read before, so if the envelope's `pr` carries no `headRefOid` at
-all, the watcher has never recorded one and that event can never fire — the indefinite wait
-becomes a permanent one, with nothing to end it but the user noticing. Only in that case, arm
-`resumeAt` about six hours out alongside the events, and say so in `memo`. Two rounds a day is
-a cheap insurance premium against a step that would otherwise sit forever; once a `headRefOid`
-does appear, drop the timer and go back to the plain indefinite wait.
+**If `pr.headRefOid` is absent**, the watcher has not recorded a head for this PR yet — it
+records one on its first successful poll, so this is a not-yet, not a never. Wait on
+`["head-moved","pr-comments","ci","pr-state"]` as usual: the first poll that lands sets the
+head and any of the other four can carry news in the meantime. Say in `memo` that you have not
+seen a head yet, so the state is legible if the step does end up sitting a long time.
 
 When a delivery arrives, compare `pr.headRefOid` against the **last verified head** (§4) rather
 than trusting the event name. A batch can carry several events, a `wait` on one signal can fire

@@ -278,7 +278,8 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
       + '`next` is one of: {kind:"self-round",action?,note?} continue on your own session, optionally '
       + 'rebound to another action\'s skill and permissions; {kind:"dispatch",dispatches:[{action,brief}]} '
       + 'fan out to fresh sessions, each seeing only its brief; {kind:"wait",wait:{reason,events?,'
-      + 'untilAllDispatchesDone?,resumeAt?}} park until something happens; {kind:"gate",draft,question} '
+      + 'untilAllDispatchesDone?}} park until the daemon wakes you (you cannot arm a timer of your '
+      + 'own — name the events you are waiting for); {kind:"gate",draft,question} '
       + 'ask the user to approve; {kind:"resolve",output} finish; {kind:"fail",reason} give up. '
       + 'External writes are gated by the daemon whether or not you ask.',
     inputSchema: {
@@ -348,7 +349,6 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
                       items: { enum: ['pr-comments', 'ci', 'review-state', 'pr-state', 'head-moved', 'dispatches'] },
                     },
                     untilAllDispatchesDone: { type: 'boolean' },
-                    resumeAt: { type: 'number', description: 'Epoch ms auto-resume.' },
                   },
                 },
               },

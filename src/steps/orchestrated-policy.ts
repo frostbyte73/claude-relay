@@ -173,17 +173,34 @@ export function validateNext(
   }
 
   // A wait naming nothing to wake on can never be satisfied: waitSatisfied has no condition to
-  // match, no timer is armed, and the step parks with no gate for the user to resolve. Refuse it
-  // at the boundary — a controller reaching for a soak and getting the shape slightly wrong
-  // should be told, not hung.
+  // match and the step parks with no gate for the user to resolve. Refuse it at the boundary —
+  // a controller reaching for a park and getting the shape slightly wrong should be told, not
+  // hung.
+  //
+  // A controller-armed `resumeAt` is refused outright, which is why it isn't in that list. The
+  // daemon is what wakes a step: the watcher fires on every signal a ladder reads, down to the
+  // branch landing on origin before any PR exists. A self-armed timer can only ever wake the
+  // controller to discover nothing changed — and it costs two rounds each time (the delivery
+  // plus the re-armed wait), which is how a step burns its budget polling instead of working.
   if (move.kind === 'wait') {
     const w = move.wait;
-    if (!w.events?.length && !w.untilAllDispatchesDone && w.resumeAt === undefined) {
+    if (w.resumeAt !== undefined) {
+      return {
+        kind: 'reject',
+        reason: 'do not arm your own timer. `resumeAt` is not yours to set — the daemon wakes you '
+          + 'when something real happens. Re-submit the same wait with `events` naming what you are '
+          + 'actually waiting for (ci, review-state, pr-state, pr-comments, head-moved, dispatches); '
+          + '`head-moved` covers the user pushing the branch, whether or not a PR exists yet. If '
+          + 'nothing on that list can end the wait, `gate` the user instead — a gate costs no rounds '
+          + 'and waits forever.',
+      };
+    }
+    if (!w.events?.length && !w.untilAllDispatchesDone) {
       return {
         kind: 'reject',
         reason: 'a wait must name something to wake on: `events` (ci, review-state, pr-state, '
-          + 'pr-comments, head-moved, dispatches), `untilAllDispatchesDone: true`, or `resumeAt` '
-          + '(epoch ms). To think without parking, take a self-round instead.',
+          + 'pr-comments, head-moved, dispatches) or `untilAllDispatchesDone: true`. To think '
+          + 'without parking, take a self-round instead; to park on a human, take a gate.',
       };
     }
   }

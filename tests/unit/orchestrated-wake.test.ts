@@ -6,9 +6,10 @@ import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import type { JobRecord, OrchestratedStep } from '../../src/work/work-types.js';
 
-// A controller that parks with `{ kind: 'wait', wait: { resumeAt } }` — "bake the canary 30
-// minutes", "CI takes 20" — has to actually wake. Nothing else ticks a parked controller:
-// there is no periodic engine tick, and an empty inbox is not deliverable on its own.
+// A controller may no longer arm its own `resumeAt` (validateNext refuses it — the daemon is
+// what wakes a step). The runtime that fires one still has to work, because steps parked before
+// that cutover hold one on disk, and nothing else ticks a parked controller: there is no
+// periodic engine tick, and an empty inbox is not deliverable on its own.
 function bootedEngine(dir: string) {
   const queue = new JobQueue(dir);
   const resumed: string[] = [];
@@ -45,23 +46,25 @@ function seed(dir: string, over: Partial<OrchestratedStep> = {}): { jobId: strin
 const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
 
 describe('orchestrated timed wait', () => {
-  it('arms a wake when the controller parks on resumeAt, and delivers a timer item when it elapses', async () => {
+  it('refuses a controller that tries to arm its own timer, and parks nothing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'orch-wake-'));
     const { jobId, stepId } = seed(dir);
     const { engine, queue, resumed } = bootedEngine(dir);
 
     engine.onStepProgress(jobId, stepId, {
-      next: { kind: 'wait', wait: { reason: 'bake the canary', resumeAt: Date.now() + 20 } },
+      next: { kind: 'wait', wait: { reason: 'check back in an hour', resumeAt: Date.now() + 20 } },
     });
-    expect((queue.get(jobId)!.steps[0] as OrchestratedStep).state).toBe('waiting');
-    expect(resumed).toEqual([]);
 
-    await settle(80);
-
+    // Rejected moves get the corrective turn immediately — the step must not end up parked on
+    // the timer it asked for, or the refusal would be cosmetic.
     const s = queue.get(jobId)!.steps[0] as OrchestratedStep;
     expect(s.state).toBe('running');
     expect(s.waitingOn).toBeUndefined();
-    expect(s.lastDelivered?.some((i) => i.kind === 'timer')).toBe(true);
+    expect(s.lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBe(true);
+
+    await settle(80);
+    expect((queue.get(jobId)!.steps[0] as OrchestratedStep).lastDelivered?.some((i) => i.kind === 'timer'))
+      .toBe(false);
     expect(resumed).toEqual(['ctrl-sess']);
   });
 
