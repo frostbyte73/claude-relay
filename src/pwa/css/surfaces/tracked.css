@@ -1665,7 +1665,6 @@ a.thread-loc:hover { text-decoration: underline; }
 }
 .recon-banner .label { color: var(--accent); }
 .recon-banner .feedback { font-size: 13px; color: var(--text); font-style: italic; }
-.recon-banner .spacer  { flex: 1; }
 .diff-glyph { width: 56px; text-align: center; font-family: var(--font-mono); font-size: 14px; }
 .diff-glyph[data-kind="keep"]   { color: var(--text-dim); }
 .diff-glyph[data-kind="patch"]  { color: var(--accent); }
@@ -1843,13 +1842,16 @@ a.thread-loc:hover { text-decoration: underline; }
 .plan-review-note { margin-bottom: 6px; }
 .plan-section--live > .plan-findings,
 .plan-section--live > .orchestrator-inline-session-mount { margin-bottom: 16px; }
-.plan-section--live .plan-card-foot {
+/* Direct child only — the reconciliation card is a boxed .plan-card inside this
+   same live section, and its foot keeps the card's own padding. */
+.plan-section--live > .plan-card-foot {
   padding: 14px 0 0;
   margin-top: 20px;
 }
-.plan-section--live .plan-card-foot .o-btn { flex: 0 0 auto; }
-.plan-section--live .replan-composer { padding-left: 0; padding-right: 0; }
-.plan-section--live .replan-composer[data-open="true"] { padding-left: 0; padding-right: 0; }
+.plan-section--live > .plan-card-foot .o-btn { flex: 0 0 auto; }
+.plan-section--live > .replan-composer { padding-left: 0; padding-right: 0; }
+.plan-section--live > .replan-composer[data-open="true"] { padding-left: 0; padding-right: 0; }
+.is-reconciling .plan-card-foot { padding: 12px 18px; }
 
 /* Per-step findings collapse — the findings box (.plan-findings) is a <details>
    in the timeline (.tl-findings). Collapsed, only the "Findings ▾" summary shows,

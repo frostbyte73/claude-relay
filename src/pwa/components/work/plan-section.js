@@ -95,14 +95,15 @@ export function renderReconciliation(j) {
       <div class="recon-banner">
         <span class="label o-microhead">Plan amendment</span>
         ${recon.feedback ? `<span class="feedback">"${escapeHtml(recon.feedback)}"</span>` : ''}
-        <span class="spacer"></span>
-        <button class="o-btn o-btn--default" type="button" data-job-action="recon-discard" aria-expanded="false">Discard</button>
-        <button class="o-btn o-btn--primary" type="button" data-job-action="recon-apply">Apply changes</button>
       </div>
       ${renderFinding(j.plan?.findings)}
       <div class="step-list">
         ${proposedRows}
         ${cancelledRows}
+      </div>
+      <div class="plan-card-foot">
+        <button class="o-btn o-btn--default" type="button" data-job-action="recon-discard" aria-expanded="false">Discard</button>
+        <button class="o-btn o-btn--primary" type="button" data-job-action="recon-apply">Apply changes</button>
       </div>
       ${renderDiscardComposer()}
     </div>
