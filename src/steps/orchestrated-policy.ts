@@ -13,6 +13,12 @@ export const MAX_ROUNDS = 80;
 // allowed however high the counter stands, and resets it: this caps spinning, not working.
 export const MAX_CONSECUTIVE_SELF_ROUNDS = 3;
 export const MAX_DISPATCH_ATTEMPTS = 2;
+// The one round allowed to `resolve` a step whose recorded PR is still open. It re-reads the PR
+// from GitHub and only resolves on a confirmed merge, so it holds a fact `step.pr` does not:
+// nothing but the pr-watcher writes `prState`, and it has not swept in the seconds between the
+// merge landing and this submit. Named here rather than inferred from side_effects because
+// `code.fix-ci` is external-write too, and a resolve from a fix-ci round is exactly the bug.
+export const MERGE_ACTION = 'code.merge-pr';
 
 export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-write';
 
@@ -25,6 +31,19 @@ export interface ActionInfo {
 export type PolicyVerdict =
   | { kind: 'allow'; move: NextMove }
   | { kind: 'reject'; reason: string };
+
+// The URL of a PR this step is on the hook for landing and hasn't, or undefined if resolving is
+// legitimate. `writable` is what separates owning the PR from reviewing one: a controller holding
+// the branch is expected to merge it, while `code.orchestrate-review` works readonly against
+// somebody else's PR and settles on a verdict it could never merge — guarding that would strand
+// every review step. A step with no `prUrl` never opened one and is free to resolve.
+function unmergedOwnPr(step: OrchestratedStep): string | undefined {
+  if (step.workspace?.kind !== 'writable') return undefined;
+  if (step.boundAction === MERGE_ACTION) return undefined;
+  const pr = step.pr;
+  if (!pr?.prUrl || pr.prState === 'merged' || pr.prState === undefined) return undefined;
+  return pr.prUrl;
+}
 
 export function briefKey(action: string, brief: string): string {
   let h = 5381;
@@ -43,10 +62,32 @@ export function validateNext(
   if (step.state === 'resolved' || step.state === 'failed' || step.failure) {
     return { kind: 'reject', reason: `step is already ${step.failure ? 'failed' : step.state}` };
   }
-  if (move.kind === 'resolve' || move.kind === 'fail') return { kind: 'allow', move };
+  if (move.kind === 'resolve') {
+    const unmerged = unmergedOwnPr(step);
+    if (unmerged) {
+      return {
+        kind: 'reject',
+        reason: `${unmerged} is still ${step.pr!.prState} and you own it — a resolve here settles the `
+          + 'step as done and takes the PR out of the cockpit with work left on it. Merge it (a '
+          + `self-round as ${MERGE_ACTION} once CI is green and review is approved), \`gate\` with `
+          + 'the current state so the user can take it over, or `fail` with what is outstanding. '
+          + 'Running low on rounds is a reason to gate, not to resolve.',
+      };
+    }
+    return { kind: 'allow', move };
+  }
+  if (move.kind === 'fail') return { kind: 'allow', move };
 
-  if (step.roundsSpent >= MAX_ROUNDS) {
-    return { kind: 'reject', reason: `round budget exhausted (${MAX_ROUNDS}); resolve or fail the step` };
+  // `gate` is exempt alongside resolve/fail. The budget bounds autonomous work, and a gate is the
+  // opposite of that — it parks the step and spends nothing until a human acts, so re-gating can
+  // only loop as fast as the user unparks it. Barring it here would leave a controller that owns
+  // an open PR with `fail` as its only legal exit (the resolve guard above takes the other one),
+  // which is how an honest "I ran out of rounds, here is where it landed" became a lost step.
+  if (move.kind !== 'gate' && step.roundsSpent >= MAX_ROUNDS) {
+    return {
+      kind: 'reject',
+      reason: `round budget exhausted (${MAX_ROUNDS}); gate the step for the user, or resolve or fail it`,
+    };
   }
 
   if (move.kind === 'self-round') {

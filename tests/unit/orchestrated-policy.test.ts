@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   validateNext, briefKey, MAX_ROUNDS, MAX_CONSECUTIVE_SELF_ROUNDS, MAX_DISPATCH_ATTEMPTS,
-  type ActionInfo,
+  MERGE_ACTION, type ActionInfo,
 } from '../../src/steps/orchestrated-policy.js';
 import type { Dispatch, NextMove, OrchestratedStep } from '../../src/work/work-types.js';
 
@@ -194,6 +194,76 @@ describe('validateNext', () => {
     const s = step({ roundsSpent: MAX_ROUNDS });
     expect(validateNext(s, { kind: 'resolve', output: 'done' }, info).kind).toBe('allow');
     expect(validateNext(s, { kind: 'fail', reason: 'nope' }, info).kind).toBe('allow');
+  });
+});
+
+// A controller that owns its PR must not settle the step while that PR is still open. The
+// observed failure: a controller at roundsRemaining 3 chose `resolve` over `gate` and the
+// unfinished step rendered as complete, taking an approved-but-unmerged PR out of the cockpit.
+describe('validateNext — resolving a step whose PR is still open', () => {
+  const owner = (over: Partial<OrchestratedStep> = {}) => step({
+    workspace: { kind: 'writable', repoCwd: '/repo', branch: 'b' },
+    pr: { prUrl: 'https://github.com/o/r/pull/1', prState: 'open' },
+    ...over,
+  });
+  const resolve: NextMove = { kind: 'resolve', output: 'handed back one check from merge' };
+
+  it('rejects, naming gate and fail as the ways out', () => {
+    const v = validateNext(owner(), resolve, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/gate/);
+    expect((v as { reason: string }).reason).toMatch(/fail/);
+  });
+
+  // SKILL.md's failure modes call a PR closed without merging a `fail`, not a resolve.
+  it('rejects a closed-without-merging PR too', () => {
+    expect(validateNext(owner({ pr: { prUrl: 'https://github.com/o/r/pull/1', prState: 'closed' } }), resolve, info).kind)
+      .toBe('reject');
+  });
+
+  it('still allows fail, which is the honest settle for an open PR', () => {
+    expect(validateNext(owner(), { kind: 'fail', reason: 'out of budget' }, info).kind).toBe('allow');
+  });
+
+  it('allows the resolve once the PR is merged', () => {
+    expect(validateNext(owner({ pr: { prUrl: 'https://github.com/o/r/pull/1', prState: 'merged' } }), resolve, info).kind)
+      .toBe('allow');
+  });
+
+  // The merge round re-reads the PR from GitHub and only resolves on a confirmed merge, so it
+  // holds truth `step.pr` does not — the watcher has not swept since the merge landed. Without
+  // this exemption a correct merge is rejected, and the retry is a second strike that fails the
+  // step.
+  it('allows the resolve from the merge round, whose own check is fresher than step.pr', () => {
+    expect(validateNext(owner({ boundAction: MERGE_ACTION }), resolve, info).kind).toBe('allow');
+  });
+
+  it('allows a resolve on a step that never opened a PR', () => {
+    expect(validateNext(owner({ pr: undefined }), resolve, info).kind).toBe('allow');
+    expect(validateNext(owner({ pr: { prState: 'open' } }), resolve, info).kind).toBe('allow');
+  });
+
+  // code.orchestrate-review reviews somebody else's PR from a readonly workspace and settles on a
+  // verdict, never a merge. Guarding it would strand every review step it ever runs.
+  it('allows a readonly reviewer to resolve while the PR it reviewed stays open', () => {
+    expect(validateNext(owner({ workspace: { kind: 'readonly', repoCwd: '/repo' }, controller: 'code.orchestrate-review' }), resolve, info).kind)
+      .toBe('allow');
+  });
+
+  // The guard's reason recommends `gate`, and the budget check sits right below it — so an owner
+  // that hits both must still be able to take the move it was just told to take. Otherwise the
+  // corrective turn draws a second rejection and the step fails with the PR mid-flight.
+  it('leaves gate reachable for an owner that is out of rounds AND barred from resolving', () => {
+    const s = owner({ roundsSpent: MAX_ROUNDS });
+    expect(validateNext(s, resolve, info).kind).toBe('reject');
+    expect(validateNext(s, { kind: 'gate', draft: 'd', question: 'q' }, info).kind).toBe('allow');
+  });
+
+  it('still refuses to keep working past the budget, and names gate as a way out', () => {
+    const s = owner({ roundsSpent: MAX_ROUNDS });
+    const v = validateNext(s, { kind: 'self-round' }, info);
+    expect(v).toMatchObject({ kind: 'reject' });
+    expect((v as { reason: string }).reason).toMatch(/gate/);
   });
 });
 

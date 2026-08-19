@@ -56,7 +56,7 @@ cat "$OUTPOST_ENVELOPE"
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. |
 | `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
-| `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
+| `roundsRemaining` | Turns left before the daemon refuses everything except `gate`, `resolve` and `fail`. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
 | `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. This is your declared roster (`outpost.roster` in your own frontmatter) plus yourself, not the whole registry: an action missing here is one another controller owns. The only valid action names; never invent one. |
 | `previousSteps` | Findings from earlier steps of the job. |
@@ -101,7 +101,7 @@ Your six moves:
 | `dispatch` | `{kind:"dispatch", dispatches:[{action, brief, inputs?, workspace?, retryOf?}]}` | Spawns one fresh child session per entry and parks you until all settle. Each child sees **only its brief** — no memo, no artifacts, no envelope of yours. |
 | `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?, resumeAt?}}` | Parks the step until one of `events` fires, all dispatches settle, or `resumeAt` passes. `reason` is shown to the user. |
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user, showing `draft` as the thing being approved. |
-| `resolve` | `{kind:"resolve", output}` | Step done. `output` is the summary the job keeps. |
+| `resolve` | `{kind:"resolve", output}` | Step done — **the PR merged**. `output` is the summary the job keeps. Refused while `pr.prUrl` is set and `pr.prState` is not `merged` (§ Budgets). |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
 
 **Dispatched children are read-only; edits happen on your rounds.** The branch belongs to you
@@ -294,8 +294,19 @@ label, they are the state. Re-derive your position from the ladder against `arti
 `artifacts.implPlan` and `pr`, then write the memo you wish you had found.
 
 **Budgets.** `roundsRemaining` counts down from 80 — every move you make costs one, and so
-does every wake the daemon delivers you; at zero it accepts only `resolve` or `fail`, so leave
-headroom rather than discovering the wall. Separately, at most **three**
+does every wake the daemon delivers you; at zero it accepts only `gate`, `resolve` or `fail`, so
+leave headroom rather than discovering the wall. **`gate` stays open at zero on purpose: running
+out of rounds is a reason to hand the step to the user, never a reason to call it done.**
+
+**A `resolve` while your PR is still open is refused.** Once `pr.prUrl` is set, the daemon allows
+`resolve` only when `pr.prState === "merged"` — the sole exception being the `code.merge-pr` round
+itself, which re-reads GitHub and so knows about a merge the watcher has not swept yet. You own
+this PR; resolving marks the step done and takes it out of the user's cockpit with work left on
+it. If you are near the wall and the PR is not merged, `gate` with an honest account of where it
+landed (that is what keeps it in front of the user), or `fail` with what is outstanding. Do not
+reach for `resolve` because it reads better than `fail` — a rejected resolve costs you a round
+and a policy strike, and a second violation with no accepted move in between fails the step
+outright. Separately, at most **three**
 *unproductive* `self-round`s in a row. A round counts as productive when the submit that ends
 it moves `phase` or writes an `artifacts` entry whose content differs from what was already
 there — a redraft under the same key counts, a byte-identical resubmit does not. Anything else
@@ -484,7 +495,11 @@ is the only place `meta.improve-actions` looks. Name the exact command or field.
   `wait` again with the same spec — don't manufacture a round.
 - **`policy-rejection` in `delivered`.** Read `reason`, fix the move it names, submit the
   corrected one this turn. A second rejection with no accepted move in between fails the step.
-- **Round budget nearly spent.** Stop opening new fronts. Either `gate` the current state so
-  the user can take over, or `resolve`/`fail` with an honest summary of where it landed.
+- **Round budget nearly spent.** Stop opening new fronts. `gate` the current state so the user
+  can take over — it is accepted even at zero, and it is the right move whenever the PR is open
+  but unmerged, which is also the only move the daemon will take from you there besides `fail`.
+  `resolve` is for a merged PR and nothing else. A precise handover is worth more than a rushed
+  extra round, but it has to be a handover the user can see and act on: a resolved step reads as
+  finished and drops out of the cockpit.
 - **PR closed without merging** (`pr.prState === "closed"`). That is a `fail` with the reason,
   not a wait — nothing further will wake you.
