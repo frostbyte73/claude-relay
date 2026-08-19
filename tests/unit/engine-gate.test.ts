@@ -621,6 +621,27 @@ describe('WriteDraft — orchestrated steps: raiser coercion, pin isolation, den
     expect(engine.actionForStep(jobId, 'o1')).toBe('code.orchestrate-pr');
   });
 
+  // MAX_ROUNDS bounds ONE attempt's autonomous work, and a retry is a new attempt — a cold spawn
+  // whose only record of the last one is `attempts[]`. Carried forward, a step that had run long
+  // came back with nothing to spend and could only gate or fail.
+  it('resets the round budget on retry, and records the attempt that spent it', () => {
+    const { engine, queue } = makeEngine();
+    const jobId = seedOrchestratedJob(queue, engine, [orchestratedStep('o1', 'code.orchestrate-pr')]);
+    queue.mutate(jobId, (j) => ({
+      ...j,
+      steps: j.steps.map((s) => s.id === 'o1' && s.type === 'orchestrated'
+        ? { ...s, roundsSpent: 78, consecutiveSelfRounds: 3, sessionId: undefined }
+        : s),
+    }));
+
+    engine.onStepRetry(jobId, 'o1');
+
+    const after = orchestratedStepOf(queue, jobId, 'o1');
+    expect(after.roundsSpent).toBe(0);
+    expect(after.consecutiveSelfRounds).toBe(0);
+    expect(after.attempts).toHaveLength(1);
+  });
+
   // Regression: the wire `dispatchId` is trusted (no session identity at the MCP boundary), and
   // the controller's own envelope lists every sibling dispatch id. A controller naming a
   // `queued` child here — one that hasn't actually spawned yet — must be refused, not silently

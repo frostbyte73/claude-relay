@@ -863,3 +863,44 @@ describe('WorktreeManager — sweepOrphaned refuses malformed records', () => {
     ).toContain('keep-me');
   });
 });
+
+// Settling a writable step archives its worktree, leaving a tombstone under the step's own id.
+// create() used to refuse on record existence alone, so that tombstone made the step permanently
+// un-retryable — "already has a worktree" for a worktree that had already been torn down.
+describe('WorktreeManager — re-provisioning over an archived record', () => {
+  it('creates a fresh worktree for a session whose record is a tombstone', async () => {
+    const repo = makeGitRepo();
+    const root = newRoot();
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    m._testSeedRecord({
+      sessionId: 'sess-retry',
+      projectCwd: repo,
+      worktreePath: join(root, 'sess-retry'),
+      branch: 'feat/x',
+      baseBranch: 'main',
+      createdAt: 1,
+      archivedAt: 2,
+    });
+
+    const rec = await m.create({ sessionId: 'sess-retry', projectCwd: repo, baseBranch: 'main' });
+    expect(rec.archivedAt).toBeUndefined();
+    expect(existsSync(rec.worktreePath)).toBe(true);
+    expect(m.get('sess-retry')!.archivedAt).toBeUndefined();
+  });
+
+  it('still refuses while the record is live', async () => {
+    const repo = makeGitRepo();
+    const root = newRoot();
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    m._testSeedRecord({
+      sessionId: 'sess-live',
+      projectCwd: repo,
+      worktreePath: join(root, 'sess-live'),
+      branch: 'feat/y',
+      baseBranch: 'main',
+      createdAt: 1,
+    });
+    await expect(m.create({ sessionId: 'sess-live', projectCwd: repo, baseBranch: 'main' }))
+      .rejects.toThrow(/already has a worktree/);
+  });
+});

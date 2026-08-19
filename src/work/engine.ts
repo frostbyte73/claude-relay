@@ -2155,7 +2155,15 @@ export class WorkEngine {
         // retry after a failed bound self-round (e.g. `code.merge-pr`) would leave the envelope,
         // the session binding, and `actionForStep`'s derivation all disagreeing about which
         // action owns the next draft.
-        ...(s.type === 'orchestrated' ? { boundAction: undefined } : {}),
+        //
+        // The round budget resets with it. MAX_ROUNDS bounds ONE attempt's autonomous work, and
+        // this is a new attempt — a cold spawn with no transcript, which is why `attempts[]`
+        // exists to carry the history instead. Carried forward, a step that ran long enough to
+        // matter came back with nothing left to spend: the step behind PR #1342 would have
+        // reopened on 2 of 80 rounds, able to gate or fail and nothing else.
+        ...(s.type === 'orchestrated'
+          ? { boundAction: undefined, roundsSpent: 0, consecutiveSelfRounds: 0 }
+          : {}),
       } as Step;
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore

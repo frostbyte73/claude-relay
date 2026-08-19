@@ -121,7 +121,14 @@ export class WorktreeManager {
     if (opts.branch !== undefined && !BRANCH_NAME_RE.test(opts.branch)) {
       throw new Error(`invalid branch: ${JSON.stringify(opts.branch)}`);
     }
-    if (this.records.has(opts.sessionId)) {
+    // Only a LIVE record collides. An archived one is a tombstone: `archive()` has already torn
+    // the worktree down and every other reader treats `archivedAt` as "not live" (see
+    // liveWorktreePath / pruneStale / the reprovision check in engine.ts). Refusing on it too
+    // made settling a writable step permanently un-retryable — resolving archives the worktree,
+    // and the tombstone it leaves then failed every later provision for that step id with
+    // "already has a worktree", which is exactly the state PR #1342's step ended up in.
+    const existing = this.records.get(opts.sessionId);
+    if (existing && !existing.archivedAt) {
       throw new Error(`session ${opts.sessionId} already has a worktree`);
     }
     const shortId = opts.sessionId.replace(/-/g, '').slice(0, 8);
