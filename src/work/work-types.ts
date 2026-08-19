@@ -22,6 +22,12 @@ export interface PrComment {
   url?: string;
   file?: string;
   line?: number;
+  // Which side of the diff `line` counts against, and the first line of a multi-line
+  // comment's range. Both feed the PWA's diff windowing: a deletion is commented on the
+  // LEFT (old) numbering, and a range comment must not be shown with its own start cropped
+  // off. Absent on single-line RIGHT-side comments, which is the overwhelming majority.
+  side?: 'LEFT' | 'RIGHT';
+  startLine?: number;
   diffHunk?: string;
   inReplyTo?: string;
   createdAt: number;

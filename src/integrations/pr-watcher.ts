@@ -1,5 +1,3 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
@@ -7,18 +5,12 @@ import type {
   CiCheck, IterationRecord, OrchestratedStep, PrComment, PrFacts, WatchedEvent,
 } from '../work/work-types.js';
 import { PR_URL_RE, parsePrUrl } from '../work/pr-url.js';
-
-const execFileP = promisify(execFile);
-
-async function defaultRunGh(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileP('gh', args, { cwd, maxBuffer: 4 * 1024 * 1024, timeout: 15_000 });
-  return stdout.toString();
-}
+import { runGh as defaultRunGh, type RunGh } from './gh-cli.js';
 
 export interface PrWatcherOpts {
   queue: JobQueue;
   engine: WorkEngine;
-  runGh?: (cwd: string, args: string[]) => Promise<string>;
+  runGh?: RunGh;
 }
 
 interface GhPrView {
@@ -111,6 +103,8 @@ interface GhInlineComment {
   body: string;
   path?: string;
   line?: number;
+  start_line?: number | null;
+  side?: 'LEFT' | 'RIGHT' | null;
   diff_hunk?: string;
   created_at: string;
   html_url?: string;
@@ -130,6 +124,8 @@ function inlineCommentsFrom(inline: GhInlineComment[]): PrComment[] {
     if (c.html_url) out.url = c.html_url;
     if (c.path) out.file = c.path;
     if (c.line !== undefined) out.line = c.line;
+    if (c.side === 'LEFT' || c.side === 'RIGHT') out.side = c.side;
+    if (typeof c.start_line === 'number') out.startLine = c.start_line;
     if (c.diff_hunk) out.diffHunk = c.diff_hunk;
     if (c.in_reply_to_id != null) {
       const parentNode = nodeIdByInt.get(c.in_reply_to_id);
@@ -257,7 +253,7 @@ export class PrWatcher {
   readonly id = 'pr-watcher';
   readonly name = 'GitHub — tracked PRs';
   readonly description = 'Refreshes CI, review, and comment state for tracked PRs.';
-  private readonly runGh: (cwd: string, args: string[]) => Promise<string>;
+  private readonly runGh: RunGh;
   // Adaptive follow-up polling: after a job's PR changes we re-poll at 1m / 5m /
   // 15m so a fresh push (CI back to pending), a new review, etc. surface within
   // a minute instead of on the next hourly sweep. A new change resets the ladder.

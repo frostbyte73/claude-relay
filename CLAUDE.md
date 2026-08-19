@@ -160,6 +160,9 @@ src/
   storage/               # persisted stores
     {journal,project-registry,actions,runs,preferences}-store.ts, runs-capture.ts
     stop-hook-tracker.ts, recurrence-tracker.ts, job-event-log.ts, jobs-migrate.ts
+    gh-cli.ts              # the shared `gh` shell-out both PR integrations run through
+    pr-file-patches.ts     # per-file PR diffs, fetched on demand + cached by head sha (NOT persisted
+                           # onto the job); what lets a review comment render inside its hunk
     action-{revisions,edits}-store.ts  # SKILL.md version history + revert; durable half of the in-flight edit map
     action-runs-store.ts, denials-store.ts  # per-round run rows + every allowlist miss — the improvement loop's evidence
   actions/               # registry + types; scorecard.ts, improvement-pack.ts, proposal-intake.ts, skill-diff.ts
@@ -201,7 +204,8 @@ src/
                            # (legacy-components.css was dissolved into these per-surface sheets —
                            #  see src/pwa/DESIGN.md, codename Signal)
     utils/                 # formatting.js, usage-bar.js (shared tier thresholds/popover), overflow-menu.js,
-                           # autogrow.js, context-usage.js, hotkey.js, keyed-rows.js, row-activation.js
+                           # autogrow.js, context-usage.js, hotkey.js, keyed-rows.js, row-activation.js,
+                           # diff-window.js (which slice of a PR diff sits under a review comment)
 ```
 
 ### Where new code goes
@@ -264,6 +268,7 @@ launchctl kickstart -k gui/$UID/local.outpost.$USER
 Legitimate remaining work (previously stale items pruned):
 
 - **WorkEngine split.** `WorkEngine` in `src/work/engine.ts` is over 2500 lines with methods that call each other via `this.mutate`/`this.appendEvent`. Splitting into plan/execution/pr/edits helper modules needs class-surgery — deferred.
+- **A review comment's `diff_hunk` is not the diff around it.** GitHub's field runs from the hunk's START to the COMMENTED LINE — so it holds nothing after the comment (often the half that says what the comment is about), and on an added file the hunk starts at line 1, so a comment on line 302 arrives carrying 302 lines of file body. The card rendered it verbatim, uncapped, until this was fixed. `pr-file-patches.ts` fetches the real per-file `patch` on demand so `utils/diff-window.js` can anchor the comment inside its hunk and take a window with lines on both sides; `diff_hunk` is now only the fallback, windowed to its tail. Don't "simplify" the fetch away as redundant with a field that's already in the payload — it isn't the same data. Note also that a **collapsed** `<details>` still costs its full markup in every repaint's `innerHTML`, so the expanders render 20 rows, not the rest of the hunk (see `project_pwa_subagent_repaint_cost` — the same shape caused a timeline stutter before).
 - **Linear-write retry queue.** `engine.ts` awaits `linearWriter.setState` and re-queues on next tick if it fails — fine because the call is rare and idempotent, but a backgrounded retry queue would let dispatch continue without blocking on Linear.
 - **Restoring a deleted action from its history.** `DELETE /api/actions/:name` records a `deleted` event and keeps the final `SKILL.md` body, but a deleted action leaves the catalog, so its history has no entry point in the UI and nothing can restore it.
 - **e2e coverage gaps from the redesign.** 75 tests across 36 spec files as of Aug 2026; the six long-failing specs were all stale selectors, since retargeted. What's still missing is coverage, not correctness: no e2e for the desktop shell (`.o-topbar`/`.o-sidebar`/`.o-frame`) or the mobile shell's tab bar, and none for the controller loop's gate/wait/dispatch moves beyond `orchestrated-gate.spec.ts`.

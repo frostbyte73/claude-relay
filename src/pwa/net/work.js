@@ -22,6 +22,9 @@ export const workApi = {
   getJob(id)                       { return request(jobPath(id)); },
   // Whole timeline from the spill log; job.events itself is capped at the last 50.
   getJobEvents(id, limit = 1000)   { return request(`${jobPath(id)}/events?limit=${encodeURIComponent(limit)}`); },
+  // Per-file diffs for the step's commented files — what lets a review comment render inside
+  // its hunk instead of at the end of one. Fetched on demand; the daemon does not persist these.
+  getPrPatches(id, stepId)         { return request(`${stepPath(id, stepId)}/pr-patches`); },
   createJob(body)                  { return request('/jobs', { method: 'POST', body: JSON.stringify(body) }); },
   promoteFromSession(sessionId)    { return request(`/jobs/from-session/${encodeURIComponent(sessionId)}`, { method: 'POST', body: '{}' }); },
   approve(id, body)                { return request(`${jobPath(id)}/approve`, { method: 'POST', body: JSON.stringify(body) }); },

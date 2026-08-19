@@ -4,6 +4,7 @@ import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { JobRecord, OrchestratedStep, Step } from '../work/work-types.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
+import type { PrFilePatches } from '../integrations/pr-file-patches.js';
 import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
@@ -17,6 +18,7 @@ export interface JobsRoutesDeps {
   jobQueue: JobQueue;
   engine: WorkEngine;
   prWatcher: PrWatcher;
+  prFilePatches: PrFilePatches;
   scheduler: Scheduler;
   sessionStore: SessionStore;
   worktreeManager: WorktreeManager;
@@ -103,7 +105,7 @@ async function handleDraftDecision(
 }
 
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
-  const { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager, jobsDir } = deps;
+  const { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir } = deps;
 
   const serialize = (j: JobRecord) =>
     serializeJob(j, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job));
@@ -136,6 +138,32 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ events: readJobEvents(jobsDir, m[1]!, limit) }));
+  });
+
+  // Per-file diffs for the PR's commented files, so the PWA can render a review comment inside
+  // its hunk rather than at the end of one (see integrations/pr-file-patches.ts). Read-only and
+  // best-effort: an unavailable patch answers 200 with `{}` and the card falls back to the
+  // comment's own `diff_hunk`. Deliberately NOT gated on job state the way the orchestrated-step
+  // mutation routes are — reading the comment trail of a merged or abandoned job is still useful.
+  server.route('GET', '/api/work/jobs/:id/steps/:stepId/pr-patches', async (req, res) => {
+    const path = (req.url ?? '').split('?')[0]!;
+    const m = path.match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/pr-patches$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const step = jobQueue.get(m[1]!)?.steps.find((s) => s.id === m[2]!);
+    if (step?.type !== 'orchestrated') { res.statusCode = 404; res.end('not found'); return; }
+
+    const prUrl = step.pr?.prUrl;
+    const cwd = step.workspace.kind === 'none' ? undefined : step.workspace.repoCwd;
+    // The paths are taken from the step's own comments, never from the query string: this
+    // shells out to `gh` in a repo checkout, so the caller does not get to name the target.
+    const paths = [...new Set((step.pr?.comments ?? []).map((c) => c.file).filter((f): f is string => !!f))];
+
+    const patches = prUrl && cwd
+      ? await prFilePatches.forPaths(cwd, prUrl, step.pr?.headRefOid, paths)
+      : {};
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ patches, headRefOid: step.pr?.headRefOid ?? null }));
   });
 
   server.route('POST', '/api/work/jobs', async (req, res) => {

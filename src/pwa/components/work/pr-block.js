@@ -10,6 +10,7 @@ import {
 import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml } from './write-draft-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { discardAll } from '../../state/git.js';
+import { prPatches } from '../../state/pr-patches.js';
 import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -92,6 +93,10 @@ export function hasPrBlock(s) {
 export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   const drafts = new Map((s.draftedReplies ?? []).map((d) => [d.commentId, d]));
   const comments = s.comments ?? [];
+  // The real per-file diffs, so each thread's excerpt can show the lines AFTER the comment —
+  // the comment's own `diff_hunk` stops dead at it. Render-time read of whatever has landed;
+  // the fetch is armed below and repaints through the prPatches store when it arrives.
+  const patches = comments.some((c) => c.file) ? prPatches.for(job?.id, s.id) : null;
   const allThreads = groupThreads(comments);
   const isResolved = (chain) => !!chain[chain.length - 1].respondedAt;
   const draftFor = (chain) => {
@@ -167,7 +172,7 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   // Order matters: `replyForComment` is what fills `claimed`, so the threads have to be
   // rendered before the leftovers can be worked out.
   const openThreadsHtml = openThreads
-    .map((chain) => renderThreadCard(chain, draftFor(chain), replyForComment))
+    .map((chain) => renderThreadCard(chain, draftFor(chain), replyForComment, patches))
     .join('');
   // A drafted reply whose `label` names no comment on this PR — a deleted comment, or an id
   // the action got wrong. It still posts if accepted, so it gets the same treatment (and the
@@ -225,7 +230,7 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
       <details class="pr-disclosure pr-threads-resolved">
         ${disclosureSummary('Comments', `${resolvedThreads.length} resolved`)}
         <ul class="threads">
-          ${resolvedThreads.map((chain) => renderThreadCard(chain)).join('')}
+          ${resolvedThreads.map((chain) => renderThreadCard(chain, undefined, undefined, patches)).join('')}
         </ul>
       </details>
     ` : ''}`;
@@ -256,6 +261,9 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
 
 export function wirePrBlockActions(el, job, s, { replyDraft } = {}) {
   if (isReplyDraft(replyDraft)) wireReplyDraft(el, replyDraft);
+  // Armed here rather than at render time: rendering runs on every repaint, and `ensure` is
+  // the thing that must decide once per head sha whether a fetch is owed.
+  if (job?.id && (s.comments ?? []).some((c) => c.file)) prPatches.ensure(job.id, s.id, s.headRefOid);
   el.querySelector('[data-diff-action="review"]')?.addEventListener('click', () => {
     void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId });
   });

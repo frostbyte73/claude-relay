@@ -9,6 +9,7 @@
 // message above it rather than as a footnote at the end of the thread. This module stays
 // read-only either way — it renders what it's handed and owns no controls of its own.
 import { renderMarkdown } from '../../markdown.js';
+import { windowForComment } from '../../utils/diff-window.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
@@ -29,14 +30,51 @@ function relTime(epochMs) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-function renderDiffHunk(hunk) {
-  return String(hunk).split('\n').map((line) => {
-    const cls = line.startsWith('+') ? 'hunk-add'
-      : line.startsWith('-') ? 'hunk-del'
-      : line.startsWith('@@') ? 'hunk-hdr'
-      : 'hunk-ctx';
-    return `<span class="${cls}">${escapeHtml(line) || ' '}</span>`;
-  }).join('');
+const OP_CLASS = { '+': 'hunk-add', '-': 'hunk-del', ' ': 'hunk-ctx' };
+
+function hunkRow(row, isAnchor) {
+  const num = row.newLine ?? row.oldLine ?? '';
+  return `<span class="${OP_CLASS[row.op] ?? 'hunk-ctx'}${isAnchor ? ' hunk-anchor' : ''}">`
+    + `<span class="hunk-num" aria-hidden="true">${num}</span>`
+    + `<span class="hunk-code">${escapeHtml(row.op + row.content) || ' '}</span>`
+    + '</span>';
+}
+
+// How far an expander reaches. A collapsed <details> still costs its full markup in every
+// repaint's innerHTML — that is what made a busy job's timeline stutter once before — so the
+// rest of a 581-row hunk does NOT get rendered just in case. Twenty lines is what "show me a
+// bit more" means; past that the thread's ↗ link to GitHub is the honest answer.
+const EXPAND_MAX = 20;
+
+// `data-details-key` because every thread in a step's PR block renders one of these with the
+// same class — detail.js's repaint snapshot would otherwise key them all alike and reopen the
+// lot when the user had opened one.
+function elisionHtml(hidden, where, rowsHtml, commentId) {
+  const shown = Math.min(hidden, EXPAND_MAX);
+  return `
+    <details class="hunk-more hunk-more--${where}" data-details-key="hunk-${where}-${escapeHtml(commentId)}">
+      <summary><span class="hunk-num" aria-hidden="true">⋯</span><span class="hunk-code">${shown} more line${shown === 1 ? '' : 's'} ${where}${hidden > shown ? ` (of ${hidden})` : ''}</span></summary>
+      ${rowsHtml}
+    </details>`;
+}
+
+// The excerpt under the thread header. GitHub's `diff_hunk` is the wrong slice to render
+// verbatim — see utils/diff-window.js — so `win` decides what to show and this only draws it.
+function renderHunkWindow(win, commentId) {
+  const row = (i) => hunkRow(win.rows[i], i === win.anchor);
+  const range = (from, to) => { const out = []; for (let i = from; i < to; i++) out.push(row(i)); return out.join(''); };
+
+  const beforeCount = win.start;
+  const before = beforeCount > 0
+    ? elisionHtml(beforeCount, 'above', range(Math.max(0, win.start - EXPAND_MAX), win.start), commentId)
+    : '';
+  const afterCount = win.rows.length - win.end;
+  const after = afterCount > 0
+    ? elisionHtml(afterCount, 'below', range(win.end, Math.min(win.rows.length, win.end + EXPAND_MAX)), commentId)
+    : '';
+  const header = `<span class="hunk-hdr"><span class="hunk-num" aria-hidden="true"></span>`
+    + `<span class="hunk-code">${escapeHtml(win.section || win.header)}</span></span>`;
+  return `<div class="thread-hunk">${header}${before}${range(win.start, win.end)}${after}</div>`;
 }
 
 function stripHtmlComments(body) {
@@ -138,8 +176,15 @@ function messageHtml(c, { first, last, reactions }) {
     </div>`;
 }
 
-export function renderThreadCard(chain, draft, replyHtmlFor = () => '') {
+export function renderThreadCard(chain, draft, replyHtmlFor = () => '', patches = null) {
   const root = chain[0];
+  const win = windowForComment({
+    patch: root.file ? patches?.[root.file] : undefined,
+    diffHunk: root.diffHunk,
+    line: root.line,
+    startLine: root.startLine,
+    side: root.side,
+  });
   const leaf = chain[chain.length - 1];
   const loc = root.file ? (root.line ? `${root.file}:${root.line}` : root.file) : 'PR conversation';
   const recClass = draft?.recommendation ? ` thread-has-${draft.recommendation}` : '';
@@ -153,10 +198,12 @@ export function renderThreadCard(chain, draft, replyHtmlFor = () => '') {
     <li class="thread${recClass}${replies.some(Boolean) ? ' thread--replying' : ''}" data-comment-id="${escapeHtml(leaf.id)}">
       <article class="thread-card">
         <header class="thread-header">
-          <span class="thread-loc">${escapeHtml(loc)}</span>
+          ${root.url
+    ? `<a class="thread-loc" href="${escapeHtml(root.url)}" target="_blank" rel="noopener">${escapeHtml(loc)} ↗</a>`
+    : `<span class="thread-loc">${escapeHtml(loc)}</span>`}
           ${recPill(draft?.recommendation)}
         </header>
-        ${root.diffHunk ? `<pre class="thread-hunk">${renderDiffHunk(root.diffHunk)}</pre>` : ''}
+        ${win ? renderHunkWindow(win, root.id) : ''}
         <div class="thread-body">
           ${chain.map((c, i) => messageHtml(c, {
     first: i === 0,

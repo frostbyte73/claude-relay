@@ -18,6 +18,7 @@ import { serializeJob } from './work/job-liveness.js';
 import { JournalStore } from './storage/journal-store.js';
 import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
+import { PrFilePatches } from './integrations/pr-file-patches.js';
 import { UserPrsWatcher } from './integrations/user-prs-watcher.js';
 import { WorkEngine } from './work/engine.js';
 import { LaunchGovernor } from './work/launch-governor.js';
@@ -441,6 +442,7 @@ async function main() {
   });
 
   const prWatcher = new PrWatcher({ queue: jobQueue, engine });
+  const prFilePatches = new PrFilePatches();
   const userPrsWatcher = new UserPrsWatcher({
     statePath: join(RUNTIME_DIR, 'user-prs.json'),
     onChange: (snap) => {
@@ -886,7 +888,7 @@ async function main() {
   });
   registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher });
   registerProjectsRoutes(server, { sessionStore, projectRegistry });
-  registerJobsRoutes(server, { jobQueue, engine, prWatcher, scheduler, sessionStore, worktreeManager, jobsDir: join(RUNTIME_DIR, 'jobs') });
+  registerJobsRoutes(server, { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir: join(RUNTIME_DIR, 'jobs') });
   registerPushRoutes(server, { pushStore, pushSender, userPrsWatcher });
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,

@@ -5,6 +5,7 @@
 // column). This file is just the three thin entry points surfaces.js expects.
 
 import { work } from '../../state/work.js';
+import { prPatches } from '../../state/pr-patches.js';
 import { mountFilterableList } from '../shell/list-filter.js';
 import { emptyState } from '../shell/placeholder.js';
 import { renderTrackedList } from './list.js';
@@ -26,8 +27,12 @@ export function renderDetail(mount, deps) {
   const paint = () => renderTrackedDetail(mount, selection);
   paint();
   const unsub = work.subscribe(paint);
+  // A PR's file diffs arrive after the job does (fetched on demand), and they change what the
+  // comment threads render — so they need their own repaint trigger, not just the work store's.
+  const unsubPatches = prPatches.subscribe(paint);
   return () => {
     unsub();
+    unsubPatches();
     teardownAllExcept(null);
   };
 }

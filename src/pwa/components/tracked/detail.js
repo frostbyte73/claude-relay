@@ -6,6 +6,7 @@
 // wrapped above it) — there is no separate mobile job-detail view.
 
 import { work } from '../../state/work.js';
+import { prPatches } from '../../state/pr-patches.js';
 import { renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard } from '../work/plan-section.js';
 import { planIsLive } from '../../vm/work-predicates.js';
 import { renderTimelineStep, wireTimelineStep, computeGroupPositions } from '../work/step-card.js';
@@ -178,9 +179,14 @@ function renderStepsTimeline(job) {
 // half-typed composer text, manually toggled <details>, or open menu would be
 // wiped mid-interaction by an unrelated activity event.
 
+// Class name + step is unique for the once-per-step disclosures (findings, checks, resolved
+// threads). It is NOT unique for anything rendered per row: a step's PR block holds one
+// "N lines above" expander per comment thread, all identically classed, so without an explicit
+// key opening one would reopen all of them on the next repaint. Those carry data-details-key.
 function detailsKey(d) {
   const step = d.closest('[data-step-id]');
-  return `${d.className}|${step ? step.getAttribute('data-step-id') : ''}`;
+  const own = d.getAttribute('data-details-key') ?? d.className;
+  return `${own}|${step ? step.getAttribute('data-step-id') : ''}`;
 }
 
 // Every in-timeline composer — the orchestrated card's "Message the controller" and
@@ -398,7 +404,9 @@ export function renderTrackedDetail(root, jobId) {
   // Implement") for the whole turn — reading as "nothing is happening" — until some
   // unrelated mutation bumps updatedAt, or the user leaves the detail and comes back.
   const editing = isEditingPlan(job.id);
-  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}:${JSON.stringify(job.live ?? null)}`;
+  // prPatches.version is folded in for the same reason as `live`: PR file diffs land after the
+  // job record and change what the comment threads render, without touching job.updatedAt.
+  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}:${JSON.stringify(job.live ?? null)}:${prPatches.get().version}`;
   if (root.__tkPaintKey === paintKey && root.querySelector('.tk-shell')) return;
   root.__tkPaintKey = paintKey;
 
