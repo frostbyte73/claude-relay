@@ -1,74 +1,116 @@
 # Outpost
 
-**A command center for Claude Code.** Outpost is a background daemon that runs on your Mac and exposes a polished PWA — a single control surface for starting, watching, approving, and shipping Claude Code work across every project on the machine, from whatever device you're at.
+**A command center for Claude Code.** Outpost is a background daemon that runs on your Mac and exposes a PWA — one control surface for starting, watching, approving, and shipping Claude Code work across every project on the machine.
 
-Open it in a browser tab next to your editor, or reach it from another device on your network. Pick a project, start a session, approve tool calls as they run, review the diff, and open the PR — without dropping into a terminal for each step.
+It started as a remote transcript viewer. It's now three things stacked: a **session** client (drive Claude interactively, approve its tool calls, review the diff, open the PR), a **job** runner (hand it a goal, it plans a multi-step change and shepherds the PR through CI, review comments, conflicts, and merge — stopping at you for every external write), and a **scheduler** (work that fires on a cron, on an event, or on spare token headroom without anyone asking).
+
+![Cockpit — everything parked on a human, in one place](docs/screenshots/cockpit.png)
+
+## Concepts
+
+Three primitives; everything else is detail.
+
+- **action** — one atomic unit of work: a `SKILL.md` plus input/output schemas, under `actions/<category>/<name>/`. Categories are `read`, `write`, `code`, `meta`.
+- **job** — a running unit of work with an editable plan and a history. Goes `planning → plan_pending_review → executing → done`.
+- **step** — one row of a plan. Either a plain **action** step (spawn a session for one named action, take its output, settle) or an **orchestrated** step, where a *controller* action owns the step end to end and decides its own next move each turn — that's how a PR gets shepherded from spec through merge.
+
+"Agent" and "skill" stay Claude Code's terms. They aren't Outpost-level concepts.
 
 ## Features
 
-### Multi-project workspace
+### The Cockpit is the only page you have to watch
 
-Every project under `~/.claude/projects/` shows up in a grouped list with its live, archived, and worktree-bound sessions. Pick a project, pick a branch (or start a fresh session), and you're in — `CLAUDE.md`, plugins, and MCP servers inherited from that workspace.
+Everything parked on a human lands in one inbox: pending tool approvals, jobs holding a write draft, steps sitting on a gate, plans waiting to be reviewed, anything that broke — alongside what's currently in flight. Nothing is persisted and nothing is ever "marked read"; a row is open because a predicate over live state holds, and it disappears when it stops holding.
 
-<img src="docs/screenshots/projects.png" width="300" alt="Projects list with worktree branches and recent sessions" />
+(Screenshot above.)
 
-### Permission modes that match the moment
+### One launcher, three destinations
 
-Toggle the session between **Ask**, **Plan**, **Accept Edits**, and **Bypass** from the header — same vocabulary as the CLI, surfaced as a one-tap menu. Each session remembers its own mode; set a different default for new sessions in Settings.
+⌘K opens the palette: pick a project (recent, ephemeral worktrees, or known repos — or add one), type the prompt, pick a model, choose in-place or a fresh worktree. Then choose what it becomes:
 
-<img src="docs/screenshots/modes.png" width="300" alt="Per-session permission mode picker explaining Ask, Plan, Accept Edits, and Bypass" />
+- **↵** — an interactive session.
+- **⌘⇧↵** — a tracked job. Auto-flips to a worktree; the orchestrator plans it.
+- **⇧⌘S** — a schedule, seeded with the same prompt/cwd/model.
 
-### Selective approvals — no rubber-stamping
+![⌘K palette with a composed prompt and the three launch actions](docs/screenshots/palette.png)
 
-Every `PreToolUse` is intercepted. Reads, greps, and other safe calls run automatically per your allowlist; anything else (writes, bash, MCP side effects) queues an inline **Approve / Reject** card right where it would have run — including inside subagent feeds, so you can stop a runaway agent before it lands.
+### Tracked jobs, with a plan you can edit
 
-<img src="docs/screenshots/approvals.png" width="300" alt="Inline approve/reject card inside a subagent feed" />
+Hand Outpost a goal and the orchestrator investigates it, then emits a typed, ordered plan. You review the plan before anything runs. Once it's executing, the plan stays mutable — insert a step, skip one, reorder.
 
-### Tool tiles that read like the CLI
+A controller step then runs its own loop: spec → plan → implement, then watch the PR. It reads what the PR watcher records (CI checks, review state, new comments, head moves) and picks its next move each turn — keep going, fan out to sub-actions, park on an event, ask you a question, or settle. A step is only allowed to call itself done when the PR it owns actually merged.
 
-Each tool call is rendered with per-tool chrome — git-style diffs for `Edit`, shell-prompt blocks for `Bash`, ripgrep equivalents for `Grep`, Read excerpts, and so on — so a transcript scrolls like a story, not a JSON dump.
+The right rail is the job's ledger: what needs you, every session the job has spawned, the branch/PR/age at a glance, and the recent activity trail down to which step registered which repo.
 
-<img src="docs/screenshots/tools.png" width="300" alt="Edit tile rendered as a unified diff, Bash tile as a shell block" />
+Jobs also arrive without you: an interactive session can be promoted to a job (⌘⇧P), and the built-in Linear routine files one per issue assigned to you.
 
-### Subagents in their own lanes
+![Tracked job: plan, an approval-gated merge draft, and the focus rail](docs/screenshots/tracked.png)
 
-Agent-spawned work gets its own tabbed feed with the spawn context pinned at the top. Watch each agent's tool calls live, switch between them, and approve their pending calls without losing your place in the parent transcript.
+### Every external write stops for the exact payload
 
-<img src="docs/screenshots/agents.png" width="300" alt="Subagent feed showing live commands and the spawn context" />
+Actions can't post, push, merge, or file anything on their own. An action that wants an external write **drafts** it — the literal command, or the literal comment body — and stops. That's the card in the middle of the shot above: `code.merge-pr` proposing a squash merge and a branch delete, each command shown in full, with the evidence it based them on, and Accept / Propose changes / Deny.
 
-### Task list panel
-
-The session's todo list — in progress, completed, with strikethrough — one tap away. Useful for long sessions where you want a glance at "how much is left."
-
-<img src="docs/screenshots/tasks.png" width="300" alt="Task list panel showing 19 of 20 complete" />
-
-### Inline `AskUserQuestion`
-
-When Claude needs a decision, the question lands as a real card — multi-select where applicable, with a freeform reply box always available.
-
-<img src="docs/screenshots/ask.png" width="300" alt="AskUserQuestion card with options and a freeform reply box" />
+You can edit the payload in place before accepting. Then the approved bytes are what runs, pinned: a session that "improves" the command after you approved it gets denied. Bodies too big for a command line are drafted inline and hashed, so the card always shows the actual content behind a `--body-file`. Risky calls are sorted by what you can *do* about them — some are refused outright because a correct alternative exists, some need a per-finding acknowledgement (a force-push, an `--admin` merge, `--mirror`), and the rest just carry a visible warning.
 
 ### Source control, without a terminal
 
-A full git overlay on every session: browse the log, stage hunks, write a commit message, push, and open a PR — without ever touching a terminal. Powered by local `git` and `gh`, so commits and PRs land under your real identity.
+A full git overlay on every session and job step: browse the log, review the diff side by side, stage or discard, and commit with a message Claude drafts (and you edit, or regenerate). Push, squash to the branch, merge to base, or open the PR — the overlay knows whether one is already open.
 
-<p>
-  <img src="docs/screenshots/git-log.png" width="240" alt="Git log view with recent commits and sync status" />
-  <img src="docs/screenshots/git-commit.png" width="240" alt="Diff viewer with stage checkboxes and commit composer" />
-  <img src="docs/screenshots/git-pr.png" width="240" alt="Open pull request modal with title and body fields" />
-</p>
+Review comments on a PR render inside their real diff hunk, with lines on both sides — not GitHub's truncated `diff_hunk`. Powered by local `git` and `gh`, so commits and PRs land under your real identity.
 
-### Context and usage at a glance
+![Diff review overlay with a drafted commit message and ship actions](docs/screenshots/diff.png)
 
-A live readout of model, context %, cache breakdown, and your 5-hour / 7-day usage windows — so you know when you're about to hit a limit before Claude does.
+### Sessions that read like the CLI
 
-<img src="docs/screenshots/context.png" width="300" alt="Context details panel showing cache breakdown and rate-limit windows" />
+Live transcript with per-tool chrome — git-style diffs for `Edit`, shell-prompt blocks for `Bash`, ripgrep-shaped output for `Grep`, Read excerpts — so a session scrolls like a story, not a JSON dump. Alongside it: the task list, `AskUserQuestion` rendered as a real card, and a rail showing model, cwd, mode, tokens, and connected MCP servers.
+
+Toggle the session between **Ask**, **Plan**, **Accept edits**, and **Bypass** from the header — same vocabulary as the CLI. Each session remembers its own mode; set the default for new sessions in Settings.
+
+### Selective approvals — no rubber-stamping
+
+Every `PreToolUse` is intercepted. Reads, greps, and other safe calls run automatically per your allowlist; anything else queues an inline **Approve / Reject** card right where it would have run — including inside subagent feeds, so you can stop a runaway agent before it lands. Agent-spawned work gets its own tabbed feed with the spawn context pinned at the top, so you can watch and approve each agent without losing your place in the parent transcript.
+
+### Routines — work that fires without you
+
+Schedules run on a `cron`, `once`, on an `event`, or **opportunistically off spare token headroom** (your 5h/7d windows have room, so something useful runs). Guards can veto a firing. A routine runs one of four things: a catalog action, a free-text prompt, a plain shell script (no Claude session at all), or an in-daemon native handler. Findings can route to the Cockpit, a Slack webhook, or a PR/issue comment.
+
+Five ship built-in: a nightly Claude Code updater, hourly Linear intake, the PR watcher (5m), your-open-PRs watcher (10m), and the action improver — which is gated on accumulated run evidence rather than a clock, so a firing with nothing to review records a skip instead of burning tokens.
+
+![Schedules: the token-opportunistic action improver, its trigger, and its run history](docs/screenshots/schedules.png)
+
+### Actions get better on their own
+
+Every action round is recorded — outcome, cost, denial count, any lesson the action journaled about why it got stuck, and every tool call the allowlist blocked. That evidence feeds a scorecard per action, and a routine that picks the single action most worth improving and proposes a `SKILL.md` revision citing the specific runs that justify it. You approve or reject the diff; every version is kept and revertible.
+
+Blocked calls surface on the action's own page, where they're evidence — not a place to grant a permission. That only happens in one place, below.
+
+![Skills library: the action catalog and one action's SKILL.md with its blocked-call evidence](docs/screenshots/skills.png)
+
+### Permissions you can actually read and edit
+
+An action declares which named **groups** it inherits, and those groups are the only thing granting it anything:
+
+| group | what it is |
+|---|---|
+| `core` | implicit for every Claude-backed action — read its envelope, report results back. No network. |
+| `read` | local file reads + read-only git |
+| `pull` | network **reads** only — anchored whitelists for `curl`, `gh api`, MCP `get_/list_/search_`, `kubectl get` |
+| `edit` | local writes, dependency manifests, and test runners — scoped to the session's own worktree |
+| `push` | external writes — **and gated**: a matching call runs only if you approved a draft pinning it |
+
+The Permissions page edits those groups inline, rule by rule. Every edit is re-linted before it applies (a rule that would span a write, escape its allowed roots, or backtrack badly is refused with the reason shown against the offending row), reloaded in memory before it's written to disk, and recorded in the group's revision history — revertible, and re-validated on revert.
+
+The same page lists every unresolved denial across all actions with three verdicts: never allow, promote into a group the action already inherits, or queue a fix to the action itself.
+
+![Settings › Permissions: the five groups, with `edit`'s bash patterns expanded](docs/screenshots/permissions.png)
+
+### Usage and context at a glance
+
+A live readout of your 5-hour and 7-day usage windows sits in the sidebar, and per-session model / context / cache detail in the session rail — so you know when you're about to hit a limit before Claude does. It's also what the opportunistic scheduler reads to decide there's room to run something.
 
 ### Themes that don't look like every other dev tool
 
-Nine hand-tuned palettes — Halcyon, Almanac, Terminal, Nordic, Ink, Botanical, Plasma, Atlas, Library — light and dark, plus the per-default permission mode picker, all in one Settings sheet.
-
-<img src="docs/screenshots/themes.png" width="300" alt="Theme picker and default-mode selector" />
+Nine hand-tuned palettes — Halcyon, Almanac, Terminal, Nordic, Ink, Botanical, Plasma, Atlas, Library — each in light and dark, plus three row densities. Terminal is genuinely brutalist; Almanac is an editorial serif. They are not nine tints of the same blue.
 
 ## Quick start
 
@@ -81,43 +123,51 @@ npm install
 npm start
 ```
 
-Then open `http://localhost:8080` in your browser. That's it — the daemon binds the PWA to loopback and you're in. `npm start` runs it in the foreground for a quick look; to keep it running on login and restarting on crash, install it as a background daemon (below). To reach it from another device, see [Remote access over Tailscale](#remote-access-over-tailscale-optional) near the bottom — the localhost listener stays available either way.
+Then open `http://localhost:8080`. That's it — the daemon binds the PWA to loopback and you're in. `npm start` runs it in the foreground for a quick look; to keep it running on login and restarting on crash, install it as a LaunchAgent (below). To reach it from another machine, see [Remote access over Tailscale](#remote-access-over-tailscale-optional) — the localhost listener stays available either way.
 
 ## Prerequisites
 
 - **macOS** (this is a launchd LaunchAgent; nothing else is supported).
 - **Node.js 22+** on `PATH`.
 - **Claude Code CLI** (`claude`) installed and authenticated for the user the daemon runs as.
-- **GitHub CLI** (`gh`), if you want to use the source-control overlay's "Open PR" flow. `brew install gh && gh auth login`.
+- **GitHub CLI** (`gh`) for anything PR-shaped — the source-control overlay's "Open PR", and every `code.*` action. `brew install gh && gh auth login`.
 
 > **The daemon has to be running.** Outpost runs locally on your Mac, so the PWA is only reachable while the machine is awake. The installer wraps the daemon in `caffeinate -is` to block idle and AC-power system sleep, but closing the lid on a Mac without an external display still triggers sleep regardless. If you want Outpost reachable while you're away from the machine, leave it plugged in with the lid open.
 
 ## Run it in the background
 
-`npm start` is a one-shot foreground process. For everyday use, install Outpost as a LaunchAgent so it starts at login and restarts on crash.
+`npm start` is a one-shot foreground process. For everyday use, install Outpost as a LaunchAgent.
 
 ### (Optional) Set up secrets in `~/.outpost/.env`
 
-macOS launchd strips your shell's env when it spawns the daemon, so anything Claude subprocesses need at runtime — `GITHUB_TOKEN`, MCP server credentials, etc. — has to be made available to the daemon explicitly. The simplest way is a `~/.outpost/.env` file the daemon sources at startup:
+macOS launchd strips your shell's env when it spawns the daemon, so anything Claude subprocesses need at runtime has to reach the daemon explicitly. The simplest way is a `~/.outpost/.env` file the daemon sources at startup:
 
 ```bash
 cat > ~/.outpost/.env <<'EOF'
-# Required if you want PR creation / `gh pr view` in the source-control overlay
-# to act under a specific identity. Otherwise gh falls back to its own auth.
+# Lets `gh` act under a specific identity for PR creation / lookups.
+# Without it, gh falls back to its own auth.
 GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Any other secrets your MCP servers or hooks expect, e.g.:
-# ANTHROPIC_API_KEY=sk-ant-...
-# LINEAR_API_KEY=lin_api_...
+# Enables the built-in hourly Linear intake routine (one job per issue
+# assigned to you). Absent, that routine stays disabled rather than
+# recording an error run every hour.
+LINEAR_API_TOKEN=lin_api_...
+
+# Any other secrets your MCP servers or hooks expect.
 EOF
 chmod 600 ~/.outpost/.env
 ```
 
 Standard `KEY=value` syntax, `#` comments allowed, `export KEY=value` tolerated. Anything already set in the plist or shell wins over the file, so the file is the safe place for secrets you don't want baked into LaunchAgent XML.
 
-### Review the allowlist
+### Review the permissions before going live
 
-`config/allowlist.default.json` ships the defaults for which tools auto-approve vs. queue for explicit confirmation in the PWA. On first daemon start it's copied to `config/allowlist.json` (gitignored), which is the runtime file the daemon reads and writes. The defaults auto-approve read-only tools and queue everything else — open either file and trim or extend it before going live. See [Allowlist](#allowlist) below.
+Two files govern what runs without asking, and they answer different questions:
+
+- **`config/permission-groups.json`** — what an *action* may do. Seeded from the tracked `config/permission-groups.default.json` on first start, then reconciled against it on every boot (your local additions survive, your local deletions stay deleted). Editable from Settings › Permissions.
+- **`config/allowlist.json`** — what an *interactive session or skill* may do without queueing an approval card. Seeded from `config/allowlist.default.json`. Three lists: `alwaysAllow` (exact tool names), `alwaysAllowBashPatterns` (regex against a `Bash` call's `command`), `alwaysAllowMcpPatterns` (regex against `mcp__<server>__<tool>`), plus an optional `alwaysAllowPathPatterns` for path-scoped write tools.
+
+Both runtime files are gitignored per checkout, so rules you hot-add in a worktree don't leak into your real install. The defaults auto-approve read-only tools and queue everything else — **open them and trim or extend before going live.**
 
 ### Install the LaunchAgent
 
@@ -125,48 +175,41 @@ Standard `KEY=value` syntax, `#` comments allowed, `export KEY=value` tolerated.
 install/install.sh
 ```
 
-This writes `~/Library/LaunchAgents/local.outpost.$USER.plist`, loads it, and prints the pid on success. The daemon starts at every login and auto-restarts on crash. Logs land in `~/Library/Logs/outpost.{log,err.log}`. It auto-discovers every project under `~/.claude/projects/` at startup, so there's no "pick one workspace" step — you'll get a project picker in the PWA when starting a new session.
+This writes `~/Library/LaunchAgents/local.outpost.$USER.plist`, loads it, and prints the pid on success. The daemon starts at every login and auto-restarts on crash. Logs land in `~/Library/Logs/outpost.{log,err.log}`. It discovers every project under `~/.claude/projects/` at startup and keeps its own registry of added repos, so there's no "pick one workspace" step.
 
 ## Configuration
 
-The daemon reads env vars at startup, in this precedence: **plist `EnvironmentVariables` > `~/.outpost/.env` > built-in defaults.** For most users, the defaults are fine and the only thing to touch is `~/.outpost/.env` for secrets (see above).
+The daemon reads env vars at startup, in this precedence: **plist `EnvironmentVariables` > `~/.outpost/.env` > built-in defaults.** For most users the defaults are fine and the only thing to touch is `~/.outpost/.env`.
 
-If you need to override a default permanently, edit `~/Library/LaunchAgents/$PLIST_LABEL.plist` and add the key under `<key>EnvironmentVariables</key>`, then `launchctl kickstart -k gui/$UID/$PLIST_LABEL`.
+To override a default permanently, edit `~/Library/LaunchAgents/$PLIST_LABEL.plist`, add the key under `<key>EnvironmentVariables</key>`, then `launchctl kickstart -k gui/$UID/$PLIST_LABEL`.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `OUTPOST_HTTP_PORT` | `8080` | Plain-HTTP loopback listener port. Set to `0` to disable the loopback listener. With Tailscale also unavailable, the daemon refuses to boot. |
-| `OUTPOST_HTTPS_PORT` | `8443` | Port the PWA + WebSocket listen on (tailnet listener). Change if `:8443` is taken. |
-| `OUTPOST_HOOK_PORT` | `8444` | Loopback-only port the `PreToolUse` hook posts to. Change if `:8444` is taken. |
-| `OUTPOST_PLIST_LABEL` | `local.outpost.$USER` | LaunchAgent label. Export this in your shell **before** running `install/install.sh` if you want an org-style prefix like `com.example.outpost`. |
-| `OUTPOST_RUNTIME_DIR` | `~/.outpost` | Where certs, allowlist, push subscriptions, and `.env` live. |
+| `OUTPOST_HTTP_PORT` | `8080` | Plain-HTTP loopback listener port. Set to `0` to disable it — with Tailscale also unavailable, the daemon refuses to boot rather than start with no listener. |
+| `OUTPOST_HTTPS_PORT` | `8443` | Port the PWA + WebSocket listen on over the tailnet. |
+| `OUTPOST_HOOK_PORT` | `8444` | Loopback-only port the `PreToolUse` hook posts to. |
+| `OUTPOST_PLIST_LABEL` | `local.outpost.$USER` | LaunchAgent label. Export **before** running `install/install.sh` for an org-style prefix like `com.example.outpost`. |
+| `OUTPOST_RUNTIME_DIR` | `~/.outpost` | Where certs, jobs, worktrees, the installed action tree, and `.env` live. |
 | `OUTPOST_PROJECTS_ROOT` | `~/.claude/projects` | Where the daemon scans for projects/sessions. |
 | `OUTPOST_HOST` | auto-detected | Tailnet hostname used to locate the TLS cert+key in `OUTPOST_RUNTIME_DIR`. Override if auto-detection picks the wrong one. |
+| `OUTPOST_BIND_ADDRESS` | auto-detected | Address the HTTPS listener binds. |
 | `OUTPOST_APPROVAL_TIMEOUT_MS` | `600000` (10 min) | How long a pending approval card waits before the hook auto-rejects. |
+| `OUTPOST_STOP_THRESHOLD_MS` | `30000` | How long a session must be idle before a stop-hook counts it as done (drives "needs you" notifications). |
+| `OUTPOST_PUSH_TTL_SECONDS` | `60` | TTL on outgoing Web Push messages. |
 
-Anything else (`OUTPOST_CERT_PATH`, `OUTPOST_KEY_PATH`, `OUTPOST_ALLOWLIST_PATH`, `OUTPOST_VAPID_PATH`, etc.) exists for power users and edge cases — see `src/config.ts` for the full list.
-
-### Allowlist
-
-`config/allowlist.json` (created on first daemon start from the tracked `config/allowlist.default.json`) controls which tool calls run without prompting. There are three lists:
-
-- `alwaysAllow`: exact tool names that always pass (e.g. `Read`, `Grep`).
-- `alwaysAllowBashPatterns`: regex matched against the `command` arg of `Bash` calls.
-- `alwaysAllowMcpPatterns`: regex matched against MCP tool names (`mcp__<server>__<tool>`).
-
-The defaults auto-approve read-only tools (file reads, greps, read-only `git` and `gh`, and a handful of read-only MCP integrations) and queue everything else. **Review and edit before using.** Anything not matched gets queued for explicit approval in the PWA.
+Anything else (`OUTPOST_CERT_PATH`, `OUTPOST_KEY_PATH`, `OUTPOST_ALLOWLIST_PATH`, `OUTPOST_VAPID_PATH`, `OUTPOST_PUSH_SUBS_PATH`) exists for power users — see `src/config.ts` for the full list.
 
 ## Remote access over Tailscale (optional)
 
-By default Outpost only listens on `localhost`. To reach it from another device — your phone, a tablet, another laptop — put both machines on the same [Tailscale](https://tailscale.com) tailnet and let the daemon serve HTTPS on its tailnet hostname. Nothing is exposed to the public internet.
+By default Outpost only listens on `localhost`. To reach it from another machine, put both on the same [Tailscale](https://tailscale.com) tailnet and let the daemon serve HTTPS on its tailnet hostname. Nothing is exposed to the public internet.
 
-**1. Install Tailscale on both devices.** On the Mac running the daemon:
+**1. Install Tailscale on both machines.** On the Mac running the daemon:
 
 ```bash
 brew install --cask tailscale-app   # or download from https://tailscale.com/download/mac
 ```
 
-Open the menu-bar app and sign in, then confirm `tailscale status` shows a `100.x.y.z` IP. Install Tailscale on the other device ([iOS](https://apps.apple.com/us/app/tailscale/id1470499037) / [Android](https://play.google.com/store/apps/details?id=com.tailscale.ipn)) and sign in with the **same account** so the two show up in the same tailnet.
+Open the menu-bar app and sign in, then confirm `tailscale status` shows a `100.x.y.z` IP. Install Tailscale on the other machine and sign in with the **same account** so the two show up in the same tailnet.
 
 **2. Enable HTTPS + MagicDNS** for your tailnet in the Tailscale admin console (a one-time account setting, not on the device). This gives the Mac a stable `<host>.ts.net` name and lets you mint a real TLS cert for it — both of which the daemon needs. Follow Tailscale's [HTTPS / MagicDNS guide](https://tailscale.com/kb/1153/enabling-https).
 
@@ -181,36 +224,25 @@ tailscale cert \
   $HOST
 ```
 
-The daemon reads these files at startup. If they're missing or unreadable it exits with the exact `tailscale cert` command to run, so you can also skip this step and let the daemon tell you what to type.
+The daemon reads these files at startup. If they're missing or unreadable it logs the exact `tailscale cert` command to run and falls back to the loopback listener, so you can skip this step and let the daemon tell you what to type.
 
-**4. Open the PWA** from the other device at the tailnet hostname:
+**4. Open the PWA** from the other machine at the tailnet hostname:
 
 ```
 https://<your-tailnet-hostname>.ts.net:8443/
 ```
 
-Make sure Tailscale is signed in and toggled on there first — it only routes traffic while actively connected. On **iPhone**, open the URL in **Safari** (not Chrome — the PWA install path only works in Safari on iOS), tap the Share button, then "Add to Home Screen", and launch Outpost from the new icon. **This is required for push notifications on iOS** — iOS only allows Web Push from PWAs installed to the Home Screen. On Android Chrome, Web Push works without installing; the Settings page's "Enable push notifications" toggle is all you need. If the page doesn't load, the usual culprit is Tailscale being toggled off on the other device.
+Make sure Tailscale is signed in and toggled on there first — it only routes traffic while actively connected. If the page doesn't load, that's the usual culprit.
 
 ## Uninstall
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/local.outpost.$USER.plist
+launchctl bootout gui/$UID/local.outpost.$USER
 rm ~/Library/LaunchAgents/local.outpost.$USER.plist
 rm -rf ~/.outpost
 ```
 
-## Upgrading from single-cwd outpost
-
-If you previously installed outpost with the `OUTPOST_CWD` env var pinning the daemon to one project, no migration is needed beyond removing that line: outpost now discovers every project under `~/.claude/projects/` and asks where to launch each new session via a picker sheet.
-
-Edit `~/Library/LaunchAgents/local.outpost.$USER.plist` and delete the `<key>OUTPOST_CWD</key>` element plus its following `<string>...</string>`. Then reload the daemon:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/local.outpost.$USER.plist
-launchctl load ~/Library/LaunchAgents/local.outpost.$USER.plist
-```
-
-Existing sessions are not migrated — they're already in their per-project dirs and will appear in the new grouped list on first load.
+`~/.outpost` holds your jobs, worktrees, run history, and action tree — back it up first if you might want any of it.
 
 ## Development
 
@@ -220,13 +252,16 @@ npm start            # one-shot daemon
 npm test             # vitest + playwright
 npm run test:unit    # vitest only
 npm run test:e2e     # playwright only
+npx tsc --noEmit     # NOT in the test gate — run this yourself
 ```
 
-The daemon expects to bind `:8080` (loopback PWA + WS, plain HTTP), `:8443` (tailnet PWA + WS, HTTPS), and `:8444` (loopback hook endpoint). The hook endpoint is loopback-only and authenticated with a per-launch secret that's written into Claude's `settings.json` at startup — see `src/hook-server.ts` for the rationale.
+The daemon binds `:8080` (loopback PWA + WS, plain HTTP), `:8443` (tailnet PWA + WS, HTTPS), and `:8444` (loopback hook endpoint). The hook endpoint is loopback-only and authenticated with a per-launch secret written into Claude's `settings.json` at startup — see `src/permissions/hook-server.ts` for the rationale.
+
+`CLAUDE.md` is the real orientation document for working inside this repo: the permission model rule by rule, the controller loop's guards and why each exists, where new code goes, and the gotchas that have already bitten. Read it before changing anything under `src/permissions/` or `src/work/`.
 
 ### Running side-by-side with the installed daemon
 
-Two daemons can't share `~/.outpost/` — `index.json` files use atomic rename for persistence and a second writer will race. When testing from a checkout (worktree or otherwise) while the prod LaunchAgent is running, **stop the LaunchAgent first**, then spin up an alternate-port instance:
+Two daemons can't share `~/.outpost/` — `index.json` files use atomic rename for persistence and a second writer will race. Stop the LaunchAgent first, then spin up an alternate-port instance from your checkout:
 
 ```bash
 launchctl bootout gui/$UID/local.outpost.$USER         # stop the installed daemon
@@ -234,25 +269,34 @@ OUTPOST_HTTPS_PORT=8543 OUTPOST_HOOK_PORT=8544 \
   npx tsx src/daemon.ts                                # the test instance
 ```
 
-Open `https://<host>.ts.net:8543/` to drive it. When you're done, restart the real daemon with:
+Open `https://<host>.ts.net:8543/` to drive it. Restart the real daemon with:
 
 ```bash
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/local.outpost.$USER.plist
 ```
 
-(After a working-tree merge, `launchctl kickstart -k gui/$UID/local.outpost.$USER` is the cleanest way to pick up the new code — `unload`/`load` trips on the `KeepAlive` race.)
+After merging work into the installed checkout, `launchctl kickstart -k gui/$UID/local.outpost.$USER` is the cleanest way to pick up new code — `unload`/`load` trips on the `KeepAlive` race.
 
-The allowlist is the exception to "don't run side-by-side": each checkout has its own gitignored `config/allowlist.json` seeded from `config/allowlist.default.json`, so rules hot-added in a worktree don't leak into prod (and vice versa).
+The permission files are the exception to "don't run side-by-side": each checkout has its own gitignored `config/allowlist.json` and `config/permission-groups.json`, so rules hot-added in a worktree don't leak into prod.
 
 ## Architecture
 
-- `src/daemon.ts` — wires everything together; main entrypoint.
-- `src/server.ts` — hosts up to two listeners over one shared handler: a plain-HTTP loopback (always-on by default at `127.0.0.1:8080`) and an optional HTTPS listener on the tailnet IP. WebSocket upgrades work on either.
-- `src/hook-server.ts` — the loopback HTTP endpoint Claude's `PreToolUse` hook posts to.
-- `src/session-manager.ts` — owns the live Claude subprocesses and per-session WebSocket fanout.
-- `src/session-store.ts` — reads session JSONLs off disk for transcript replay.
-- `src/worktree-manager.ts` — per-session git worktrees under `~/.outpost/worktrees/<sessionId>/`.
-- `src/git-ops.ts` — git plumbing for the PWA's source-control overlay (status, log, diff, commit, push, pull, `gh pr` lookups).
-- `src/approvals.ts` — the pending-approval queue.
-- `src/allowlist.ts` — matches incoming tool calls against the allowlist.
-- `src/pwa/` — the static PWA assets served at `/`.
+Backend is clustered by concern under `src/`; nothing new goes at the root.
+
+| path | what lives there |
+|---|---|
+| `src/daemon.ts` | entrypoint — wires modules, installs route factories |
+| `src/server.ts` | HTTPS + WS surface for the PWA (loopback + optional tailnet listener over one handler) |
+| `src/mcp-server.ts` | MCP surface spawned Claude sessions report results through |
+| `src/routes/` | HTTP route factories, one file per resource group |
+| `src/session/` | session lifecycle — subprocesses, WS fanout, transcript replay |
+| `src/work/` | job orchestration — the engine, envelopes, write drafts, the controller runtime |
+| `src/steps/` | per-step-kind handlers, incl. the orchestrated policy that bounds a controller |
+| `src/permissions/` | the `PreToolUse` gate — scopes, rules, the bash lexer, the write-shape lint |
+| `src/actions/` | action registry, scorecards, improvement packs |
+| `src/schedules/` | cron / event / token-opportunistic routines |
+| `src/integrations/` | external polling — PR watchers, Linear, usage |
+| `src/git/` | worktrees, git plumbing, diff parsing |
+| `src/storage/` | persisted stores (all atomic-rename) |
+| `src/pwa/` | the static client — plain ES modules, no bundler. `src/pwa/DESIGN.md` is its own orientation doc. |
+| `actions/` | the shipped action catalog (`read` / `write` / `code` / `meta`) |
