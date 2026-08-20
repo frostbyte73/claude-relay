@@ -8,6 +8,11 @@ export const VALID_MODES = ['light', 'dark'];
 // that reads this later (⌘K palette, D5) pin a family without duplicating
 // the exact model-id string this file has no authority over.
 export const VALID_DEFAULT_MODELS = ['default', 'fable', 'opus', 'sonnet', 'haiku'];
+// The command the DAEMON runs to open a checkout — it's the host that has the files, so
+// this is a binary on that machine, not a URL scheme this browser can handle. Kept in sync
+// with DEFAULT_EDITOR_COMMAND in src/git/open-in-editor.ts (the daemon's own fallback,
+// used until the client seeds this key).
+export const DEFAULT_EDITOR_COMMAND = 'code';
 
 function loadTheme() {
   const v = localStorage.getItem('cr:theme');
@@ -31,6 +36,10 @@ function loadDefaultModel() {
   const v = localStorage.getItem('cr:defaultModel');
   return VALID_DEFAULT_MODELS.includes(v) ? v : 'default';
 }
+function loadEditorCommand() {
+  const v = localStorage.getItem('cr:editorCommand');
+  return typeof v === 'string' && v.trim() ? v.trim() : DEFAULT_EDITOR_COMMAND;
+}
 function loadLaunchConcurrency() {
   const v = Number(localStorage.getItem('cr:launchConcurrency'));
   return Number.isInteger(v) && v >= 1 ? v : 1;
@@ -41,6 +50,7 @@ const store = createStore({
   mode: loadMode(),
   defaultApprovalMode: loadDefaultApprovalMode(),
   defaultModel: loadDefaultModel(),
+  editorCommand: loadEditorCommand(),
   launchConcurrency: loadLaunchConcurrency(),
   acceptEdits: false,
   modePopoverOpen: false,
@@ -77,6 +87,12 @@ function applyDefaultModel(model) {
   try { localStorage.setItem('cr:defaultModel', model); } catch {}
   store.set((s) => (s.defaultModel === model ? s : { ...s, defaultModel: model }));
 }
+function applyEditorCommand(cmd) {
+  if (typeof cmd !== 'string') return;
+  const v = cmd.trim() || DEFAULT_EDITOR_COMMAND;
+  try { localStorage.setItem('cr:editorCommand', v); } catch {}
+  store.set((s) => (s.editorCommand === v ? s : { ...s, editorCommand: v }));
+}
 function applyLaunchConcurrency(n) {
   if (!Number.isInteger(n) || n < 1) return;
   try { localStorage.setItem('cr:launchConcurrency', String(n)); } catch {}
@@ -87,6 +103,7 @@ register({ key: 'theme', apply: applyTheme, current: () => store.get().theme });
 register({ key: 'mode', apply: applyMode, current: () => store.get().mode });
 register({ key: 'defaultApprovalMode', apply: applyDefaultApprovalMode, current: () => store.get().defaultApprovalMode });
 register({ key: 'defaultModel', apply: applyDefaultModel, current: () => store.get().defaultModel });
+register({ key: 'editorCommand', apply: applyEditorCommand, current: () => store.get().editorCommand });
 register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () => store.get().launchConcurrency });
 
 export const settings = {
@@ -109,6 +126,10 @@ export const settings = {
   setDefaultModel(model) {
     applyDefaultModel(model);
     push('defaultModel', store.get().defaultModel);
+  },
+  setEditorCommand(cmd) {
+    applyEditorCommand(cmd);
+    push('editorCommand', store.get().editorCommand);
   },
   setLaunchConcurrency(n) {
     applyLaunchConcurrency(n);

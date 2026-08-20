@@ -376,6 +376,10 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+/* External editor takes a command, not a number — undo the numeric field's narrow,
+   right-aligned shape and give it the room a path plus flags needs. */
+.settings-row-input--wide { width: auto; flex: 1; min-width: 0; text-align: left; }
+.settings-segmented + .settings-row { margin-top: var(--gap-3); }
 
 /* ── Mobile ───────────────────────────────────────────────────────────── */
 /* Sections list becomes the pushed-detail navigator's list screen (mobile-

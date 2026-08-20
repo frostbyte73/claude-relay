@@ -12,6 +12,8 @@ import {
 } from '../git/git-ops.js';
 import type { GitCommandResult } from '../git/git-ops.js';
 import { handleDiffRoute } from '../git/diff-endpoint.js';
+import { DEFAULT_EDITOR_COMMAND, openInEditor } from '../git/open-in-editor.js';
+import type { PreferencesStore } from '../storage/preferences-store.js';
 import { readJsonObject } from './util.js';
 
 export interface GitRoutesDeps {
@@ -19,6 +21,7 @@ export interface GitRoutesDeps {
   worktreeManager: WorktreeManager;
   engine: WorkEngine;
   prWatcher: PrWatcher;
+  preferencesStore: PreferencesStore;
 }
 
 // WorktreeManager.provision() gives a readonly (review/investigation) worktree an empty
@@ -48,7 +51,33 @@ function refuseIfReadonly(
 // Git endpoints resolve cwd to worktree path for worktree-backed sessions, else project cwd.
 // Write actions return a fresh status snapshot so the PWA can repaint without an extra round-trip.
 export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
-  const { sessionStore, worktreeManager, engine, prWatcher } = deps;
+  const { sessionStore, worktreeManager, engine, prWatcher, preferencesStore } = deps;
+
+  // Opens this session's checkout in the user's editor ON THE DAEMON HOST, which is the
+  // only machine the files exist on. The button used to emit a `vscode://` deep link, which
+  // only ever works when the browser happens to be running there too — the exception, not
+  // the rule, for a PWA served over a tailnet. The path is resolved from the session, never
+  // taken from the caller; the command is argv from the preferences blob, run without a shell.
+  server.route('POST', '/api/sessions/:id/open-editor', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/open-editor$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
+    res.setHeader('content-type', 'application/json');
+    if (resolved.kind === 'error') {
+      res.statusCode = resolved.status;
+      res.end(JSON.stringify({ error: resolved.message }));
+      return;
+    }
+    const command = preferencesStore.getEditorCommand() ?? DEFAULT_EDITOR_COMMAND;
+    try {
+      await openInEditor(command, resolved.cwd);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, command, path: resolved.cwd }));
+    } catch (err) {
+      res.statusCode = 409;
+      res.end(JSON.stringify({ ok: false, error: (err as Error).message }));
+    }
+  });
 
   server.route('GET', '/api/sessions/:id/diff', (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');

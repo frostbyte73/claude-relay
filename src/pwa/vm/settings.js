@@ -17,6 +17,7 @@ export const SETTINGS_SECTIONS = [
     label: 'Runtime',
     items: [
       { key: 'model-defaults', label: 'Model defaults', icon: '◇' },
+      { key: 'editor', label: 'External editor', icon: '✎' },
       { key: 'permissions', label: 'Permissions', icon: '◉' },
       { key: 'mcp', label: 'MCP connections', icon: '◈' },
       { key: 'notifications', label: 'Notifications', icon: '✉' },

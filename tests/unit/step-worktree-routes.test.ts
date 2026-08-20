@@ -96,6 +96,7 @@ describe('POST /api/sessions/:id/git/discard — step-keyed worktrees', () => {
         worktreeRecordForSession: (sid: string) => (sid === 'sess-1' ? record : undefined),
       } as never,
       prWatcher: {} as never,
+      preferencesStore: { getEditorCommand: () => undefined } as never,
     });
     await server.listen();
 
@@ -116,7 +117,8 @@ describe('POST /api/work/jobs/:id/steps/:stepId/message — terminated jobs', ()
     server = new Server({ httpPort: port, heartbeatMs: 0 });
     registerJobsRoutes(server, {
       jobQueue: h.queue, engine: h.engine,
-      prWatcher: {} as never, prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
+      prWatcher: {} as never,
+      prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
       worktreeManager: {} as never, jobsDir: h.jobsDir,
     });
     await server.listen();
@@ -134,7 +136,8 @@ describe('POST /api/work/jobs/:id/steps/:stepId/message — terminated jobs', ()
     server = new Server({ httpPort: port, heartbeatMs: 0 });
     registerJobsRoutes(server, {
       jobQueue: h.queue, engine: h.engine,
-      prWatcher: {} as never, prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
+      prWatcher: {} as never,
+      prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
       worktreeManager: {} as never, jobsDir: h.jobsDir,
     });
     await server.listen();
@@ -213,7 +216,8 @@ describe('POST /api/work/jobs/:id/steps/:stepId/resolve — orchestrated steps',
     server = new Server({ httpPort: port, heartbeatMs: 0 });
     registerJobsRoutes(server, {
       jobQueue: queue, engine,
-      prWatcher: {} as never, prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
+      prWatcher: {} as never,
+      prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
       worktreeManager: {} as never, jobsDir: join(dir, 'jobs'),
     });
     await server.listen();
@@ -232,7 +236,8 @@ describe('POST /api/work/jobs/:id/steps/:stepId/resolve — orchestrated steps',
     server = new Server({ httpPort: port, heartbeatMs: 0 });
     registerJobsRoutes(server, {
       jobQueue: h.queue, engine: h.engine,
-      prWatcher: {} as never, prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
+      prWatcher: {} as never,
+      prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
       worktreeManager: {} as never, jobsDir: h.jobsDir,
     });
     await server.listen();

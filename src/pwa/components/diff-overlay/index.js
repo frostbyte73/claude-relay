@@ -218,7 +218,7 @@ function overlayShellHtml() {
           <button class="o-btn o-btn--danger dr-btn" type="button" data-act="discard-all"
             title="Discard all uncommitted changes in this worktree">Discard all</button>
           <button class="o-btn o-btn--default dr-btn" type="button" data-act="open-editor"
-            title="Best-effort — opens via a vscode:// deep link if your browser has an editor protocol handler registered; otherwise this is a no-op.">Open in editor ↗</button>
+            title="Opens this checkout on the daemon host, using the command set in Settings > External editor.">Open in editor ↗</button>
           <button class="dr-close" type="button" data-act="close" aria-label="Close">✕</button>
         </div>
       </header>
@@ -245,7 +245,7 @@ function wireOverlayEvents(m) {
   });
   m.querySelector('[data-act="close"]').addEventListener('click', closeDiffOverlay);
   m.querySelector('[data-act="discard-all"]').addEventListener('click', () => { void discardAll(); });
-  m.querySelector('[data-act="open-editor"]').addEventListener('click', openInEditor);
+  m.querySelector('[data-act="open-editor"]').addEventListener('click', () => { void openInEditor(); });
   m.querySelector('#dr-file-search').addEventListener('input', (e) => {
     diffState.filter = e.target.value;
     renderDiffFileList();
@@ -301,8 +301,26 @@ function onGlobalKeydown(e) {
 
 function rowKey(row) { return diffCommentKey(row.dataset.file, row.dataset.side, row.dataset.line); }
 
-function openInEditor() {
-  setSourceFeedback('ok', 'Open in editor is best-effort — no vscode:// (or similar) handler is wired up server-side yet.');
+// The editor opens on the DAEMON host, not on this device — that's the only machine the
+// worktree exists on. Which command runs there is Settings > External editor.
+async function openInEditor() {
+  const sessionId = diffState.ctx?.sessionId;
+  if (!sessionId) {
+    setSourceFeedback('err', 'No session for this diff — nothing to open.');
+    return;
+  }
+  setSourceFeedback('ok', 'Opening…');
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/open-editor`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setSourceFeedback('err', body.error || `Open in editor failed (${res.status}).`);
+      return;
+    }
+    setSourceFeedback('ok', `Opened ${body.path} with ${body.command}.`);
+  } catch {
+    setSourceFeedback('err', 'Open in editor failed — the daemon is unreachable.');
+  }
 }
 
 // ── Discard (destructive) ─────────────────────────────────────────────────

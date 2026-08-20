@@ -16,7 +16,7 @@ import { nav } from '../../state/nav.js';
 import { isDesktop } from '../../layout/index.js';
 import { refreshSessions } from '../../app-bridge.js';
 import { openAddProjectSheet } from '../cwd-picker.js';
-import { settings, VALID_DEFAULT_MODELS } from '../../state/settings.js';
+import { settings, VALID_DEFAULT_MODELS, DEFAULT_EDITOR_COMMAND } from '../../state/settings.js';
 import { sessions } from '../../state/sessions.js';
 import { usage } from '../../state/usage.js';
 import { grantsStore, mcpHasWarning, pendingHasWarning } from '../../state/grants.js';
@@ -29,6 +29,16 @@ import { detailShell, block } from './detail-shell.js';
 import { renderHotkeys } from './hotkeys.js';
 
 const MODEL_LABELS = { default: 'Daemon default', fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
+// Shell launchers, not app names — each is what that editor installs on PATH for exactly
+// this purpose. Presets only; the field takes any command, and flags survive it.
+const EDITOR_PRESETS = [
+  { label: 'VS Code', command: 'code' },
+  { label: 'Cursor', command: 'cursor' },
+  { label: 'Zed', command: 'zed' },
+  { label: 'GoLand', command: 'goland' },
+  { label: 'IntelliJ', command: 'idea' },
+  { label: 'Sublime', command: 'subl' },
+];
 const APPROVAL_MODES = [
   { key: 'ask', label: 'Ask', desc: 'Tool calls outside the allowlist require explicit approval.' },
   { key: 'accept-edits', label: 'Accept edits', desc: 'Edit/Write/MultiEdit/NotebookEdit auto-approve; Bash and side-effect tools still require approval.' },
@@ -218,6 +228,48 @@ function renderModelDefaults(mount) {
   return unsub;
 }
 
+// ── External editor ────────────────────────────────────────────────────
+
+function renderEditor(mount) {
+  const body = detailShell(
+    mount,
+    'External editor',
+    'What the git view\'s "Open in editor" runs. It runs on the daemon host — the machine holding the worktrees — so this is a command there, not on the device you\'re reading this from.',
+  );
+  const section = block(body, 'Open command', `
+    <div class="settings-segmented" data-role="editor-presets">
+      ${EDITOR_PRESETS.map((p) => `<button type="button" data-value="${escapeHtml(p.command)}">${escapeHtml(p.label)}</button>`).join('')}
+    </div>
+    <div class="settings-row">
+      <label class="settings-row-label" for="settings-editor-command">Command</label>
+      <input class="settings-row-input settings-row-input--wide" id="settings-editor-command" type="text"
+        spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="${escapeHtml(DEFAULT_EDITOR_COMMAND)}" />
+    </div>
+    <p class="settings-note">The checkout path is appended as the last argument, so flags belong here (<code>code --new-window</code>). Run without a shell — no pipes, no substitution. If the launcher isn't on the daemon's PATH, give an absolute path.</p>
+  `);
+
+  const input = section.querySelector('#settings-editor-command');
+  function paint() {
+    // Same reason as the concurrency field: never overwrite what's being typed here.
+    if (document.activeElement === input) return;
+    input.value = settings.get().editorCommand ?? DEFAULT_EDITOR_COMMAND;
+    const current = input.value.trim();
+    for (const btn of section.querySelectorAll('[data-role="editor-presets"] button')) {
+      btn.classList.toggle('active', btn.dataset.value === current);
+    }
+  }
+
+  section.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-role="editor-presets"] button');
+    if (btn?.dataset.value) settings.setEditorCommand(btn.dataset.value);
+  });
+  input.addEventListener('change', () => { settings.setEditorCommand(input.value); });
+  input.addEventListener('blur', paint);
+
+  paint();
+  return settings.subscribe(paint);
+}
+
 // ── MCP connections ────────────────────────────────────────────────────
 
 function mcpRowHtml(row) {
@@ -374,6 +426,7 @@ const SECTION_RENDERERS = {
   theme: renderTheme,
   density: renderDensity,
   'model-defaults': renderModelDefaults,
+  editor: renderEditor,
   permissions: renderPermissions,
   projects: renderProjects,
   mcp: renderMcp,

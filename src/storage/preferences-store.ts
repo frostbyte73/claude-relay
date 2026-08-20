@@ -24,11 +24,18 @@ export class PreferencesStore {
     return this.get();
   }
 
-  // Typed accessor for the one preference the daemon itself needs to read
-  // (the token-launch queue's concurrency) — everything else stays opaque.
+  // Typed accessors for the preferences the daemon itself acts on (the token-launch
+  // queue's concurrency; the editor the git view opens on this host) — everything else
+  // stays opaque.
   getLaunchConcurrency(): number {
     const raw = (this.get() as { launchConcurrency?: unknown }).launchConcurrency;
     return Number.isInteger(raw) && (raw as number) >= 1 ? (raw as number) : 1;
+  }
+
+  // Undefined rather than a default, so the fallback lives with the code that spawns it.
+  getEditorCommand(): string | undefined {
+    const raw = (this.get() as { editorCommand?: unknown }).editorCommand;
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
   }
 
   private load(): void {
