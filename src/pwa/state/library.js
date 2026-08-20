@@ -107,7 +107,3 @@ export const library = {
     void library.loadRevisions(name, { force: true });
   },
 };
-
-export function permissionGroupByName(state, name) {
-  return (state.permissionGroups ?? []).find((g) => g.name === name) ?? null;
-}

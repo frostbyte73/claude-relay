@@ -139,7 +139,6 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   align-items: center;
   gap: 6px;
 }
-.lib-readonly-note { font-size: 12px; color: var(--text-dim); }
 
 /* Actions now use primitives.css's .o-btn + role variants directly (§7.1) —
    this surface's disabled treatment is the one thing .o-btn itself doesn't

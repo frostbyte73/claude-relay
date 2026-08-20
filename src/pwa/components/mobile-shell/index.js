@@ -499,10 +499,6 @@ export function unmountMobileShell() {
   shellEl = null; bodyEl = null; tabsEl = null; fabEl = null;
 }
 
-export function isMobileShellMounted() {
-  return mounted;
-}
-
 export function repaintMobileShell() {
   if (mounted) paint();
 }

@@ -73,18 +73,3 @@ export function editFor(state, actionName) {
 export function findEditBySession(state, sessionId) {
   return (state.edits ?? []).find((e) => e.sessionId === sessionId) ?? null;
 }
-
-// Lookup an action by name in the catalog. Returns null if not loaded yet or not found.
-export function actionByName(state, name) {
-  return (state.catalog ?? []).find((a) => a.name === name) ?? null;
-}
-
-// Group catalog actions by category. Returns Map<category, action[]>.
-export function actionsByCategory(state) {
-  const map = new Map();
-  for (const a of state.catalog ?? []) {
-    if (!map.has(a.category)) map.set(a.category, []);
-    map.get(a.category).push(a);
-  }
-  return map;
-}

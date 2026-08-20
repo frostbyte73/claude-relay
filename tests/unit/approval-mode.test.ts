@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ApprovalModeStore, PLAN_MODE_ALWAYS, PLAN_MODE_MCP_READ_RE, PLAN_MODE_MCP_MUTATORS, isPlanModeReadableMcpTool, type ApprovalMode } from '../../src/permissions/approval-mode.js';
+import { ApprovalModeStore, PLAN_MODE_ALWAYS, PLAN_MODE_MCP_READ_RE, isPlanModeReadableMcpTool, type ApprovalMode } from '../../src/permissions/approval-mode.js';
 
 describe('ApprovalModeStore', () => {
   it('defaults to "ask" for unknown sessions', () => {

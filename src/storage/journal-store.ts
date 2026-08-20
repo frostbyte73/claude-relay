@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Per-action journal: append-only JSONL at <runtimeDir>/journal/<action>.jsonl.
@@ -27,33 +27,9 @@ function sanitizeAction(name: string): string | null {
   return name;
 }
 
-const LEGACY_ACTION_JOURNAL = 'meta.plan-job.jsonl';
-const RENAMED_ACTION_JOURNAL = 'meta.orchestrate.jsonl';
-
 export class JournalStore {
   constructor(private readonly rootDir: string) {
     mkdirSync(rootDir, { recursive: true, mode: 0o700 });
-    this.migrateLegacyActionJournal();
-  }
-
-  // One-time migration: `meta.plan-job`'s journal moved to `meta.orchestrate`
-  // when the action was renamed. Merge rather than drop lessons if both
-  // somehow exist (e.g. a run landed under the new name before this migrated).
-  private migrateLegacyActionJournal(): void {
-    const legacy = join(this.rootDir, LEGACY_ACTION_JOURNAL);
-    const current = join(this.rootDir, RENAMED_ACTION_JOURNAL);
-    if (!existsSync(legacy)) return;
-    try {
-      if (!existsSync(current)) {
-        renameSync(legacy, current);
-      } else {
-        appendFileSync(current, readFileSync(legacy, 'utf8'), { mode: 0o600 });
-        rmSync(legacy);
-      }
-      console.log('[journal] migrated meta.plan-job.jsonl -> meta.orchestrate.jsonl');
-    } catch (e) {
-      console.warn(`[journal] could not migrate legacy journal: ${(e as Error).message}`);
-    }
   }
 
   private fileFor(action: string): string | null {

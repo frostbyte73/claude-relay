@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { JobQueue, migrateJobRecord } from '../../src/work/work-queue.js';
+import { JobQueue } from '../../src/work/work-queue.js';
 
 function tempRuntimeDir(): string {
   return mkdtempSync(join(tmpdir(), 'outpost-jobqueue-'));

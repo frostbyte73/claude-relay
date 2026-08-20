@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { resolve as resolvePath, dirname } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test, expect, openSessionAtCwd } from './harness/browser.js';
 

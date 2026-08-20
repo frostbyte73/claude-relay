@@ -239,11 +239,6 @@
   color: var(--text-dim);
 }
 
-/* ── Left-border state coding ────────────────────────────────────────── */
-.o-edge-warn    { border-left: 3px solid var(--warn); }
-.o-edge-accent  { border-left: 3px solid var(--accent); }
-.o-edge-danger  { border-left: 3px solid var(--danger); }
-
 /* ── Focus card (warning-bordered) ───────────────────────────────────── */
 .o-focus-card {
   background: var(--bg-elev);
@@ -292,14 +287,11 @@
 
 /* ── Button system (DESIGN.md §7.1) ───────────────────────────────────────
    One system, colored by role. Body font, sentence case, NO letter-spacing,
-   NO text-transform, --r-control (4px). The per-surface lookalikes
-   (.sched-btn/.lib-btn/.dr-btn) share this base shape and are being migrated
-   to the `.o-btn .o-btn--<variant>` classes below; the selector list keeps
-   existing markup working during that migration. Color transitions only
+   NO text-transform, --r-control (4px). `.dr-btn` is the last per-surface
+   lookalike still on this base shape; the rest have migrated to the
+   `.o-btn .o-btn--<variant>` classes below. Color transitions only
    (--dur-1) — no scale/lift on hover or press. */
 .o-btn,
-.sched-btn,
-.lib-btn,
 .dr-btn {
   display: inline-flex;
   align-items: center;

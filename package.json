@@ -9,8 +9,7 @@
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:e2e": "playwright test",
-    "migrate-tickets": "tsx scripts/migrate-tickets-to-jobs.ts"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "ajv": "^8.17.1",

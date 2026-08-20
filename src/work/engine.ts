@@ -46,7 +46,7 @@ import {
   submitDraft, type DraftDecisionResult, type DraftHost, type SubmitDraftResult,
 } from './write-draft-runner.js';
 import {
-  currentDraftForRaiser, matchPinnedCall, sameRaiser, writeGateFor,
+  currentDraftForRaiser, matchPinnedCall, writeGateFor,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
 } from './write-draft.js';
 

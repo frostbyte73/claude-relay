@@ -1861,12 +1861,6 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
       -webkit-overflow-scrolling: touch;
     }
     .msg.tool_use-expanded .tool-bash { display: block; }
-    .tool-bash .bash-desc {
-      font-family: var(--font-mono);
-      font-size: 11px; line-height: 1.5;
-      color: var(--text-dim);
-      margin-bottom: 6px;
-    }
     .tool-bash .bash-cmd {
       display: grid;
       grid-template-columns: 16px 1fr;
@@ -1925,116 +1919,9 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
       white-space: normal;
       display: block;
     }
-    .msg.ask.ask-pending {
-      border-left-color: var(--warn);
-      cursor: pointer;
-      transition: background var(--dur-1) var(--ease);
-    }
-    .msg.ask.ask-pending:active { background: var(--bg-elev-2); }
-    .msg.ask.ask-pending:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    /* Reply hint footer — only renders on pending cards (the popup may have been dismissed).
-       Sits below the Q&A grid so the eye lands on it after reading the question. */
-    .ask-msg-reply-hint {
-      margin-top: 12px;
-      padding-top: 8px;
-      border-top: 1px solid var(--line-soft);
-      font-family: var(--font-mono);
-      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
-      color: var(--warn);
-      display: flex; align-items: center; justify-content: flex-end; gap: 6px;
-    }
-    .ask-msg-reply-hint-arrow {
-      font-family: var(--font-display); font-style: italic; font-size: 14px;
-      transform: translateY(-1px);
-    }
-
-    .ask-msg-head {
-      display: flex; align-items: baseline; justify-content: space-between;
-      gap: 12px;
-      padding-bottom: 8px;
-      margin-bottom: 10px;
-      border-bottom: 1px solid var(--line-soft);
-    }
-    .ask-msg-label {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      /* Structural label — same role as tool labels (--accent-2). The "Answered" /
-         "Pending" status badge to the right carries the actual state color (ok /
-         warn) so the state change reads as a state change. */
-      color: var(--accent-2);
-    }
-    .ask-msg-status {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--warn);
-    }
-    .msg.ask.ask-answered .ask-msg-status { color: var(--ok); }
-
     .ask-msg-pairs {
       display: flex; flex-direction: column;
       gap: 14px;
-    }
-    .ask-msg-pair {
-      display: grid;
-      grid-template-columns: 26px 1fr;
-      gap: 10px;
-      align-items: start;
-    }
-    .ask-msg-num {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      letter-spacing: 0.06em;
-      color: var(--text-dim);
-      padding-top: 4px;
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-    }
-    .ask-msg-num-spacer { /* invisible placeholder when single-question */
-      visibility: hidden;
-    }
-    .ask-msg-pair-body {
-      min-width: 0;
-      display: flex; flex-direction: column;
-      gap: 4px;
-    }
-    .ask-msg-q-text {
-      font-family: var(--font-display); font-style: italic;
-      font-size: 15px; line-height: 1.35;
-      color: var(--text);
-      letter-spacing: -0.005em;
-      overflow-wrap: anywhere;
-    }
-    .ask-msg-a {
-      display: flex; align-items: baseline; gap: 8px;
-      font-size: 13px; line-height: 1.45;
-      color: var(--text);
-    }
-    .ask-msg-arrow {
-      flex: none;
-      font-family: var(--font-mono); font-style: normal;
-      font-size: 11px;
-      color: var(--text-dim);
-      transform: translateY(-1px);
-    }
-    .ask-msg-a-text {
-      flex: 1; min-width: 0;
-      word-break: break-word;
-    }
-    /* Pending answer slot — italic, muted, sets the "waiting" mood. The arrow goes
-       dimmer too so the eye doesn't lock onto an answer that doesn't exist yet. */
-    .ask-msg-a-pending .ask-msg-a-text {
-      font-family: var(--font-display); font-style: italic;
-      color: var(--text-mute);
-      font-size: 13px;
-    }
-    .ask-msg-a-pending .ask-msg-arrow { color: var(--text-dim); }
-    .ask-msg-a-skipped .ask-msg-a-text {
-      color: var(--text-mute);
-      font-style: italic;
     }
 
     /* Free-form reply, appended when the user typed something into the popup's textarea
@@ -2661,7 +2548,6 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
       max-width: 42vw;
     }
     .meter-tag-model { color: var(--text); }
-    .meter-tag-size { color: var(--text-mute); }
     /* Breakdown panel: grouped sections (CONTEXT / LIMITS / SESSION) with two-column
        label-value rows. Section headers are dimmer + slightly tracked, matching the
        uppercase mono treatment of the strip above.

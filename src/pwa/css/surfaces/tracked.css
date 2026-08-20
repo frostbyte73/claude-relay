@@ -1281,7 +1281,7 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   border-top: 1px solid var(--line);
 }
 
-.thread :where(header), .thread-draft :where(header) {
+.thread :where(header) {
   padding: 0; border: none; background: transparent;
 }
 /* A thread is a container, not a row. It sits on --bg — recessed one plane below the

@@ -321,7 +321,9 @@ Four role variants — and only four:
 Only **primary** uses a solid accent fill — reinforcing the one-signal-per-view
 budget. The legacy `.ghost-btn` / `.step-action` / `.work-btn` mono-uppercase
 squared buttons and the per-surface `.sched-btn` / `.lib-btn` / `.dr-btn`
-lookalikes all collapse into this system. The shape-override hacks in `tracked.css`
+lookalikes all collapse into this system — `.sched-btn` and `.lib-btn` are done
+(no markup emits them; their selectors came out of `primitives.css`), leaving
+`.dr-btn` as the last one still riding the shared base. The shape-override hacks in `tracked.css`
 (making legacy buttons "speak the new rounded language") become the default, not a
 patch.
 

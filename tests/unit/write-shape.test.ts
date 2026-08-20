@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyRuleShape, classifyInterpreterShape, classifyHttpWriteShape, assertNotWriteShaped, MCP_WRITE_PROBES } from '../../src/permissions/write-shape.js';
-import { classifyTool, MCP_WRITE_TOOLS } from '../../src/permissions/tool-classify.js';
+import { classifyTool } from '../../src/permissions/tool-classify.js';
 
 const shaped = (kind: 'tool' | 'bash' | 'mcp' | 'path', v: string) =>
   classifyRuleShape(kind, v).writeShaped;

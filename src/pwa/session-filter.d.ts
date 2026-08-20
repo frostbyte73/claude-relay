@@ -1,4 +1,4 @@
-import type { SessionInfo } from '../session-store.js';
+import type { SessionInfo } from '../session/session-store.js';
 
 // The 2nd/3rd params are kept for source-compat (call sites pass them) but ignored —
 // the daemon auto-archives anything past the 7d window before the PWA ever sees it.

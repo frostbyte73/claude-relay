@@ -71,10 +71,6 @@ export function setHeader(sessionId, entry) {
   sourceCtl.headerBySessionId.set(sessionId, { ...prev, ...entry });
 }
 
-export function invalidateHeader(sessionId) {
-  sourceCtl.headerBySessionId.delete(sessionId);
-}
-
 // Discards ALL uncommitted changes on a session's worktree. Used by callers outside
 // the diff overlay (e.g. the Tracked PR block's inline "Discard" button) that don't
 // share diffState.ctx and so can't use the overlay's own runSourceAction/discardAll.
