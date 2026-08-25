@@ -5,8 +5,18 @@
 import { resolve } from 'node:path';
 
 export interface ShellClause {
-  // Clause text as written, redirections included — what the bash patterns match against.
+  // Clause text as written, redirections included. What a denial REPORTS and what the operand
+  // walkers read; not what the bash patterns match against — see `matchText`.
   text: string;
+  // `text` with fd duplications (`2>&1`, `>&2`, `1>&2`) excised, including the fd number that
+  // was appended as ordinary text before the operator was recognised. This is what the bash
+  // patterns match, because a `$`-anchored rule matched against `text` is unreachable the
+  // moment a session appends `2>&1` — and sessions do that habitually. `git add -A 2>&1`,
+  // `git merge origin/main 2>&1 | tail -5` and every anchored rule in `pull`/`push` were all
+  // denied for a suffix that provably creates nothing. File-creating redirections are
+  // deliberately NOT excised: an anchored rule refusing to have its output captured to a file
+  // is defence in depth worth keeping, and `redirectsAllowed` gates the target independently.
+  matchText: string;
   // Verbatim (still quoted/escaped) target words of the clause's file-creating
   // redirections. fd duplications (`2>&1`, `>&2`) and input redirections contribute
   // nothing: neither can create or truncate a file.
@@ -161,17 +171,28 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
     let wordStart = true;
     // Offsets into `buf` where a redirection target word begins. Recorded rather than
     // consumed so the main loop still recurses into a `$(…)` sitting in the target.
-    let marks: Array<{ start: number; kind: RedirKind }> = [];
+    let marks: Array<{ opStart: number; start: number; kind: RedirKind }> = [];
     const flush = () => {
       const t = buf.trim();
       if (t) {
         const writeTargets: string[] = [];
+        // Spans of `buf` that name no file, newest last — excised to build `matchText`.
+        const dups: Array<[number, number]> = [];
         for (const m of marks) {
           const word = readWordAt(buf, m.start);
-          if (m.kind === 'dup-out' && FD_TARGET.test(word)) continue;
+          if (m.kind === 'dup-out' && FD_TARGET.test(word)) {
+            let end = m.start + word.length;
+            // Take the whitespace after it too, so excising mid-clause doesn't leave a gap
+            // where a rule expects one space.
+            while (end < buf.length && (buf[end] === ' ' || buf[end] === '\t')) end++;
+            dups.push([m.opStart, end]);
+            continue;
+          }
           writeTargets.push(word);
         }
-        clauses.push({ text: t, writeTargets });
+        let matchText = buf;
+        for (const [from, to] of dups.reverse()) matchText = matchText.slice(0, from) + matchText.slice(to);
+        clauses.push({ text: t, matchText: matchText.trim(), writeTargets });
       }
       buf = '';
       marks = [];
@@ -242,9 +263,16 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
       // main loop so substitutions inside it still get walked.
       const redir = matchRedirect(s, i);
       if (redir) {
+        // The leading fd of `2>&1` reached `buf` as ordinary text before the operator was
+        // recognised, so excising from the operator alone would strand it. Back up over a
+        // WHOLE word of digits only — the `3` of `tail -3>&1` is an argument, not an fd.
+        let opStart = buf.length;
+        let k = opStart;
+        while (k > 0 && buf[k - 1]! >= '0' && buf[k - 1]! <= '9') k--;
+        if (k < opStart && (k === 0 || buf[k - 1] === ' ' || buf[k - 1] === '\t')) opStart = k;
         buf += s.slice(i, i + redir.len); i += redir.len;
         while (i < s.length && (s[i] === ' ' || s[i] === '\t')) { buf += s[i]; i++; }
-        marks.push({ start: buf.length, kind: redir.kind });
+        marks.push({ opStart, start: buf.length, kind: redir.kind });
         // The operator ends the word before it, so a `#` here is a comment — bash rejects
         // `ls > #foo` for having no target. The mark then reads an empty target word, which
         // is what a redirection nothing can name should look like: unwritable.

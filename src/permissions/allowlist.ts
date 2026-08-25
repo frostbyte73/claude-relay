@@ -264,7 +264,7 @@ function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown):
     if (typeof cmd !== 'string') return false;
     const clauses = splitShellClauses(cmd);
     if (clauses === null || clauses.length === 0) return false;
-    return clauses.every((c) => bashPatternsMatch(rules, c.text));
+    return clauses.every((c) => bashPatternsMatch(rules, c.matchText));
   }
   if (toolName.startsWith('mcp__')) {
     return rules.mcpPatterns.some((p) => p.test(toolName));
@@ -606,7 +606,7 @@ export class Allowlist {
       };
     }
 
-    const unmatched = clauses.find((c) => !scopes.some((s) => bashPatternsMatch(s, c.text)));
+    const unmatched = clauses.find((c) => !scopes.some((s) => bashPatternsMatch(s, c.matchText)));
     if (unmatched) return { kind: 'clause', clause: unmatched.text };
 
     for (const path of targets) {
@@ -765,7 +765,7 @@ export function gatedMatch(cfg: ActionAllowlist, toolName: string, toolInput: un
     if (rules.alwaysAllow.has('Bash')) return true;
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
-    return clauses.some((c) => rules.bashPatterns.some((p) => p.test(stripLeadingAssignments(c.text))));
+    return clauses.some((c) => rules.bashPatterns.some((p) => p.test(stripLeadingAssignments(c.matchText))));
   }
   return rulesAllow(rules, toolName, toolInput);
 }

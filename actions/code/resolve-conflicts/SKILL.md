@@ -63,6 +63,11 @@ git merge origin/main   # replace `origin/main` here with the literal ref, if bo
   looks the way it does — reconcile it with main's changes rather than blindly taking one
   side. After editing, `git add` the resolved files. If the resolution is non-trivial, run
   the project's tests before continuing.
+- **Conflict is on a submodule gitlink** (`git status` shows the path as "both modified" and
+  the diff reads `Subproject commit …`): you resolve it by choosing which sha the pin should
+  hold, then moving it with `git update-index --cacheinfo` — `git -C <path> checkout` and
+  friends are denied. Read `cat ~/.outpost/actions/SHARED-submodules.md` before your first
+  attempt. Take main's sha unless this PR is deliberately bumping the submodule itself.
 - **Not confident** (semantics you can't reconcile, or the conflict is outside what this PR
   touched): abort and report unresolvable (Step 5b).
 

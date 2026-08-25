@@ -3,9 +3,11 @@ import { Allowlist } from '../../src/permissions/allowlist.js';
 import { splitShellClauses, stripLeadingAssignments } from '../../src/permissions/shell-split.js';
 
 const targetsOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.writeTargets);
-// The clause list the allowlist actually gates on is `text`; these cases are about where the
-// splitter cuts, so they read it directly rather than through a shape-flattening wrapper.
+// `text` is the clause as written — what a denial reports and what the operand walkers read.
+// The bash patterns match `matchText` (see below); these cases are about where the splitter
+// cuts, so they read `text` directly rather than through a shape-flattening wrapper.
 const textsOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.text) ?? null;
+const matchOf = (cmd: string) => splitShellClauses(cmd)?.map((c) => c.matchText) ?? null;
 
 describe('splitShellClauses — where the splitter cuts', () => {
   it('returns single clause for simple command', () => {
@@ -139,6 +141,75 @@ describe('splitShellClauses — redirection targets', () => {
   // write grant too, which is stricter, never looser.
   it('treats heredoc body lines as clauses, redirection and all', () => {
     expect(targetsOf('cat <<EOF > /tmp/x\nline > other\nEOF')).toEqual([['/tmp/x'], ['other'], []]);
+  });
+});
+
+// Every `$`-anchored rule in the shipped groups was unreachable the moment a session appended
+// `2>&1` — and sessions do that habitually. `git add -A 2>&1` and `git merge origin/main 2>&1 |
+// tail -5` were denied for a suffix that provably creates nothing, which is what stranded three
+// submodule steps even after their grant landed.
+describe('splitShellClauses — matchText excises fd duplications', () => {
+  it('drops the dup and the fd number that reached the buffer ahead of it', () => {
+    expect(matchOf('git add -A 2>&1')).toEqual(['git add -A']);
+    expect(matchOf('git add -A 2>&1 | tail -3')).toEqual(['git add -A', 'tail -3']);
+    expect(matchOf('cmd >&2')).toEqual(['cmd']);
+    expect(matchOf('cmd 1>&2')).toEqual(['cmd']);
+    expect(matchOf('cmd 2>&-')).toEqual(['cmd']);
+  });
+
+  it('leaves exactly one space when the dup sits mid-clause', () => {
+    expect(matchOf('git add -A 1>&2 --verbose')).toEqual(['git add -A --verbose']);
+  });
+
+  it('does not mistake a digit-suffixed argument for an fd', () => {
+    // bash reads `-3` as a word and `>&1` as the redirection, so `-3` must survive. Backing up
+    // over digits unconditionally would have produced `tail -`.
+    expect(matchOf('tail -3>&1')).toEqual(['tail -3']);
+    expect(matchOf('head -20 2>&1')).toEqual(['head -20']);
+  });
+
+  it('keeps file-creating redirections, which are defence in depth worth having', () => {
+    // `redirectsAllowed` gates the target independently; an anchored rule additionally
+    // refusing to have its output captured to a file is deliberate.
+    expect(matchOf('cat f > /tmp/o 2>&1')).toEqual(['cat f > /tmp/o']);
+    expect(matchOf('cmd >> log 2>&1')).toEqual(['cmd >> log']);
+  });
+
+  it('leaves text alone for the denial message and the operand walkers', () => {
+    expect(textsOf('git add -A 2>&1')).toEqual(['git add -A 2>&1']);
+  });
+
+  it('still reports the dup as writing nothing', () => {
+    expect(targetsOf('git add -A 2>&1')).toEqual([[]]);
+  });
+});
+
+describe('Allowlist — an anchored rule survives a 2>&1 suffix', () => {
+  const al = new Allowlist({
+    alwaysAllow: [],
+    alwaysAllowBashPatterns: ['^git add\\s+-A$', '^git merge\\s+(?:--abort|[A-Za-z0-9][A-Za-z0-9._/-]*)$', '^tail(\\s|$)'],
+    alwaysAllowMcpPatterns: [],
+    alwaysAllowPathPatterns: [],
+  });
+  const allows = (c: string) => al.allows('Bash', { command: c });
+
+  it('allows the evidenced command with the suffix sessions actually write', () => {
+    for (const c of [
+      'git add -A',
+      'git add -A 2>&1',
+      'git add -A 2>&1 | tail -5',
+      'git merge origin/main 2>&1 | tail -5',
+    ]) expect(allows(c), c).toBe(true);
+  });
+
+  it('does not let the excision smuggle anything past the rule', () => {
+    for (const c of [
+      // The dup is gone from matchText, but the rest of the clause still has to match.
+      'git add -f secret.env 2>&1',
+      'git reset --hard 2>&1',
+      // A real write redirect is still in matchText, so the anchored rule still refuses it.
+      'git add -A > /Users/x/.zshrc',
+    ]) expect(allows(c), c).toBe(false);
   });
 });
 

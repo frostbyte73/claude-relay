@@ -70,6 +70,15 @@ git add -A
 
 Do not commit yet — that's the draft below.
 
+**If the fix is a git submodule pin.** A red check whose cause is a stale vendored schema is
+fixed by moving a gitlink, which has its own sanctioned sequence — `git update-index
+--cacheinfo`, and specifically NOT `git -C <path> checkout` / `reset` / `switch` / `cd <path> &&
+…`, all of which are denied and have no working spelling. Read it before your first attempt:
+
+```bash
+cat ~/.outpost/actions/SHARED-submodules.md
+```
+
 ## Step 4 — Draft the commit + push (`writeGate` absent, or `writeGate.phase === "draft"`)
 
 ```
