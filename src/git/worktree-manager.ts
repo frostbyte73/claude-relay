@@ -47,6 +47,8 @@ const SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 // git-check-ref-format shape; leading dash would be parsed as a git flag.
 const BRANCH_NAME_RE = /^[A-Za-z0-9_./][A-Za-z0-9_./-]{0,128}$/;
 const FETCH_TIMEOUT_MS = 20_000;
+// Longer than FETCH_TIMEOUT_MS because this is a clone, not a fetch, and it is per submodule.
+const SUBMODULE_TIMEOUT_MS = 120_000;
 // GitHub serves refs/pull/<N>/head but a normal clone never fetches it — `N` is digits-only
 // from this capture, so it can never be argv-flag-shaped.
 const PR_REF_RE = /^refs\/pull\/(\d+)\/head$/;
@@ -212,6 +214,9 @@ export class WorktreeManager {
     // pointed at, which is days old in the case this exists for.
     if (branchExistsLocally) await this.alignToBase(rec);
     else rec.baseSha = await resolveSha(opts.projectCwd, branch) ?? undefined;
+    // After alignToBase, never before: its `merge --ff-only` can move HEAD onto a commit that
+    // pins the submodule differently, and it doesn't update submodule working trees itself.
+    await populateSubmodules(worktreePath);
     this.records.set(opts.sessionId, rec);
     this.persist();
     return rec;
@@ -286,6 +291,8 @@ export class WorktreeManager {
       ['-C', ref.repoCwd, 'worktree', 'add', '--detach', '--', worktreePath, at],
       { stdio: 'pipe' },
     );
+    // A readonly reviewer reads vendored source for the same reasons a writable step builds it.
+    await populateSubmodules(worktreePath);
     const rec: WorktreeRecord = {
       sessionId: stepId,
       projectCwd: ref.repoCwd,
@@ -759,6 +766,38 @@ function isAllowlisted(rel: string): boolean {
   if (rel === 'docs' || rel.startsWith('docs/')) return true;
   if (/^\.env(\.[^/]+)?$/.test(rel)) return true; // root .env* only, not nested
   return false;
+}
+
+// `git worktree add` leaves every submodule path an empty directory, so a worktree of a repo that
+// vendors code as a submodule is an incomplete checkout — the step lands in a tree where the
+// source it has to read, build or regenerate from simply isn't there. Steps in four repos burned
+// rounds rediscovering that, then handed the work back to the user.
+//
+// Async, not sync: a clone can take a minute and `allows()` already owes everything else on the
+// daemon's single thread; blocking it here would stall every other session's tool calls.
+//
+// Non-recursive on purpose — one level is what a vendored-protocol layout needs, and `--recursive`
+// makes the cost of provisioning a worktree unbounded in someone else's nesting depth.
+//
+// Best-effort, like copyAllowlistedIgnored: a submodule that won't clone (private, offline, URL
+// moved) leaves the empty directory the step would have had regardless, which is strictly better
+// than failing a provision that was otherwise fine.
+//
+// Concurrency is safe and this was measured, not assumed: git gives a linked worktree its own
+// submodule gitdir under `.git/worktrees/<name>/modules/<sub>` rather than the shared
+// `.git/modules/<sub>`, so two steps holding one project at different submodule pins do not
+// collide. It also means each worktree pays its own clone.
+async function populateSubmodules(worktreePath: string): Promise<void> {
+  if (!existsSync(join(worktreePath, '.gitmodules'))) return;
+  try {
+    await execFileP(
+      'git',
+      ['-C', worktreePath, 'submodule', 'update', '--init'],
+      { timeout: SUBMODULE_TIMEOUT_MS },
+    );
+  } catch (err) {
+    console.warn(`[worktree] submodule init failed in ${worktreePath}: ${(err as Error).message}`);
+  }
 }
 
 function copyAllowlistedIgnored(projectCwd: string, worktreePath: string): void {

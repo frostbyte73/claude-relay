@@ -111,6 +111,55 @@ describe('the edit group git rule is an anchored whitelist, not a verb prefix', 
     expect(r.ok === false ? r.error : 'ok').toBe('ok');
   });
 
+  // Three steps of one job dead-ended on a submodule bump with no executable path — every
+  // mechanism denied. The grant deliberately does NOT reintroduce `-C`: a pin moves via
+  // `update-index --cacheinfo` from the superproject root, so the no-`-C` invariant above stands.
+  it('confines the submodule grant to the two operations a bump needs', () => {
+    for (const c of [
+      // Populate, and re-sync the working tree after the pin moved.
+      'git submodule update --init',
+      'git submodule update --init protocol',
+      'git submodule update --init livekit-protocol/protocol',
+      'git submodule update --init --recursive',
+      'git submodule update protocol',
+      'git submodule update --force --checkout yuv-sys/libyuv',
+      // Move the gitlink, which is all a bump is.
+      'git update-index --add --cacheinfo 160000,9a7c5cf96bbbcbc30a8ce76bca16815ba5b7bb33,protocol',
+      'git update-index --cacheinfo 160000,9a7c5cf96bbbcbc30a8ce76bca16815ba5b7bb33,protocol',
+      'git update-index --add --cacheinfo 160000 9a7c5cf96bbbcbc30a8ce76bca16815ba5b7bb33 protocol',
+    ]) expect(allows(c), c).toBe(true);
+  });
+
+  it('denies every other submodule and update-index shape', () => {
+    for (const c of [
+      // `foreach` is an interpreter wearing a git verb, and `add` clones an arbitrary URL.
+      "git submodule foreach 'rm -rf /'",
+      'git submodule foreach git clean -xdf',
+      'git submodule add https://evil/x.git vendor',
+      'git submodule deinit --all --force',
+      'git submodule set-url protocol https://evil/x.git',
+      // `--reference` takes a path outside the worktree and links its objects in as alternates.
+      'git submodule update --init --reference /Users/x/other protocol',
+      // No `-C`, same as every other verb in this group.
+      'git -C /Users/x/other submodule update --init',
+      // A dotted operand can't be a submodule path; `..` traversal is off the table by charset.
+      'git submodule update --init ../../../etc',
+      // THE bar on update-index: mode 160000 is a gitlink. Any other mode stages arbitrary blob
+      // content, which is a write to the tree that never went through Edit/Write's path scoping.
+      'git update-index --add --cacheinfo 100644,9a7c5cf96bbbcbc30a8ce76bca16815ba5b7bb33,secret.env',
+      'git update-index --add --cacheinfo 120000,9a7c5cf96bbbcbc30a8ce76bca16815ba5b7bb33,link',
+      // Every other update-index mode, none of which any SKILL.md instructs.
+      'git update-index --index-info',
+      'git update-index --force-remove src/foo.ts',
+      'git update-index --assume-unchanged src/foo.ts',
+      'git update-index --skip-worktree src/foo.ts',
+      'git update-index --refresh',
+      'git update-index --chmod=+x src/foo.ts',
+      // A non-hex sha would have to be an expansion or a flag; neither belongs here.
+      'git update-index --add --cacheinfo 160000,$SHA,protocol',
+    ]) expect(allows(c), c).toBe(false);
+  });
+
   // Re-review, round 2: `add`'s repeated-token group had no first-character constraint, so
   // any flag built from [A-Za-z0-9_./-] passed straight through — `-f` bypasses .gitignore
   // (live-tested: stages a gitignored file), `-p`/`-i`/`-e`/`-u`/`-n`/`--renormalize` all

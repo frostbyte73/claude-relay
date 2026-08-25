@@ -83,6 +83,18 @@ Don't expand scope. A bug fix fixes the bug; it doesn't refactor the surrounding
 
 **When the goal is (or needs) a dependency change, make it — that's implementation, not a separate errand.** Update the manifest and lockfile with the ecosystem's own tooling — `go get <module>@<version>` then `go mod tidy`, `cargo add <crate>@<version>` / `cargo update -p <crate>`, `uv add '<pkg>==<version>'` (quote any specifier containing `>`, or the shell reads it as a redirect), `npm install <pkg>@<version>`, `yarn add` — never by hand-editing a lockfile, and build/test against the new version before you report. Run these from the worktree root, plain: a flag that redirects the command at another manifest or output dir (`--manifest-path`, `--project`, `--target-dir`, `-C`, `--directory`) is denied, because it would write outside the worktree you own. A bump you leave for "someone else" is half a step, and the controller has nowhere to put the other half.
 
+**When the dependency is vendored as a git submodule, bumping it is also yours.** Repos that vendor a schema (`server-sdk-ruby`, `server-sdk-kotlin`, `rust-sdks` all vendor `livekit/protocol` this way) pin it as a gitlink, and moving that pin is the payload of the step, not a chore for the user. Your worktree arrives with submodules already populated at the current pin. To move one:
+
+```bash
+git -C <path> fetch origin                                  # get the target commit locally
+git update-index --add --cacheinfo 160000,<full-sha>,<path> # move the gitlink in the index
+git submodule update <path>                                 # sync the working tree to the new pin
+```
+
+Take the full 40-character sha, and run `git submodule status` afterwards to confirm the path reports the new sha with no `+`/`-` prefix. **`git -C <path> checkout <sha>` is denied and always will be** — no destructive git verb is reachable against a repo other than the one you were given, and a submodule counts. `update-index` is pinned to mode `160000`, so it moves gitlinks and nothing else; it can't stage file content. If the submodule path is empty (a worktree provisioned before this was automatic), `git submodule update --init <path>` fills it first.
+
+Regeneration usually follows a bump (`./generate_proto.sh`, `rake proto`, a gradle task). Run it if the repo's tooling is available to you; if it isn't, say so plainly in your summary rather than reporting the bump as complete.
+
 Run the project's tests at least once before declaring done. If the repo has linting or type-checking, run that too. The command lives in the repo's `CLAUDE.md` / `README.md` / `package.json` scripts — use what the repo defines, not a guess.
 
 ## Step 3 — Self-review the diff

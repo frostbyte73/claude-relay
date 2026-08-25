@@ -904,3 +904,97 @@ describe('WorktreeManager — re-provisioning over an archived record', () => {
       .rejects.toThrow(/already has a worktree/);
   });
 });
+
+// `git worktree add` leaves submodule paths empty, which made a worktree of a vendored-protocol
+// repo a checkout the step could not build, read or regenerate from — three steps of one job
+// handed the work back to the user over it.
+function makeRepoWithSubmodule(): { parent: string; subSha: string; subSha2: string } {
+  const sub = makeGitRepo();
+  writeFileSync(join(sub, 'vendored.txt'), 'one\n');
+  execFileSync('git', ['-C', sub, 'add', '-A']);
+  execFileSync('git', ['-C', sub, 'commit', '-q', '-m', 'v1']);
+  const subSha = execFileSync('git', ['-C', sub, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(sub, 'vendored.txt'), 'two\n');
+  execFileSync('git', ['-C', sub, 'add', '-A']);
+  execFileSync('git', ['-C', sub, 'commit', '-q', '-m', 'v2']);
+  const subSha2 = execFileSync('git', ['-C', sub, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+  const parent = makeGitRepo();
+  // `submodule add` from a local path needs this; harmless in a throwaway fixture.
+  execFileSync('git', ['-C', parent, 'config', 'protocol.file.allow', 'always']);
+  execFileSync('git', ['-C', parent, 'submodule', 'add', '-q', sub, 'vendor'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', parent, '-C', join(parent, 'vendor'), 'checkout', '-q', subSha], { stdio: 'pipe' });
+  execFileSync('git', ['-C', parent, 'add', '-A']);
+  execFileSync('git', ['-C', parent, 'commit', '-q', '-m', 'pin vendor at v1']);
+  return { parent, subSha, subSha2 };
+}
+
+describe('WorktreeManager — submodules', () => {
+  it('populates a submodule so the step gets a complete checkout', async () => {
+    const { parent, subSha } = makeRepoWithSubmodule();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-sub', projectCwd: parent, baseBranch: 'main' });
+
+    const vendored = join(rec.worktreePath, 'vendor', 'vendored.txt');
+    expect(existsSync(vendored)).toBe(true);
+    expect(readFileSync(vendored, 'utf8')).toBe('one\n');
+    // At the pin the parent commit names, not at the submodule's own tip.
+    expect(execFileSync('git', ['-C', join(rec.worktreePath, 'vendor'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim())
+      .toBe(subSha);
+  });
+
+  it('populates a readonly detached worktree too', async () => {
+    const { parent } = makeRepoWithSubmodule();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-ro', { kind: 'readonly', repoCwd: parent });
+
+    expect(path).not.toBeNull();
+    expect(existsSync(join(path!, 'vendor', 'vendored.txt'))).toBe(true);
+  });
+
+  it('keeps two worktrees of one project at independent submodule pins', async () => {
+    // The reason this is safe to do on every provision: git puts a linked worktree's submodule
+    // gitdir under `.git/worktrees/<name>/modules/`, not the shared `.git/modules/`. If that were
+    // ever to change, concurrent steps on one project would corrupt each other's vendored tree.
+    const { parent, subSha, subSha2 } = makeRepoWithSubmodule();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const a = await m.create({ sessionId: 'sess-a', projectCwd: parent, baseBranch: 'main', branch: 'feat/a' });
+    const b = await m.create({ sessionId: 'sess-b', projectCwd: parent, baseBranch: 'main', branch: 'feat/b' });
+
+    execFileSync('git', ['-C', join(b.worktreePath, 'vendor'), 'checkout', '-q', subSha2], { stdio: 'pipe' });
+
+    expect(readFileSync(join(a.worktreePath, 'vendor', 'vendored.txt'), 'utf8')).toBe('one\n');
+    expect(readFileSync(join(b.worktreePath, 'vendor', 'vendored.txt'), 'utf8')).toBe('two\n');
+    expect(execFileSync('git', ['-C', join(a.worktreePath, 'vendor'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim())
+      .toBe(subSha);
+  });
+
+  it('provisions anyway when the submodule cannot be cloned', async () => {
+    // The whole point of best-effort: an unreachable submodule leaves the empty dir the step
+    // would have had regardless, rather than failing an otherwise-fine provision.
+    // A fresh clone, because `submodule add` leaves a local `.git/modules/vendor` the worktree's
+    // clone can reuse without ever touching the URL. This is also the shape a real checkout has:
+    // `git clone` doesn't recurse, so the submodule is uninitialized and only the URL can serve it.
+    const { parent } = makeRepoWithSubmodule();
+    const fresh = mkdtempSync(join(tmpdir(), 'wt-clone-'));
+    execFileSync('git', ['clone', '-q', parent, fresh]);
+    execFileSync('git', ['-C', fresh, 'config', 'user.email', 'test@example']);
+    execFileSync('git', ['-C', fresh, 'config', 'user.name', 'Test']);
+    execFileSync('git', ['-C', fresh, 'config', '--file', join(fresh, '.gitmodules'),
+      'submodule.vendor.url', join(fresh, 'does-not-exist')]);
+    execFileSync('git', ['-C', fresh, 'commit', '-aq', '-m', 'break the submodule url']);
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-broken', projectCwd: fresh, baseBranch: 'main' });
+    expect(existsSync(rec.worktreePath)).toBe(true);
+    expect(existsSync(join(rec.worktreePath, 'vendor', 'vendored.txt'))).toBe(false);
+  });
+
+  it('costs nothing for a repo with no submodules', async () => {
+    const repo = makeGitRepo();
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-plain', projectCwd: repo, baseBranch: 'main' });
+    expect(existsSync(rec.worktreePath)).toBe(true);
+    expect(existsSync(join(rec.worktreePath, '.gitmodules'))).toBe(false);
+  });
+});

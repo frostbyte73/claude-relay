@@ -99,13 +99,80 @@ describe('suggestRule — Bash', () => {
 
   it('anchors on the binary without swallowing its arguments', () => {
     const al = checker();
-    expect(bash(al, 'npm run test:unit')).toEqual({ kind: 'bash', value: '^npm(\\s|$)' });
+    // `run` is npm's operation; `test:unit` is the argument that must not reach the rule.
+    expect(bash(al, 'npm run test:unit')).toEqual({ kind: 'bash', value: '^npm run(\\s|$)' });
     // Regex metacharacters in the binary are escaped, not compiled.
     expect(bash(al, './a+b.sh x')).toEqual({ kind: 'bash', value: '^\\./a\\+b\\.sh(\\s|$)' });
   });
 
   it('ignores a leading assignment when naming the binary', () => {
     expect(bash(checker(), 'FOO=1 nc evil')).toEqual({ kind: 'bash', value: '^nc(\\s|$)' });
+  });
+});
+
+// A bare `^git(\s|$)` is a grant of `git push`, and DenialsStore dedups on the suggested value —
+// so before this, every git denial merged into one row and `git submodule update` was invisible
+// inside a "git denied ×15" whose sample command was `git check-ignore`. The cases below are the
+// real shapes from that corpus.
+describe('suggestRule — subcommand-style CLIs', () => {
+  const al = checker();
+
+  it('separates operations of the same binary', () => {
+    expect(bash(al, 'git submodule update --init livekit-protocol/protocol').value)
+      .toBe('^git submodule update(\\s|$)');
+    expect(bash(al, 'git check-ignore -v apps/docs/.env.production.local').value)
+      .toBe('^git check-ignore(\\s|$)');
+    expect(bash(al, 'git update-index --add --cacheinfo 160000,abc,protocol').value)
+      .toBe('^git update-index(\\s|$)');
+  });
+
+  it('skips a global flag and the value it consumes', () => {
+    // Taking `/Users/testuser/livekit/protocol` for the operation was the failure mode that made a
+    // per-binary value-flag table necessary — `-C` is by far the most common shape in the corpus.
+    expect(bash(al, 'git -C /Users/testuser/livekit/protocol show 9a7c5cf9:egress/types.go').value)
+      .toBe('^git show(\\s|$)');
+    expect(bash(al, "git -C /Users/testuser/livekit/cloud-egress tag --list 'v2026-08-*'").value)
+      .toBe('^git tag(\\s|$)');
+    expect(bash(al, 'git --no-pager log --oneline -3').value).toBe('^git log(\\s|$)');
+  });
+
+  it('descends one level through a namespace word but not through an operation', () => {
+    // `gh pr view` is grantable and `gh pr create` is not, so stopping at `gh pr` would suggest
+    // a rule the lint refuses for a read the user can legitimately allow.
+    expect(bash(al, 'gh pr view 16434 --json state').value).toBe('^gh pr view(\\s|$)');
+    expect(bash(al, 'gh api repos/livekit/protocol/releases').value).toBe('^gh api(\\s|$)');
+    expect(bash(al, 'go mod tidy').value).toBe('^go mod tidy(\\s|$)');
+    // `add` is an operation, not a namespace — the package must not reach the rule.
+    expect(bash(al, 'cargo add serde').value).toBe('^cargo add(\\s|$)');
+    expect(bash(al, 'npm install lodash').value).toBe('^npm install(\\s|$)');
+  });
+
+  it('stops at an operand that is not a plain word', () => {
+    expect(bash(al, 'go build ./...').value).toBe('^go build(\\s|$)');
+    expect(bash(al, 'go env GOMODCACHE').value).toBe('^go env(\\s|$)');
+    expect(bash(al, 'npm view @livekit/protocol versions --json').value).toBe('^npm view(\\s|$)');
+    expect(bash(al, 'git show HEAD:pkg/pipeline/builder/video.go').value).toBe('^git show(\\s|$)');
+  });
+
+  it('leaves a binary with no operations, and an unrecognised one, on the binary alone', () => {
+    // `python3 -c "<script>"` is why the table is a whitelist: skipping `-c` and taking the next
+    // word would put a whole python program in the rule.
+    expect(bash(al, 'python3 -c "import sqlite3; print(1)"').value).toBe('^python3(\\s|$)');
+    expect(bash(al, './gradlew --version').value).toBe('^\\./gradlew(\\s|$)');
+    expect(bash(al, '/Users/testuser/.cargo/bin/cargo --version').value)
+      .toBe('^/Users/testuser/\\.cargo/bin/cargo(\\s|$)');
+    expect(bash(al, 'bundle exec rspec').value).toBe('^bundle(\\s|$)');
+  });
+
+  it('suggests a rule that actually unblocks the call it came from', () => {
+    const fresh = checker();
+    const cmd = 'git submodule update --init livekit-protocol/protocol';
+    expect(fresh.allows('Bash', { command: cmd })).toBe(false);
+    const s = bash(fresh, cmd);
+    fresh.addRule(s.kind as 'bash', s.value);
+    expect(fresh.allows('Bash', { command: cmd })).toBe(true);
+    // And it stays narrow: the sibling operation is still denied.
+    expect(fresh.allows('Bash', { command: 'git push origin main' })).toBe(false);
   });
 });
 

