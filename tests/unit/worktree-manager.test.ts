@@ -1,9 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorktreeManager, runGitDiff, diffBaseFor, baseLabelFor } from '../../src/git/worktree-manager.js';
+import {
+  WorktreeManager,
+  runGitDiff,
+  diffBaseFor,
+  baseLabelFor,
+  provisionDependencyRoots,
+  collapseToRoots,
+  isDependencyRoot,
+} from '../../src/git/worktree-manager.js';
 
 function makeGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'wt-repo-'));
@@ -222,7 +230,7 @@ describe('WorktreeManager — git operations', () => {
     expect(m.get('sessid')).toBeUndefined();
   });
 
-  it('create() copies allowlisted gitignored files (CLAUDE.md, .claude/, docs/, .env*)', async () => {
+  it('create() copies allowlisted gitignored files (CLAUDE.md, .claude/, docs/, .env*) and dependency roots', async () => {
     const root = newRoot();
     const repo = makeGitRepo();
     // Pin a gitignore so the repo's ignore rules are deterministic across machines.
@@ -249,9 +257,10 @@ describe('WorktreeManager — git operations', () => {
     writeFileSync(join(repo, '.env'), 'SECRET=x\n');
     writeFileSync(join(repo, '.env.local'), 'SECRET=y\n');
 
-    // NOT allowlisted — should be skipped.
+    // A dependency root — provisioned so the step can run the repo's own test command.
     mkdirSync(join(repo, 'node_modules', 'foo'), { recursive: true });
-    writeFileSync(join(repo, 'node_modules', 'foo', 'index.js'), '// skip me\n');
+    writeFileSync(join(repo, 'node_modules', 'foo', 'index.js'), '// dep\n');
+    // Ignored but neither allowlisted nor a dependency root — should be skipped.
     writeFileSync(join(repo, 'secret.txt'), 'do not copy\n');
 
     const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
@@ -264,7 +273,7 @@ describe('WorktreeManager — git operations', () => {
     expect(readFileSync(join(rec.worktreePath, '.env'), 'utf8')).toBe('SECRET=x\n');
     expect(readFileSync(join(rec.worktreePath, '.env.local'), 'utf8')).toBe('SECRET=y\n');
 
-    expect(existsSync(join(rec.worktreePath, 'node_modules'))).toBe(false);
+    expect(readFileSync(join(rec.worktreePath, 'node_modules', 'foo', 'index.js'), 'utf8')).toBe('// dep\n');
     expect(existsSync(join(rec.worktreePath, 'secret.txt'))).toBe(false);
   });
 
@@ -399,6 +408,183 @@ describe('WorktreeManager — git operations', () => {
     await expect(
       m.create({ sessionId: 'okid2', projectCwd: repo, baseBranch: 'has spaces' }),
     ).rejects.toThrow(/invalid baseBranch/);
+  });
+});
+
+describe('WorktreeManager — dependency-root provisioning', () => {
+  // The .gitignore must be COMMITTED: it is the tracked rule travelling to the worktree that keeps
+  // a provisioned root ignored there, which is the whole mechanism under test.
+  function repoIgnoring(patterns: string[]): string {
+    const repo = makeGitRepo();
+    writeFileSync(join(repo, '.gitignore'), patterns.join('\n') + '\n');
+    execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'gitignore']);
+    return repo;
+  }
+
+  function seedFile(path: string, contents: string): void {
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, contents);
+  }
+
+  it('provisions a dependency root into a fresh worktree', async () => {
+    const repo = repoIgnoring(['node_modules/']);
+    mkdirSync(join(repo, 'node_modules', 'left-pad'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'left-pad', 'index.js'), 'module.exports = 1;\n');
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-dep', projectCwd: repo, baseBranch: 'main' });
+
+    expect(readFileSync(join(rec.worktreePath, 'node_modules', 'left-pad', 'index.js'), 'utf8'))
+      .toBe('module.exports = 1;\n');
+  });
+
+  // The load-bearing assertion: no info/exclude write, no sentinel block, nothing but the tracked
+  // .gitignore keeping the copy out of `git status`. If this regresses the design is wrong.
+  it('leaves the worktree clean — a provisioned root reads as ignored, not untracked', async () => {
+    const repo = repoIgnoring(['node_modules/']);
+    mkdirSync(join(repo, 'node_modules', 'left-pad'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'left-pad', 'index.js'), 'module.exports = 1;\n');
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-clean', projectCwd: repo, baseBranch: 'main' });
+
+    const status = execFileSync('git', ['-C', rec.worktreePath, 'status', '--porcelain'], { encoding: 'utf8' });
+    expect(status.trim()).toBe('');
+    const ignored = execFileSync(
+      'git',
+      ['-C', rec.worktreePath, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory'],
+      { encoding: 'utf8' },
+    );
+    expect(ignored).toContain('node_modules/');
+  });
+
+  it('skips ignored roots that are not dependency roots', async () => {
+    const repo = repoIgnoring(['test-results/', '.idea/', 'secret.txt', 'dist/']);
+    for (const dir of ['test-results', '.idea', 'dist']) {
+      mkdirSync(join(repo, dir), { recursive: true });
+      writeFileSync(join(repo, dir, 'out.txt'), 'x\n');
+    }
+    writeFileSync(join(repo, 'secret.txt'), 'x\n');
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-nondep', projectCwd: repo, baseBranch: 'main' });
+
+    for (const entry of ['test-results', '.idea', 'dist', 'secret.txt']) {
+      expect(existsSync(join(rec.worktreePath, entry))).toBe(false);
+    }
+  });
+
+  it('provisions a nested dependency root in a monorepo layout', async () => {
+    const repo = repoIgnoring(['node_modules/']);
+    // packages/web itself is tracked, so `--directory` collapses only the nested node_modules —
+    // which a first-path-segment match would miss.
+    seedFile(join(repo, 'packages', 'web', 'app.ts'), 'export const a = 1;\n');
+    execFileSync('git', ['-C', repo, 'add', 'packages/web/app.ts']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'web']);
+    mkdirSync(join(repo, 'packages', 'web', 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(repo, 'packages', 'web', 'node_modules', 'dep', 'index.js'), 'nested\n');
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-mono', projectCwd: repo, baseBranch: 'main' });
+
+    expect(readFileSync(join(rec.worktreePath, 'packages', 'web', 'node_modules', 'dep', 'index.js'), 'utf8'))
+      .toBe('nested\n');
+  });
+
+  it('skips a dependency root that is a symlink in the project checkout', async () => {
+    // No trailing slash, so the pattern matches a symlink too and git reports it as ignored —
+    // otherwise the filter would never see it and this would pass for the wrong reason.
+    const repo = repoIgnoring(['node_modules']);
+    const real = mkdtempSync(join(tmpdir(), 'wt-real-deps-'));
+    writeFileSync(join(real, 'index.js'), 'linked\n');
+    symlinkSync(real, join(repo, 'node_modules'));
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-link', projectCwd: repo, baseBranch: 'main' });
+
+    expect(existsSync(join(rec.worktreePath, 'node_modules'))).toBe(false);
+  });
+
+  it('skips a root over the size budget without failing the provision', async () => {
+    const repo = repoIgnoring(['node_modules/']);
+    mkdirSync(join(repo, 'node_modules'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'big.js'), 'x'.repeat(64 * 1024));
+    const worktree = mkdtempSync(join(tmpdir(), 'wt-budget-'));
+
+    await expect(provisionDependencyRoots(repo, worktree, { rootMaxKb: 1 })).resolves.toBeUndefined();
+    expect(existsSync(join(worktree, 'node_modules'))).toBe(false);
+  });
+
+  it('leaves an existing target directory untouched', async () => {
+    const repo = repoIgnoring(['node_modules/']);
+    mkdirSync(join(repo, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'dep', 'index.js'), 'from project\n');
+    const worktree = mkdtempSync(join(tmpdir(), 'wt-idem-'));
+    mkdirSync(join(worktree, 'node_modules'), { recursive: true });
+    writeFileSync(join(worktree, 'node_modules', 'sentinel.txt'), 'mine\n');
+
+    await provisionDependencyRoots(repo, worktree);
+
+    expect(readFileSync(join(worktree, 'node_modules', 'sentinel.txt'), 'utf8')).toBe('mine\n');
+    expect(existsSync(join(worktree, 'node_modules', 'dep'))).toBe(false);
+  });
+
+  it('provisions into an adopted worktree', async () => {
+    const root = newRoot();
+    const repo = repoIgnoring(['node_modules/']);
+    mkdirSync(join(repo, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'dep', 'index.js'), 'adopted\n');
+    const priorWtPath = join(root, 'prior-session');
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '-b', 'feature/adopted-deps', priorWtPath, 'main']);
+
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    const rec = await m.create({
+      sessionId: 'sess-adopt-deps',
+      projectCwd: repo,
+      baseBranch: 'main',
+      branch: 'feature/adopted-deps',
+    });
+
+    expect(readFileSync(join(rec.worktreePath, 'node_modules', 'dep', 'index.js'), 'utf8')).toBe('adopted\n');
+  });
+
+  it('honours OUTPOST_WORKTREE_DEPS=0', async () => {
+    const repo = repoIgnoring(['node_modules/']);
+    mkdirSync(join(repo, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'dep', 'index.js'), 'off\n');
+    const worktree = mkdtempSync(join(tmpdir(), 'wt-off-'));
+
+    process.env.OUTPOST_WORKTREE_DEPS = '0';
+    try {
+      await provisionDependencyRoots(repo, worktree);
+    } finally {
+      delete process.env.OUTPOST_WORKTREE_DEPS;
+    }
+
+    expect(existsSync(join(worktree, 'node_modules'))).toBe(false);
+  });
+});
+
+describe('collapseToRoots / isDependencyRoot', () => {
+  it('drops paths already covered by a shallower root', () => {
+    expect(collapseToRoots(['.claude/', '.claude/worktrees/', '.claude/settings.json']))
+      .toEqual(['.claude']);
+  });
+
+  it('keeps disjoint roots and orders them shallowest first', () => {
+    expect(collapseToRoots(['packages/web/node_modules/', 'node_modules/', '']))
+      .toEqual(['node_modules', 'packages/web/node_modules']);
+  });
+
+  it('matches a dependency root by its final segment, not its first', () => {
+    expect(isDependencyRoot('node_modules')).toBe(true);
+    expect(isDependencyRoot('packages/web/node_modules')).toBe(true);
+    expect(isDependencyRoot('target')).toBe(true);
+    expect(isDependencyRoot('.venv')).toBe(true);
+    expect(isDependencyRoot('dist')).toBe(false);
+    expect(isDependencyRoot('node_modules_old')).toBe(false);
+    expect(isDependencyRoot('vendored')).toBe(false);
   });
 });
 

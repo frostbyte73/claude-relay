@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceRef } from '../work/work-types.js';
 
@@ -49,6 +49,23 @@ const BRANCH_NAME_RE = /^[A-Za-z0-9_./][A-Za-z0-9_./-]{0,128}$/;
 const FETCH_TIMEOUT_MS = 20_000;
 // Longer than FETCH_TIMEOUT_MS because this is a clone, not a fetch, and it is per submodule.
 const SUBMODULE_TIMEOUT_MS = 120_000;
+// Ignored path roots a step may legitimately WRITE while running the repo's own build or test
+// command. Copied per worktree, never symlinked: a step that bumps a dependency would otherwise
+// write straight through the link into the user's own checkout, and two parallel steps on one
+// project would corrupt each other's tree.
+const PROVISIONED_DEP_ROOTS = new Set([
+  'node_modules', // npm / yarn / pnpm
+  'vendor', // go mod vendor, bundler, composer
+  'target', // cargo
+  '.venv',
+  'venv',
+]);
+const DEP_ROOT_MAX_KB = 2 * 1024 * 1024;
+const DEP_TOTAL_MAX_KB = 4 * 1024 * 1024;
+// A directory too big to measure in five seconds is one we did not want to clone anyway, so the
+// timeout doubles as the ceiling for the pathological case `du` can't answer for.
+const DEP_SIZE_TIMEOUT_MS = 5_000;
+const DEP_COPY_TIMEOUT_MS = 180_000;
 // GitHub serves refs/pull/<N>/head but a normal clone never fetches it — `N` is digits-only
 // from this capture, so it can never be argv-flag-shaped.
 const PR_REF_RE = /^refs\/pull\/(\d+)\/head$/;
@@ -185,6 +202,9 @@ export class WorktreeManager {
         // Adopted, not cut: the branch points wherever it already pointed, so `startRef` is what
         // we wanted and not what we got. Align (or record the drift) before claiming a base.
         await this.alignToBase(rec);
+        // An adopted worktree needs its dependencies as much as a freshly cut one — it is the
+        // shape a step gets when it picks up an existing PR branch.
+        await provisionDependencyRoots(opts.projectCwd, worktreePath);
         this.records.set(opts.sessionId, rec);
         this.persist();
         return rec;
@@ -217,6 +237,7 @@ export class WorktreeManager {
     // After alignToBase, never before: its `merge --ff-only` can move HEAD onto a commit that
     // pins the submodule differently, and it doesn't update submodule working trees itself.
     await populateSubmodules(worktreePath);
+    await provisionDependencyRoots(opts.projectCwd, worktreePath);
     this.records.set(opts.sessionId, rec);
     this.persist();
     return rec;
@@ -798,6 +819,139 @@ async function populateSubmodules(worktreePath: string): Promise<void> {
   } catch (err) {
     console.warn(`[worktree] submodule init failed in ${worktreePath}: ${(err as Error).message}`);
   }
+}
+
+// `--directory` marks a wholly-ignored directory with a trailing slash; normalise that away so the
+// collapse below compares like with like.
+function normalizeIgnoredRel(raw: string): string {
+  return raw.trim().replaceAll('\\', '/').split('/').filter(Boolean).join('/');
+}
+
+// Shortest path first, then drop whatever a kept root already covers. `--exclude-standard` returns
+// near-collapsed output on its own, so this guards against a nested entry rather than doing the
+// load-bearing work it does for the `--exclude-per-directory` listing this was ported from.
+export function collapseToRoots(rels: string[]): string[] {
+  const unique = [...new Set(rels.map(normalizeIgnoredRel).filter(Boolean))];
+  unique.sort((a, b) => {
+    const depth = a.split('/').length - b.split('/').length;
+    return depth !== 0 ? depth : a.localeCompare(b);
+  });
+  const roots: string[] = [];
+  for (const rel of unique) {
+    if (roots.some((root) => rel === root || rel.startsWith(`${root}/`))) continue;
+    roots.push(rel);
+  }
+  return roots;
+}
+
+// Final segment, not first: `--directory` collapses a monorepo's ignored dependency directory to
+// `packages/web/node_modules`, which a first-segment match would miss.
+export function isDependencyRoot(rel: string): boolean {
+  return PROVISIONED_DEP_ROOTS.has(basename(rel));
+}
+
+// `git worktree add` hands back a tree with no dependencies in it, so an `edit`-group step can't
+// run the repo's own test or build command without a cold install first — the other end of the
+// dead-end the group's dependency-bump grants were added to fix.
+//
+// Nothing here keeps the copies out of `git status`, and nothing needs to. Every root comes from
+// `--exclude-standard`, whose three sources — the tracked `.gitignore`, the shared
+// `.git/info/exclude`, the user's global excludes — are all shared with a linked worktree, so a
+// root copied in as the same kind of filesystem object is ignored here by the same rule that
+// ignored it there. That invariant is also why these are copies rather than symlinks: `.gitignore`
+// spells these patterns with a trailing slash, which matches directories only, and git reads a
+// symlink as a file, so a symlinked `node_modules` would show up untracked and `git add -A` would
+// stage it. Copying is what a step writing to its own dependency tree needs anyway.
+//
+// Async and shelling out to `cp` rather than reaching for `cpSync`, for the reason above
+// populateSubmodules: a 30k-file walk on the daemon's only thread stalls every other session's
+// tool calls. `-c` asks APFS to clone, which keeps a 121M node_modules near-free in real bytes.
+//
+// Best-effort throughout — a root that won't provision leaves the worktree exactly as broken as it
+// would have been, which beats failing a provision that was otherwise fine.
+export async function provisionDependencyRoots(
+  projectCwd: string,
+  worktreePath: string,
+  limits: { rootMaxKb?: number; totalMaxKb?: number } = {},
+): Promise<void> {
+  if (process.env.OUTPOST_WORKTREE_DEPS === '0') return;
+  const rootMaxKb = limits.rootMaxKb ?? DEP_ROOT_MAX_KB;
+  const totalMaxKb = limits.totalMaxKb ?? DEP_TOTAL_MAX_KB;
+
+  let listed: string;
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['-C', projectCwd, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      { maxBuffer: 8 * 1024 * 1024 },
+    );
+    listed = stdout;
+  } catch {
+    return;
+  }
+
+  // Sequential, not Promise.all: the budget below is a running total, and parallel multi-gigabyte
+  // clones would only contend for the same disk.
+  let totalKb = 0;
+  for (const rel of collapseToRoots(listed.split('\0')).filter(isDependencyRoot)) {
+    const dst = join(worktreePath, rel);
+    if (existsSync(dst)) continue;
+    // `dst` doesn't exist yet, so isUnder answers from its string-prefix fallback rather than
+    // realpath — correct here, since `dst` was built by joining onto `worktreePath`.
+    if (!isUnder(dst, worktreePath)) continue;
+
+    const src = join(projectCwd, rel);
+    try {
+      const stat = lstatSync(src);
+      // A copied symlink is the one shape the ignore invariant above doesn't cover.
+      if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    const kb = await measureKb(src);
+    if (kb === null || kb > rootMaxKb || totalKb + kb > totalMaxKb) {
+      const why = kb === null ? 'size could not be measured' : `${kb}kb exceeds the budget`;
+      console.warn(`[worktree] skipped ${rel} in ${worktreePath}: ${why}`);
+      continue;
+    }
+    totalKb += kb;
+
+    try {
+      mkdirSync(dirname(dst), { recursive: true });
+      await cloneTree(src, dst);
+    } catch (err) {
+      // A half-copied tree reads as present to whatever runs next, which is worse than an absent
+      // one — the step would build against it.
+      try { rmSync(dst, { recursive: true, force: true }); } catch { /* best-effort */ }
+      console.warn(`[worktree] provisioning ${rel} failed in ${worktreePath}: ${(err as Error).message}`);
+    }
+  }
+}
+
+// null when the size can't be established at all, which the caller treats as over budget: a
+// directory `du` can't walk inside the timeout is one worth skipping on that evidence alone.
+async function measureKb(path: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileP('du', ['-sk', '--', path], { timeout: DEP_SIZE_TIMEOUT_MS });
+    const kb = Number.parseInt(stdout.toString().trim().split(/\s+/)[0] ?? '', 10);
+    return Number.isFinite(kb) ? kb : null;
+  } catch { return null; }
+}
+
+// `-c` clones on APFS. BSD cp's manual is ambiguous about whether it falls back or fails when a
+// clone isn't possible (a cross-volume copy, a non-APFS source), so retry without it rather than
+// rest on a reading of the manual. `-R` doesn't follow symlinks, so node_modules/.bin's relative
+// links are reproduced as links and stay valid.
+async function cloneTree(src: string, dst: string): Promise<void> {
+  try {
+    await execFileP('cp', ['-Rc', '--', src, dst], { timeout: DEP_COPY_TIMEOUT_MS });
+    return;
+  } catch { /* fall through to a plain recursive copy */ }
+  // A failed clone can leave a partial tree behind, and `cp -R src dst` copies *into* dst when it
+  // exists instead of replacing it.
+  rmSync(dst, { recursive: true, force: true });
+  await execFileP('cp', ['-R', '--', src, dst], { timeout: DEP_COPY_TIMEOUT_MS });
 }
 
 function copyAllowlistedIgnored(projectCwd: string, worktreePath: string): void {
