@@ -9,8 +9,8 @@ import {
 } from './reply-draft.js';
 import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml } from './write-draft-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
-import { discardAll } from '../../state/git.js';
 import { prPatches } from '../../state/pr-patches.js';
+import { worktreeChanges } from '../../state/worktree-changes.js';
 import { shortName } from '../../utils/formatting.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -33,6 +33,38 @@ function reviewBadge(s) {
 // is the card's message composer. Clean/unknown stays silent.
 function mergeBadge(s) {
   return s.mergeable === 'conflicting' ? '<span class="o-pill warn">Conflicts</span>' : '';
+}
+
+// The one control on the branch row. Geometric, single weight, 18-viewBox, currentColor —
+// the same drawing contract as action-icon.js, so it inherits the button's text color.
+const BRANCH_GLYPH = `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="4" r="1.9"/><circle cx="5" cy="14" r="1.9"/><circle cx="13" cy="4" r="1.9"/><path d="M5 5.9v6.2"/><path d="M13 5.9v1.1C13 9.6 5 8.6 5 11.2"/></svg>`;
+
+// A review controller's workspace is a `readonly` detached checkout of somebody else's PR
+// head — `s.sessionId` there is the controller's own persistent session id, set from turn 1
+// and never unset, and says nothing about whether a diff exists (it never will: the checkout
+// is clean by construction). Gate the diff button on ownership of the branch, not merely on
+// having a session. `prIsClosed` also covers "closed but not merged" — there's nothing to
+// review once the PR is dead either way.
+function isMergedPr(s) { return s.state === 'merged' || s.prState === 'merged'; }
+function prIsClosed(s) { return isMergedPr(s) || s.prState === 'closed'; }
+function reviewReadyFor(s) { return !prIsClosed(s) && s.workspace?.kind !== 'readonly' && !!s.sessionId; }
+
+// Accent-1 when the worktree is dirty, outlined otherwise. The variant is the whole message:
+// a diff you can always open is not asking you for anything, but uncommitted work IS — it's
+// the one thing in this card that can't move until the user looks at it, and the controller
+// is typically parked waiting for exactly that. Until the count lands (or if it can't be
+// read) the button stays outlined: unknown must not read as dirty.
+function diffBtnHtml(s) {
+  const changes = worktreeChanges.for(s.sessionId);
+  const dirty = !!changes && changes.changed > 0;
+  const title = dirty
+    ? `${changes.changed} uncommitted ${changes.changed === 1 ? 'file' : 'files'} — review them`
+    : `Review this branch's changes`;
+  return `
+    <button type="button" class="o-btn ${dirty ? 'o-btn--primary' : 'o-btn--default'} sm pr-diff-btn"
+            data-diff-action="review" title="${escapeHtml(title)}">
+      <span class="pr-diff-glyph">${BRANCH_GLYPH}</span>Review changes
+    </button>`;
 }
 
 const CHECK_GLYPH = { success: '✓', failure: '✗', pending: '•', skipped: '⊘' };
@@ -138,25 +170,27 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   const prMatch = s.prUrl ? s.prUrl.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?\/pull\/(\d+)/) : null;
   const prRepo = prMatch ? prMatch[1] : repoName;
   const prNum = prMatch ? prMatch[2] : null;
-  const isMerged = s.state === 'merged' || s.prState === 'merged';
-  const prClosed = isMerged || s.prState === 'closed';
-  // A review controller's workspace is a `readonly` detached checkout of somebody else's
-  // PR head — `s.sessionId` there is the controller's own persistent session id, set from
-  // turn 1 and never unset, and says nothing about whether a diff exists (it never will:
-  // the checkout is clean by construction). Gate the CTA on ownership of the branch, not
-  // merely on having a session. prClosed also covers "closed but not merged" — there's
-  // nothing to review or discard once the PR is dead either way.
-  const reviewReady = !prClosed && s.workspace?.kind !== 'readonly' && !!s.sessionId;
+  const isMerged = isMergedPr(s);
+  const prClosed = prIsClosed(s);
+  const reviewReady = reviewReadyFor(s);
 
   // Once merged, "Merged" (in the stats row) says it all — the CI/approval pills
   // are implied and just add noise to the collapsed line; the full check
   // breakdown still lives in the expandable Checks disclosure.
   const badges = isMerged ? [] : [mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
 
-  // The two always-visible rows — repo/badges + branch/merged. When merged these become the
+  // The two always-visible rows — repo/badges + branch/diff. When merged these become the
   // collapsed summary; otherwise they head the open block. No title row: `PrFacts` carries
   // no title of its own, so this printed `s.title` — the STEP's title, already the
   // `.tl-name` heading a few rows up. One string, rendered twice, in two typographies.
+  //
+  // The diff sits on the branch row, right-aligned under the pills, because that is what it
+  // is about: this branch's changes. It used to be an accent-bordered banner of its own below
+  // these rows — a permanent "Review the branch diff" + Discard + Review changes → that was
+  // present on every live PR, so the loudest thing in the card was a standing offer rather
+  // than anything that had happened. Discard is not lost, it moved one click in: the diff
+  // overlay carries both "Discard all" and a per-file Discard, which is where you can
+  // actually see what you're throwing away before you throw it.
   const header = `
     <div class="pr-hdr">
       ${s.prUrl
@@ -167,6 +201,7 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
     <div class="pr-stats">
       ${s.workspace?.branch ? `<span class="prb-branch">${escapeHtml(s.workspace.branch)}</span>` : ''}
       ${isMerged ? '<span class="pr-merged">Merged</span>' : ''}
+      ${reviewReady ? diffBtnHtml(s) : ''}
     </div>`;
 
   // Order matters: `replyForComment` is what fills `claimed`, so the threads have to be
@@ -209,21 +244,11 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   })}
     </div>`;
 
-  // Everything under the header, in chronological order: CTA and open threads
+  // Everything under the header, in chronological order: open threads
   // (live/actionable, so kept up top) → checks → resolved comments. Spec and
   // implementation plan are artifacts of the step, not of the PR — the orchestrated
   // card discloses them once, above this block, where the controller produced them.
   const body = `
-    ${reviewReady ? `
-      <div class="pr-review-cta">
-        <span class="pr-review-cta-label">${s.state === 'implementing' ? 'Uncommitted changes on this branch' : 'Review the branch diff'}</span>
-        <div class="pr-review-cta-actions">
-          <button type="button" class="o-btn o-btn--default pr-discard-btn" data-pr-action="discard">Discard</button>
-          <button type="button" class="o-btn o-btn--primary" data-diff-action="review">Review changes →</button>
-        </div>
-      </div>
-    ` : ''}
-
     ${threadsRegion}
     ${renderChecksHtml(s, prClosed)}
     ${resolvedThreads.length ? `
@@ -264,20 +289,11 @@ export function wirePrBlockActions(el, job, s, { replyDraft } = {}) {
   // Armed here rather than at render time: rendering runs on every repaint, and `ensure` is
   // the thing that must decide once per head sha whether a fetch is owed.
   if (job?.id && (s.comments ?? []).some((c) => c.file)) prPatches.ensure(job.id, s.id, s.headRefOid);
+  // Same reason, one step further: the count decides the diff button's variant, and only a
+  // read of the worktree can answer it. Keyed on `updatedAt`, so the round that commits the
+  // edits is what re-reads — see state/worktree-changes.js.
+  if (reviewReadyFor(s)) worktreeChanges.ensure(s.sessionId, s.updatedAt);
   el.querySelector('[data-diff-action="review"]')?.addEventListener('click', () => {
     void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId });
-  });
-  el.querySelector('[data-pr-action="discard"]')?.addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    const branch = s.workspace?.branch ?? 'this branch';
-    if (!confirm(`Discard ALL uncommitted changes on ${branch}? Staged and unstaged edits are reverted and untracked files removed. This cannot be undone.`)) return;
-    btn.disabled = true;
-    try {
-      await discardAll(s.sessionId);
-    } catch (err) {
-      alert(`Discard failed: ${err?.message ?? err}`);
-    } finally {
-      btn.disabled = false;
-    }
   });
 }

@@ -71,22 +71,6 @@ export function setHeader(sessionId, entry) {
   sourceCtl.headerBySessionId.set(sessionId, { ...prev, ...entry });
 }
 
-// Discards ALL uncommitted changes on a session's worktree. Used by callers outside
-// the diff overlay (e.g. the Tracked PR block's inline "Discard" button) that don't
-// share diffState.ctx and so can't use the overlay's own runSourceAction/discardAll.
-export async function discardAll(sessionId) {
-  setBusy(sessionId, 'discard');
-  try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/git/discard`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
-    });
-    if (!res.ok) throw new Error((await res.text().catch(() => '')) || `HTTP ${res.status}`);
-    return true;
-  } finally {
-    setBusy(sessionId, null);
-  }
-}
-
 // Cwd-keyed branch cache used by the mobile session list to label rows. Two
 // sessions sharing a cwd share the label — last-writer-wins. Acceptable because
 // worktree sessions get unique cwds and the shared-cwd case is read-mostly.

@@ -3,19 +3,28 @@
 // (both layouts; mobile arranges the same renderer), so the title/description/time header
 // and the failure callout stay with the timeline and are not repeated here.
 //
-// Two tiers, separated by one hairline.
+// Three bands, in the order a reader walks them: what this step IS → where the work STANDS →
+// what is happening and what you'd say about it. The last band ends at the bottom edge of the
+// card, and that is the whole point of the arrangement.
 //
-// The LIVE tier, in the order you need it: who the controller is and which repo it's in →
-// anything holding for your approval → its own feed, which streams while it's working and
-// states its status once it parks → the box you answer it in. The card owns the session mount
-// itself (step-card.js renders it only for non-orchestrated steps) precisely so the
-// composer can sit directly under the feed: the two halves of one conversation used to be
-// separated by every artifact and the whole PR block, with the reply at the very bottom.
+// 1. IDENTITY — which controller, which repo. One row.
+// 2. RECORD (`.orc-record`) — the PR block, settled dispatches, the trail strip. State that
+//    accumulates: you scan it, you rarely act in it.
+// 3. LIVE — anything holding for your approval → the controller's own feed, which streams
+//    while it's working and states its status once it parks → the box you answer it in.
 //
-// The RECORD tier: the PR and the controller's paper trail. Six artifacts used to stack as
-// six sibling disclosures, each with its own label row and caret, ABOVE the PR block — the
-// archive outranking the live surface, at ~190px before a single one was opened. They're
-// now one strip of chips that opens one body at a time.
+// The live band used to sit ABOVE the record, which put a growing feed and its composer on
+// the far side of a PR block that is itself hundreds of pixels of threads and checks. Every
+// glance at "what is it saying now" and every reply meant scrolling back up past all of it,
+// then back down to check CI. Bottom-anchoring the live band means the newest thing to read
+// and the only thing to type in are both where the scroll already ends — one destination,
+// not two. The card owns the session mount itself (step-card.js renders it only for
+// non-orchestrated steps) precisely so the composer can sit directly under the feed.
+//
+// The trail is the last thing in the record band, so the transition into the live band is one
+// quiet strip of chips rather than the tail of a comment thread. Six artifacts used to stack
+// as six sibling disclosures, each with its own label row and caret, at ~190px before a
+// single one was opened; they're now one strip that opens one body at a time.
 //
 // Everything is still its own stacked row. Never one crammed eyebrow line.
 
@@ -37,10 +46,11 @@ function domId(s) { return String(s ?? '').replace(/[^A-Za-z0-9_-]+/g, '_'); }
 
 // pr-block.js reads the flat shape the deleted `open-pr` step had: PR facts at the top
 // level and the old state vocabulary. The facts are unchanged — only where they hang —
-// so adapt here rather than fork the block. Only the two phases pr-block still branches
-// on are mapped; every other phase stays blank. Spec/implPlan deliberately do NOT get
-// mapped: the card renders every artifact once, in the trail strip.
-const PR_BLOCK_STATE = { merged: 'merged', implement: 'implementing' };
+// so adapt here rather than fork the block. Only the one phase pr-block still branches
+// on is mapped; every other phase stays blank (`implement` used to map too, purely to
+// retitle the removed review banner). Spec/implPlan deliberately do NOT get mapped: the
+// card renders every artifact once, in the trail strip.
+const PR_BLOCK_STATE = { merged: 'merged' };
 const PRE_PR_PHASES = new Set(['spec', 'plan']);
 
 function prView(s) {
@@ -272,13 +282,13 @@ export function renderOrchestratedCard(step, { job } = {}) {
   return `
     <div class="orc-card">
       ${metaRowHtml(step, vm)}
+      ${record.trim() ? `<div class="orc-record">${record}</div>` : ''}
       ${gateHtml(vm)}
       ${gateActionsHtml(vm)}
       ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}
       ${holding ? dispatches : ''}
       ${feedMountHtml(step)}
       ${composerHtml(step)}
-      ${record.trim() ? `<div class="orc-record">${record}</div>` : ''}
     </div>`;
 }
 

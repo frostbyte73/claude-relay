@@ -7,6 +7,7 @@
 
 import { work } from '../../state/work.js';
 import { prPatches } from '../../state/pr-patches.js';
+import { worktreeChanges } from '../../state/worktree-changes.js';
 import { renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard } from '../work/plan-section.js';
 import { planIsLive } from '../../vm/work-predicates.js';
 import { renderTimelineStep, wireTimelineStep, computeGroupPositions } from '../work/step-card.js';
@@ -406,7 +407,9 @@ export function renderTrackedDetail(root, jobId) {
   const editing = isEditingPlan(job.id);
   // prPatches.version is folded in for the same reason as `live`: PR file diffs land after the
   // job record and change what the comment threads render, without touching job.updatedAt.
-  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}:${JSON.stringify(job.live ?? null)}:${prPatches.get().version}`;
+  // worktreeChanges.version is the same story for the diff button's variant, and only moves
+  // when a re-read actually returns a different count.
+  const paintKey = `${job.id}:${job.updatedAt}:${work.get().syncingJobId === job.id}:${editing}:${job.highPriority}:${JSON.stringify(job.launchStatus ?? null)}:${JSON.stringify(job.live ?? null)}:${prPatches.get().version}:${worktreeChanges.get().version}`;
   if (root.__tkPaintKey === paintKey && root.querySelector('.tk-shell')) return;
   root.__tkPaintKey = paintKey;
 

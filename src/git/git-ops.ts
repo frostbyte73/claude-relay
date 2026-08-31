@@ -100,6 +100,20 @@ export async function gitStatus(cwd: string): Promise<GitStatus> {
   return { ...parsed, prUrl, defaultBranch, commitUrlBase };
 }
 
+// The dirty half of gitStatus and nothing else. gitStatus also runs `gh pr view`, resolves
+// origin/HEAD and reads the remote url — three probes, one of them networked — which is fine
+// for the diff overlay opening once but not for a question the tracked timeline asks per
+// repaint. One local `git status`; keep it that way.
+export async function gitWorktreeChanges(cwd: string): Promise<{ changed: number; clean: boolean }> {
+  const { stdout } = await execFileP(
+    'git',
+    ['-C', cwd, 'status', '--porcelain=v2', '-z'],
+    { maxBuffer: MAX_BUFFER },
+  );
+  const { files } = parsePorcelainV2(stdout);
+  return { changed: files.length, clean: files.length === 0 };
+}
+
 export async function gitLog(cwd: string, limit: number): Promise<GitLogEntry[]> {
   const cappedLimit = Math.max(1, Math.min(200, limit));
   // %x1f unit / %x1e record separators survive subjects containing newlines or whitespace.

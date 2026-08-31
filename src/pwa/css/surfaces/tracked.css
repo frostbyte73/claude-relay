@@ -674,11 +674,11 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 }
 
 /* ── Orchestrated step card ───────────────────────────────────────────────
-   The body of a controller-owned step, in two tiers (see orchestrated-card.js).
-   Live tier: identity → hold → feed (transcript tail, or the status chip once
-   the controller parks) → composer. Record tier (`.orc-record`, below one
-   hairline): PR block, dispatches, trail strip. Every part is its own stacked
-   row — the header line above stays name/time. */
+   The body of a controller-owned step, in three bands (see orchestrated-card.js).
+   Identity → record (`.orc-record`: PR block, dispatches, trail strip) → live
+   (hold → feed → composer), with one hairline under the record. The live band is
+   last so the newest transcript line and the reply box are always at the scroll's
+   end. Every part is its own stacked row — the header line above stays name/time. */
 .orc-card { display: flex; flex-direction: column; gap: 8px; }
 
 /* Identity, shared by both step types: which action this step is, the workspace it runs in,
@@ -754,16 +754,18 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .orc-msg:focus-within .thread-composer-row,
 .orc-msg.is-open .thread-composer-row { display: flex; }
 
-/* ── Record tier ──────────────────────────────────────────────────────────
+/* ── Record band ──────────────────────────────────────────────────────────
    Everything that accumulates rather than changes: the PR, settled dispatches,
-   the paper trail. One hairline separates it from the live tier above. */
+   the paper trail. One hairline separates it from the live band BELOW it — the
+   rule moved with the band when live went last, so it still reads as the seam
+   between "what happened" and "what's happening". */
 .orc-record {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line-soft);
+  margin-bottom: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
 }
 .orc-record > .pr-block:first-child { margin-top: 0; }
 
@@ -853,9 +855,12 @@ a.pr-num:hover { text-decoration: underline; }
   gap: 4px;
   flex: none;
 }
+/* Wraps because this row now carries a control as well as a name: a long branch on a phone
+   drops the button to its own line (still right-aligned) rather than pushing it off the card. */
 .pr-stats {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
   color: var(--text-mute);
@@ -865,25 +870,31 @@ a.pr-num:hover { text-decoration: underline; }
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--accent-2);
+  overflow-wrap: anywhere;
 }
 .pr-merged {
   color: var(--ok);
   font-weight: 500;
 }
 
-.pr-review-cta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 12px;
-  margin-bottom: 4px;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: var(--r-container);
+/* The branch row's one control, right-aligned so it lands under the CI/review pills of the
+   row above — branch and its diff on one line, status on the other. Outlined while the
+   worktree is clean: the accent budget in this card belongs to whatever is asking for a
+   decision, and a diff you can always open is not that. It IS that once there are
+   uncommitted changes — pr-block.js swaps in `.o-btn--primary` then, which is the loudest
+   thing in the card precisely because nothing else can move until you look. */
+.pr-diff-btn { margin-left: auto; flex: none; }
+.pr-diff-glyph {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
 }
-.pr-review-cta-label { font-size: 12px; color: var(--text); }
-.pr-review-cta-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.pr-diff-glyph svg { width: 100%; height: 100%; }
+.pr-diff-btn:hover .pr-diff-glyph { color: inherit; }
+/* On the filled variant the glyph rides the button's own text color (`--bg`); left dim it
+   would all but vanish into the accent fill. */
+.pr-diff-btn.o-btn--primary .pr-diff-glyph { color: inherit; }
 
 /* Threads are cards in a stack, separated by space rather than by a shared hairline — a
    hairline inside this block now means one thing only: the edge of a container. */

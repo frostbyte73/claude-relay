@@ -31,6 +31,7 @@ import {
   getBusy as getGitBusy,
   setBusy as setGitBusy,
 } from '../../state/git.js';
+import { worktreeChanges } from '../../state/worktree-changes.js';
 import { formatDiffReviewMessage as formatDiffReviewMessageShared } from '../diff-review-format.js';
 import { makeSheetDismissible, noteSheetOpen, noteSheetClose, confirmInSheet } from '../sheet-utils.js';
 
@@ -888,6 +889,10 @@ async function refreshSourceControl(sessionId) {
   sourceCtl.log = log;
   if (sourceCtl.status) {
     setGitHeader(id, { branch: sourceCtl.status.branch ?? null, prUrl: sourceCtl.status.prUrl ?? null });
+    // Every commit/discard/stage in here ends up back at this refresh, and none of them mutate
+    // the step — so this is the only thing that can take the tracked timeline's diff button
+    // back out of its accent variant once the user has actually dealt with the changes.
+    worktreeChanges.note(id, sourceCtl.status);
   }
   renderHeaderStats();
   renderFooter();

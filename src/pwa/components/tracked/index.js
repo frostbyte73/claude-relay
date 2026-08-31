@@ -6,6 +6,7 @@
 
 import { work } from '../../state/work.js';
 import { prPatches } from '../../state/pr-patches.js';
+import { worktreeChanges } from '../../state/worktree-changes.js';
 import { mountFilterableList } from '../shell/list-filter.js';
 import { emptyState } from '../shell/placeholder.js';
 import { renderTrackedList } from './list.js';
@@ -30,9 +31,12 @@ export function renderDetail(mount, deps) {
   // A PR's file diffs arrive after the job does (fetched on demand), and they change what the
   // comment threads render — so they need their own repaint trigger, not just the work store's.
   const unsubPatches = prPatches.subscribe(paint);
+  // Ditto for the uncommitted-change count behind the diff button's variant.
+  const unsubChanges = worktreeChanges.subscribe(paint);
   return () => {
     unsub();
     unsubPatches();
+    unsubChanges();
     teardownAllExcept(null);
   };
 }

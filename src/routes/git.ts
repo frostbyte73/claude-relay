@@ -6,7 +6,7 @@ import { diffBaseFor } from '../git/worktree-manager.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
 import {
-  resolveSessionGitCwd, gitStatus, gitLog, gitCommit, gitPush, gitPull, gitStage,
+  resolveSessionGitCwd, gitStatus, gitWorktreeChanges, gitLog, gitCommit, gitPush, gitPull, gitStage,
   gitDiscard, gitCreateBranch, gitOpenPr, gitFinalizeSquashMerge, gitFinalizeSquashToBranch,
   gitFinalizeAppendToBranch, gitRemoteBranchExists, gitSquashMergeToBase,
 } from '../git/git-ops.js';
@@ -122,6 +122,29 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     } catch (err) {
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: (err as Error).message }));
+    }
+  });
+
+  // Just "is this worktree dirty, and how many files" — the tracked timeline's diff button
+  // asks it per step to decide whether it's the thing you should be looking at. Deliberately
+  // NOT /git/status: that one probes the PR and the remote, which no caller of this needs and
+  // which would make a per-repaint question a networked one.
+  server.route('GET', '/api/sessions/:id/git/changes', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/changes$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const resolved = resolveSessionGitCwd(worktreeManager, sessionStore, m[1]!, engine);
+    res.setHeader('content-type', 'application/json');
+    if (resolved.kind === 'error') {
+      res.statusCode = resolved.status;
+      res.end(JSON.stringify({ error: resolved.message }));
+      return;
+    }
+    try {
+      res.statusCode = 200;
+      res.end(JSON.stringify(await gitWorktreeChanges(resolved.cwd)));
+    } catch (err) {
+      res.statusCode = 500;
       res.end(JSON.stringify({ error: (err as Error).message }));
     }
   });
