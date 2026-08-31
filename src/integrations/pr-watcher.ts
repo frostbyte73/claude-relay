@@ -304,7 +304,10 @@ export class PrWatcher {
   private readonly escalationTimers = new Map<string, NodeJS.Timeout[]>();
   // undefined until `gh api user` answers; see viewer().
   private viewerLogin?: string;
+  // Consecutive `gh pr list` *errors* per live step, keyed `jobId:stepId` — see discoverPr.
+  private readonly discoveryFailures = new Map<string, { streak: number; skips: number }>();
   private static readonly ESCALATION_MS = [60_000, 5 * 60_000, 15 * 60_000];
+  private static readonly MAX_DISCOVERY_SKIPS = 32;
 
   constructor(private readonly opts: PrWatcherOpts) {
     this.runGh = opts.runGh ?? defaultRunGh;
@@ -354,8 +357,13 @@ export class PrWatcher {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
     for (const s of j.steps) {
-      if (s.type !== 'orchestrated' || s.cancelled) continue;
-      if (s.state === 'resolved' || s.state === 'failed') continue;
+      if (s.type !== 'orchestrated') continue;
+      if (s.cancelled || s.state === 'resolved' || s.state === 'failed') {
+        // Nothing sweeps this step again, so its backoff entry would sit in the map for the
+        // rest of the process's life (same reason the escalation ladder drops its own).
+        this.discoveryFailures.delete(`${jobId}:${s.id}`);
+        continue;
+      }
       const ws = s.workspace;
       if (ws.kind === 'writable') {
         // Only a writable workspace can carry a branch, and only a branch can carry a PR.
@@ -430,7 +438,7 @@ export class PrWatcher {
       // sitting open on GitHub. The cost this bounds is one `gh pr list` per sweep per live
       // writable step — and every controller that holds one opens a PR, so the population it
       // would save is empty.
-      prUrl = await this.discoverPr(cwd, branch);
+      prUrl = await this.discoverPr(cwd, branch, `${jobId}:${s.id}`);
       if (!prUrl) {
         // No PR yet — but the branch landing on origin is itself news the controller acts on
         // (it's the falsifier for "waiting for you to push"). Report it, so nothing downstream
@@ -541,12 +549,41 @@ export class PrWatcher {
     this.noteChanged(jobId);
   }
 
-  private async discoverPr(cwd: string, branch: string): Promise<string | undefined> {
+  // Two different negatives arrive here as the same `undefined`, and the caller is right not
+  // to tell them apart: a clean miss (no PR on this branch yet) and a failed call. The retry
+  // policy must, though. A clean miss is the normal pre-PR state and keeps the full sweep
+  // cadence — that is the case syncStep's unbounded-discovery note is about. An *error* is
+  // not a miss: `origin` can name a repo that does not resolve at all (a remote that was
+  // never created on GitHub), and that call fails identically forever. One such step ran
+  // `gh pr list` every 5 minutes for ~20 days and wrote 5,981 identical stderr lines, burying
+  // every other line in the log.
+  //
+  // So errors — and only errors — back off, exponentially and capped, and log once per
+  // streak. Backoff, not the miss-cap that was tried and reverted: discovery never stops, so
+  // a repo that shows up later is still discovered, just later. And it is deliberately not
+  // extended to syncBranchHead's `git ls-remote` next door — that one talks to the SSH remote
+  // rather than the API, so it can still answer when the token cannot, and it is the only
+  // signal a controller parked on "waiting for you to push" has.
+  private async discoverPr(cwd: string, branch: string, key: string): Promise<string | undefined> {
+    const failing = this.discoveryFailures.get(key);
+    if (failing && failing.skips > 0) {
+      failing.skips--;
+      return undefined;
+    }
     try {
       const out = await this.runGh(cwd, ['pr', 'list', '--head', branch, '--json', 'url', '--limit', '1']);
+      if (failing) {
+        this.discoveryFailures.delete(key);
+        console.error(`[pr-watcher] discovery ${branch}: recovered after ${failing.streak} failure(s)`);
+      }
       return (JSON.parse(out) as Array<{ url?: string }>)[0]?.url;
     } catch (e) {
-      console.error(`[pr-watcher] discovery ${branch}: ${(e as Error).message}`);
+      const streak = (failing?.streak ?? 0) + 1;
+      this.discoveryFailures.set(key, {
+        streak,
+        skips: Math.min(2 ** (streak - 1), PrWatcher.MAX_DISCOVERY_SKIPS),
+      });
+      if (streak === 1) console.error(`[pr-watcher] discovery ${branch}: ${(e as Error).message}`);
       return undefined;
     }
   }
