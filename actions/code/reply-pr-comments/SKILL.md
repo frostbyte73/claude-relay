@@ -68,19 +68,28 @@ Comment ids carry their own routing:
 - **`review:<node-id>` with no `file`** — a review summary body. GitHub has no thread to
   reply into; post it as a PR comment and quote the reviewer's line so it reads as an answer.
 
-The inline threads need GitHub's integer comment id, and the envelope stores the GraphQL
-node id. Fetch the mapping once. Your cwd is the PR's worktree, so let `gh` fill in the
-repo — `{owner}` and `{repo}` are `gh api`'s own placeholders, resolved from that
-worktree's own remote, and they are the only repo spelling this action is granted:
+A threaded reply needs two numbers the comment id does not carry: the PR number, and GitHub's
+integer comment id (`id` holds the GraphQL node id, which the endpoint will not take). Both
+are already in the envelope:
 
 ```bash
-gh pr view "$PR_URL" --json number --jq .number
+jq -r '.pr.prUrl' "$OUTPOST_ENVELOPE"
+jq -r '.pr.comments[] | select(.commentId) | "\(.id)\t\(.commentId)"' "$OUTPOST_ENVELOPE"
+```
+
+`commentId` is set on inline review comments only — the only ones that get a threaded reply.
+If the step's PR facts predate that field, the integer is also the tail of the comment's
+`url` (`…#discussion_r<id>`). Ask GitHub only if both are missing; `{owner}` and `{repo}` are
+`gh api`'s own placeholders, resolved from the worktree's own remote, and they are the only
+repo spelling this action is granted — a literal `owner/repo` is denied:
+
+```bash
 gh api "repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments" --paginate --jq '.[] | "\(.node_id)\t\(.id)"'
 ```
 
-**Read the PR number off that first command and type it in literally** — `<PR_NUMBER>` and
-`<id>` below are digits you write yourself, not `$PR_NUM` or `"$PR_URL"`. A `$VAR` in a
-target slot is whatever an earlier assignment put there, so drafted calls must be literals
+**Type both numbers into the drafted commands literally** — `<PR_NUMBER>` and `<id>` below
+are digits you write yourself, not `$PR_NUM` or `"$PR_URL"`. A `$VAR` in a target slot is
+whatever an earlier assignment put there, so drafted calls must be literals
 only; substituting one is the difference between "reply to the PR the user approved" and
 "reply to any PR on github.com".
 
@@ -111,10 +120,13 @@ is no shell quoting to get wrong: a body with backticks, apostrophes, `$VAR`, `$
 newlines needs no escaping at all, because it never reaches the command line.
 
 Threaded reply to an inline review comment (`<id>` is the integer id from Step 2) — the
-`--input` payload is the endpoint's JSON body, so its `files` content is `{"body": "…"}`:
+`--input` payload is the endpoint's JSON body, so its `files` content is `{"body": "…"}`.
+**The path is pull-scoped**: `repos/{owner}/{repo}/pulls/comments/<id>/replies` looks
+plausible and is what this skill prescribed until 2026-09-01, but no such endpoint exists and
+every reply drafted with it 404s.
 
 ```bash
-gh api --method POST "repos/{owner}/{repo}/pulls/comments/<id>/replies" --input /tmp/outpost-reply-1.json
+gh api --method POST "repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments/<id>/replies" --input /tmp/outpost-reply-1.json
 ```
 
 Top-level PR comment (issue comments, review summaries) — `--body-file` takes the markdown
@@ -140,7 +152,7 @@ mcp__outpost__submit_write_draft({
   calls: [
     {
       label: "review:ABC",
-      bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/comments/<id>/replies\" --input /tmp/outpost-reply-1.json",
+      bash: "gh api --method POST \"repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments/<id>/replies\" --input /tmp/outpost-reply-1.json",
       files: { "/tmp/outpost-reply-1.json": "{\"body\": \"<verbatim>\"}" }
     },
     {
@@ -253,8 +265,10 @@ this action until a human sees it, and this journal is the only place
 
 - **Envelope missing or unreadable.** Say so in one line and exit; the engine settles the
   step on the next tick. Don't guess at what to post.
-- **The comment was deleted between triage and now** (`404` on the replies endpoint). Not a
-  failure of the round — record it in `postedReplies` as skipped and carry on.
+- **`404` on the replies endpoint.** Only a deleted comment if the id is also gone from
+  `pr.comments` — check there first. A 404 on a comment still listed is a malformed path
+  (Step 3), which no retry fixes: record it in `postedReplies` as FAILED, journal it, and
+  hand back. Otherwise record it as skipped and carry on.
 - **The session died after posting but before reporting.** The round re-runs. Read
   `pr.comments` first: if your reply text is already there under your own author name,
   record it as posted rather than posting it twice.

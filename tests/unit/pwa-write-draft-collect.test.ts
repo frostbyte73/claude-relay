@@ -18,7 +18,7 @@ const { renderReplyCallHtml } = await import('../../src/pwa/components/work/repl
 
 const call = {
   label: 'review:ABC',
-  bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-1.json',
+  bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" --input /tmp/outpost-reply-1.json',
   files: { '/tmp/outpost-reply-1.json': '{"body": "original", "in_reply_to": 9}' },
 };
 const draft = { id: 'd1', action: 'code.reply-pr-comments', summary: 'Post 1 reply', calls: [call], requestedAt: 1 };
@@ -139,7 +139,7 @@ describe('collectCalls — a reply edited as prose, pinned as the file it lives 
     it('wraps an edited threaded reply as the endpoint\'s JSON body', () => {
       const api = {
         label: 'review:PRRC_1',
-        bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" -f body=\'ok\'',
+        bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" -f body=\'ok\'',
       };
       const d = { ...draft, calls: [api] };
       const root = document.createElement('div');
@@ -150,7 +150,7 @@ describe('collectCalls — a reply edited as prose, pinned as the file it lives 
       root.querySelector<HTMLTextAreaElement>('[data-kind="rewrite"]')!.value = "Won't do it that way.";
       root.querySelector<HTMLButtonElement>('[data-wd-action="accept"]')!.click();
       const [, , , calls] = acceptDraft.mock.calls[0] as unknown as [string, string, string, any[]];
-      expect(calls[0].bash).toBe('gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-d1-0.json');
+      expect(calls[0].bash).toBe('gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" --input /tmp/outpost-reply-d1-0.json');
       expect(JSON.parse(calls[0].files['/tmp/outpost-reply-d1-0.json'])).toEqual({ body: "Won't do it that way." });
     });
 

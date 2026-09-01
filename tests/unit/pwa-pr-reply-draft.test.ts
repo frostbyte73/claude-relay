@@ -14,7 +14,7 @@ const comment = (over: Record<string, unknown> = {}) => ({
 
 const jsonCall = (over: Record<string, unknown> = {}) => ({
   label: 'review:ABC',
-  bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-1.json',
+  bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" --input /tmp/outpost-reply-1.json',
   files: { '/tmp/outpost-reply-1.json': '{"body": "renamed in `abc123`"}' },
   ...over,
 });
@@ -51,7 +51,7 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
 
   it('accepts the quoting and --method/-X spellings of the same command', () => {
     const files = { '/tmp/outpost-reply-1.json': '{"body": "ok"}' };
-    expect(replyBodyOf({ bash: 'gh api -X POST repos/{owner}/{repo}/pulls/comments/9/replies --input "/tmp/outpost-reply-1.json"', files })?.text).toBe('ok');
+    expect(replyBodyOf({ bash: 'gh api -X POST repos/{owner}/{repo}/pulls/7/comments/9/replies --input "/tmp/outpost-reply-1.json"', files })?.text).toBe('ok');
   });
 
   it('returns null for a shape it cannot read — two files, non-{body} json', () => {
@@ -64,9 +64,12 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
   // pattern doesn't cover gets shown as its command instead, because nothing has vouched for it.
   it('returns null for a command that is not one of the two canonical shapes', () => {
     const files = { '/tmp/outpost-reply-1.json': '{"body": "ok"}' };
-    expect(replyBodyOf({ bash: 'gh api --method PUT "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-1.json', files })).toBeNull();
-    expect(replyBodyOf({ bash: 'gh api --method POST "repos/octo/evil/pulls/comments/9/replies" --input /tmp/outpost-reply-1.json', files })).toBeNull();
-    expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-1.json; rm -rf /', files })).toBeNull();
+    expect(replyBodyOf({ bash: 'gh api --method PUT "repos/{owner}/{repo}/pulls/7/comments/9/replies" --input /tmp/outpost-reply-1.json', files })).toBeNull();
+    expect(replyBodyOf({ bash: 'gh api --method POST "repos/octo/evil/pulls/7/comments/9/replies" --input /tmp/outpost-reply-1.json', files })).toBeNull();
+    expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" --input /tmp/outpost-reply-1.json; rm -rf /', files })).toBeNull();
+    // The pull-less path this action drafted until 2026-09-01. There is no such endpoint, so
+    // rendering one as a reply would promise the user a post that 404s.
+    expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-1.json', files })).toBeNull();
   });
 
   // The text shown has to be the text that posts: a command reading a different file than the
@@ -84,10 +87,10 @@ describe('replyBodyOf — where the reviewable prose lives', () => {
   it('reads an inline body and keeps the command prefix it would be rebuilt from', () => {
     expect(replyBodyOf({ bash: "gh pr comment 16434 --body 'Ack — holding the merge.'" }))
       .toEqual({ text: 'Ack — holding the merge.', rewrite: { prefix: 'gh pr comment 16434', ext: 'md' } });
-    expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" -f body="done"' }))
+    expect(replyBodyOf({ bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" -f body="done"' }))
       .toEqual({
         text: 'done',
-        rewrite: { prefix: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies"', ext: 'json' },
+        rewrite: { prefix: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies"', ext: 'json' },
       });
   });
 });
@@ -206,7 +209,7 @@ describe('renderPrBlockHtml — a pending reply draft renders in the threads', (
           jsonCall(),
           jsonCall({
             label: 'review:DEF',
-            bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/comments/10/replies" --input /tmp/outpost-reply-2.json',
+            bash: 'gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/10/replies" --input /tmp/outpost-reply-2.json',
             files: { '/tmp/outpost-reply-2.json': '{"body": "second answer"}' },
           }),
         ],

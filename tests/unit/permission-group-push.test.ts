@@ -360,8 +360,8 @@ describe('the reply rewrite the approval UI performs stays inside the group', ()
   it('allows the rewritten command for both reply shapes', () => {
     for (const c of [
       `gh pr comment 16434 --body-file /tmp/outpost-reply-${draftId}-0.md`,
-      `gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" --input /tmp/outpost-reply-${draftId}-1.json`,
-      `gh api -X POST repos/{owner}/{repo}/pulls/comments/9/replies --input /tmp/outpost-reply-${draftId}-2.json`,
+      `gh api --method POST "repos/{owner}/{repo}/pulls/7/comments/9/replies" --input /tmp/outpost-reply-${draftId}-1.json`,
+      `gh api -X POST repos/{owner}/{repo}/pulls/7/comments/9/replies --input /tmp/outpost-reply-${draftId}-2.json`,
     ]) expect(allows(c), c).toBe(true);
   });
 });

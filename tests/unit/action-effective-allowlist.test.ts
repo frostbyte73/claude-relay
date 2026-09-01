@@ -566,14 +566,15 @@ describe('code.reply-pr-comments effective allowlist', () => {
   it('allows exactly the posting commands its SKILL.md documents', () => {
     const documented = [
       'cat "$OUTPOST_ENVELOPE"',
-      'PR_NUM=$(gh pr view "$PR_URL" --json number --jq .number)',
+      'jq -r \'.pr.prUrl\' "$OUTPOST_ENVELOPE"',
+      'jq -r \'.pr.comments[] | select(.commentId) | "\\(.id)\\t\\(.commentId)"\' "$OUTPOST_ENVELOPE"',
       `gh pr comment 12 --body "You're right — wrapping in a transaction."`,
       "gh pr comment 12 --body 'wrapping the `insert` in a transaction'",
       'gh pr comment 12 --body-file /tmp/outpost-reply-issue-123.md',
       'gh api "repos/{owner}/{repo}/pulls/12/comments" --paginate --jq \'.[] | "\\(.node_id)\\t\\(.id)"\'',
-      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" -f body="the approved reply"',
-      'gh api -X POST "repos/{owner}/{repo}/pulls/comments/998877/replies" -f body=hi',
-      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" --input /tmp/outpost-reply-998877.json',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" -f body="the approved reply"',
+      'gh api -X POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" -f body=hi',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" --input /tmp/outpost-reply-998877.json',
       `gh pr view ${PR} --json comments --jq '.comments[-3:] | .[] | "\\(.author.login): \\(.body[0:80])"'`,
     ];
     expect(documented.filter((c) => !allows(c))).toEqual([]);
@@ -628,15 +629,15 @@ describe('code.reply-pr-comments effective allowlist', () => {
   // repo's review comments and post replies into it. `{owner}`/`{repo}` are gh's own
   // placeholders, resolved from the worktree's remote.
   // The endpoint pinning is gone from `push` — the two rules that named `pulls/N/reviews` and
-  // `pulls/comments/N/replies` are one method-bearing `gh api` rule now. So a REST write to
+  // `pulls/12/comments/N/replies` are one method-bearing `gh api` rule now. So a REST write to
   // another endpoint is reachable, gated and warned. What still cannot pass is a payload the
   // card could not render, and a READ of another repo (which no rule here grants at all).
   it('refuses a reply payload it cannot account for', () => {
     for (const c of [
-      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" -f body="$(cat /etc/passwd)"',
-      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" --input /etc/passwd',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" -f body="$(cat /etc/passwd)"',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" --input /etc/passwd',
       // Multi-segment traversal out of /tmp: every segment is anchored, not just the first.
-      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" --input /tmp/a/../../etc/passwd',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" --input /tmp/a/../../etc/passwd',
     ]) {
       expect(allows(c), c).toBe(false);
     }
@@ -655,7 +656,7 @@ describe('code.reply-pr-comments effective allowlist', () => {
 
   it('reaches another REST write only through the gate, warned', () => {
     for (const c of [
-      'gh api --method POST "repos/evil/repo/pulls/comments/1/replies" -f body=hi',
+      'gh api --method POST "repos/evil/repo/pulls/12/comments/1/replies" -f body=hi',
       'gh api --method POST "repos/{owner}/{repo}/pulls/12/reviews" -f event=APPROVE',
       'gh api --method PUT "repos/{owner}/{repo}/pulls/12/merge"',
       'gh api --method DELETE "repos/{owner}/{repo}/git/refs/heads/main"',
@@ -664,7 +665,7 @@ describe('code.reply-pr-comments effective allowlist', () => {
       expect(isGated(c), c).toBe(true);
       expect(writeFindings(c).map((f) => f.code), c).toContain('api-write');
     }
-    expect(writeFindings('gh api --method POST "repos/{owner}/{repo}/pulls/comments/9/replies" -f body=hi --hostname evil.example.com')
+    expect(writeFindings('gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/9/replies" -f body=hi --hostname evil.example.com')
       .map((f) => f.code)).toContain('foreign-host');
   });
 
@@ -998,7 +999,7 @@ describe('code.verify-resolutions effective allowlist', () => {
       'gh pr review 7 --approve',
       'gh pr comment 7 --body hi',
       'gh api --method POST repos/o/r/pulls/7/reviews --input /tmp/x.json',
-      'gh api --method POST "repos/{owner}/{repo}/pulls/comments/998877/replies" -f body=hi',
+      'gh api --method POST "repos/{owner}/{repo}/pulls/12/comments/998877/replies" -f body=hi',
       'gh pr merge 7 --squash',
       'gh pr close 7',
       'git push origin main',

@@ -19,6 +19,10 @@ export interface PrComment {
   id: string;
   author: string;
   body: string;
+  // GitHub's integer REST id, on inline review comments only. `id` carries the GraphQL node
+  // id, which the reply endpoint does not accept — without this a session has to shell out
+  // for the mapping before it can answer a thread.
+  commentId?: number;
   url?: string;
   file?: string;
   line?: number;

@@ -131,6 +131,7 @@ function inlineCommentsFrom(inline: GhInlineComment[]): PrComment[] {
   return inline.map((c) => {
     const out: PrComment = {
       id: `review:${c.node_id}`,
+      commentId: c.id,
       author: c.user.login,
       body: c.body,
       createdAt: epochOf(c.created_at),

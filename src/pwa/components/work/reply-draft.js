@@ -27,7 +27,7 @@ export function isReplyDraft(draft) {
 // instead, because at that point the daemon cannot tell them what it does. Quoting of the
 // endpoint/path and the `--method`/`-X` spelling are the only slack; both are the same command.
 const CANONICAL_REPLY = [
-  /^gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"? --input ("?)(\/tmp\/[A-Za-z0-9_][A-Za-z0-9._-]*\.json)\1$/,
+  /^gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/\d+\/comments\/\d+\/replies"? --input ("?)(\/tmp\/[A-Za-z0-9_][A-Za-z0-9._-]*\.json)\1$/,
   /^gh pr comment \d+ --body-file ("?)(\/tmp\/[A-Za-z0-9_][A-Za-z0-9._-]*\.md)\1$/,
 ];
 
@@ -55,8 +55,8 @@ function canonicalReplyPath(bash) {
 const INLINE_REPLY = [
   { re: /^(gh pr comment \d+) --body '([^'\n]*)'$/, ext: 'md' },
   { re: /^(gh pr comment \d+) --body "([^"$`\n]*)"$/, ext: 'md' },
-  { re: /^(gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"?) -f body='([^'\n]*)'$/, ext: 'json' },
-  { re: /^(gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/comments\/\d+\/replies"?) -f body="([^"$`\n]*)"$/, ext: 'json' },
+  { re: /^(gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/\d+\/comments\/\d+\/replies"?) -f body='([^'\n]*)'$/, ext: 'json' },
+  { re: /^(gh api (?:--method|-X) POST "?repos\/\{owner\}\/\{repo\}\/pulls\/\d+\/comments\/\d+\/replies"?) -f body="([^"$`\n]*)"$/, ext: 'json' },
 ];
 
 function inlineReply(bash) {
